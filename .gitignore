@@ -1,0 +1,21 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Rust
+backend/target/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Database runtime files
+database/*.sqlite-shm
+database/*.sqlite-wal
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

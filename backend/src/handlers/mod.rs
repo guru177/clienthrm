@@ -1,0 +1,21 @@
+pub mod auth;
+pub mod users;
+pub mod departments;
+pub mod designations;
+pub mod roles;
+pub mod permissions;
+pub mod attendance;
+pub mod leave_requests;
+pub mod holidays;
+pub mod projects;
+pub mod tasks;
+pub mod workflows;
+pub mod analytics;
+pub mod settings;
+pub mod careers;
+pub mod job_applications;
+pub mod payroll;
+
+pub mod reports;
+pub mod salaries;
+pub mod centers;
