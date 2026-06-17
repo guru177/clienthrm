@@ -48,9 +48,6 @@ pub struct ClockInRequest {
     pub face_verified: Option<bool>,
     pub face_match_score: Option<f64>,
     pub location: Option<LocationPayload>,
-    pub lat: Option<f64>,
-    pub lng: Option<f64>,
-    pub photo: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,10 +56,34 @@ pub struct AttendanceListQuery {
     pub status: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    /// When true, only return open sessions (clocked in, not yet clocked out).
+    pub only_open: Option<bool>,
+}
+
+/// Admin edit of an existing attendance record (regularization).
+#[derive(Debug, Deserialize)]
+pub struct UpdateAttendanceRequest {
+    pub clock_in: Option<String>,
+    pub clock_out: Option<String>,
+    pub status: Option<String>,
+    pub notes: Option<String>,
+    /// When true, clears the clock-out (re-opens the session).
+    pub clear_clock_out: Option<bool>,
+}
+
+/// Admin manual attendance entry for an employee (missing punch).
+#[derive(Debug, Deserialize)]
+pub struct CreateAttendanceRequest {
+    pub user_id: i64,
+    pub date: String,
+    pub clock_in: Option<String>,
+    pub clock_out: Option<String>,
+    pub status: Option<String>,
+    pub notes: Option<String>,
 }
 
 impl Attendance {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             user_id: row.get("user_id")?,
@@ -70,13 +91,13 @@ impl Attendance {
             clock_in: row.get("clock_in")?,
             clock_out: row.get("clock_out")?,
             duration_minutes: row.get("duration_minutes").ok(),
-            is_late: row.get::<_, i64>("is_late").unwrap_or(0) != 0,
-            is_early_exit: row.get::<_, i64>("is_early_exit").unwrap_or(0) != 0,
+            is_late: row.get::<i64>("is_late").unwrap_or(0) != 0,
+            is_early_exit: row.get::<i64>("is_early_exit").unwrap_or(0) != 0,
             notes: row.get("notes").ok(),
             status: row.get("status").ok(),
             clock_in_location: row.get("clock_in_location").ok(),
             clock_in_face_match_score: row.get("clock_in_face_match_score").ok(),
-            clock_in_face_verified: row.get::<_, i64>("clock_in_face_verified").unwrap_or(0) != 0,
+            clock_in_face_verified: row.get::<i64>("clock_in_face_verified").unwrap_or(0) != 0,
             source: row.get("source").ok(),
             created_at: row.get("created_at").ok(),
             updated_at: row.get("updated_at").ok(),

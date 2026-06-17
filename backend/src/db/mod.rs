@@ -1,27 +1,23 @@
+pub mod connection;
+pub mod dialect;
+pub mod error;
 pub mod migrations;
+pub mod params;
+pub mod pool;
+pub mod postgres_bootstrap;
+pub mod postgres_seeds;
+pub mod row;
 
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
+pub use connection::{Connection, OptionalExt, Statement, Transaction};
+pub use dialect::Backend;
+pub use error::{DbError, Result};
+pub use params::{from_one, from_two, into_param_value, Params, ParamValue, ToParams};
+pub use pool::{init_pool, DbPool};
+pub use row::Row;
 
-pub type DbPool = Pool<SqliteConnectionManager>;
-
-pub fn init_pool(database_path: &str) -> DbPool {
-    let manager = SqliteConnectionManager::file(database_path);
-    let pool = Pool::builder()
-        .max_size(10)
-        .build(manager)
-        .expect("Failed to create database pool");
-
-    // Enable WAL mode and foreign keys
-    {
-        let conn = pool.get().expect("Failed to get connection");
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=5000;",
-        )
-        .expect("Failed to set pragmas");
+pub fn run_migrations(pool: &DbPool) {
+    match pool.backend() {
+        Backend::Sqlite => migrations::run_sqlite_migrations(pool),
+        Backend::Postgres => postgres_bootstrap::ensure_postgres_schema(pool),
     }
-
-    pool
 }

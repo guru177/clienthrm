@@ -1,39 +1,105 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use std::sync::Arc;
 
-use crate::db::DbPool;
+use crate::config::AppConfig;
+use crate::db::{DbPool, OptionalExt};
 use crate::middleware::auth::{generate_token, get_claims_from_request};
-use crate::models::user::{LoginRequest, LoginResponse, User};
+use crate::models::organization::{CheckSignupAvailabilityRequest, SignupRequest};
+use crate::models::user::{LoginRequest, User};
 use crate::models::{ApiError, ApiResponse};
+use crate::signup_otp::{self, SendSignupOtpRequest, SignupOtpPayload};
+use crate::tenant::{
+    load_org_slug, load_organization, normalize_org_slug, resolve_organization_id,
+    seed_new_organization_defaults, seed_signup_app_settings, slug_available,
+};
+
+fn load_tenant_settings(
+    conn: &crate::db::Connection,
+    org_id: i64,
+) -> std::collections::HashMap<String, String> {
+    let mut settings = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT key, value FROM app_settings WHERE organization_id = ?1",
+    ) {
+        for (key, value) in stmt.query_map([org_id], |row| {
+            Ok((
+                row.get_idx::<String>(0)?,
+                row.get_idx::<Option<String>>(1)?.unwrap_or_default(),
+            ))
+        }) {
+            settings.insert(key, value);
+        }
+    }
+    settings
+}
+
+fn attach_org_to_summary(
+    conn: &crate::db::Connection,
+    summary: &mut crate::models::user::UserSummary,
+) {
+    summary.organization = load_organization(conn, summary.organization_id);
+}
 
 /// POST /api/auth/login
 pub async fn login(
     pool: web::Data<DbPool>,
     jwt_secret: web::Data<Arc<String>>,
+    app_config: web::Data<Arc<AppConfig>>,
+    req: HttpRequest,
     body: web::Json<LoginRequest>,
 ) -> HttpResponse {
+    if let Err(msg) = crate::rate_limit::limit_auth_login(&req, &body.email) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    // Find user by email
-    let user_result = conn.query_row(
-        "SELECT * FROM users WHERE email = ?1 AND deleted_at IS NULL",
-        [&body.email],
-        User::from_row,
-    );
+    let explicit_slug = body
+        .org_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    let user = match user_result {
-        Ok(u) => u,
-        Err(_) => {
-            return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials"))
+    let user = if let Some(slug) = explicit_slug {
+        // Slug supplied → scope strictly to that organization.
+        let org_id = match resolve_organization_id(&conn, Some(slug)) {
+            Ok(id) => id,
+            Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+        };
+        match conn.query_row(
+            "SELECT * FROM users WHERE email = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![body.email, org_id],
+            User::from_row,
+        ) {
+            Ok(u) => u,
+            Err(_) => return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials")),
+        }
+    } else {
+        // No slug (the web login form sends only email + password) → look the user up
+        // across all active organizations. When the same email exists in multiple orgs,
+        // the one whose password verifies wins.
+        let candidates = conn.query_map(
+            "SELECT u.* FROM users u
+             JOIN organizations o ON o.id = u.organization_id
+             WHERE u.email = ?1 AND u.deleted_at IS NULL AND o.status = 'active'",
+            crate::params![body.email],
+            User::from_row,
+        );
+        let matched = candidates.into_iter().find(|u| {
+            let hash = u.password.replace("$2y$", "$2b$");
+            bcrypt::verify(&body.password, &hash).unwrap_or(false)
+        });
+        match matched {
+            Some(u) => u,
+            None => return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials")),
         }
     };
 
-    // Verify password using bcrypt
-    // Laravel stores passwords with bcrypt ($2y$ prefix). The bcrypt crate handles $2b$ and $2a$.
-    // We need to handle $2y$ → $2b$ conversion.
+    let org_id = user.organization_id;
+
     let stored_hash = user.password.replace("$2y$", "$2b$");
     let password_valid = bcrypt::verify(&body.password, &stored_hash).unwrap_or(false);
 
@@ -41,21 +107,25 @@ pub async fn login(
         return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials"));
     }
 
-    // Get user permissions
-    let permissions = crate::middleware::rbac::load_user_permissions(&conn, user.id, user.is_super_admin);
+    if let Err(msg) = crate::subscription_period::ensure_org_subscription_enforced(&conn, org_id) {
+        return HttpResponse::Forbidden().json(ApiError::new(&msg));
+    }
 
-    // Generate JWT token
-    let expiration_hours: u64 = std::env::var("JWT_EXPIRATION_HOURS")
-        .unwrap_or_else(|_| "24".to_string())
-        .parse()
-        .unwrap_or(24);
+    let (permissions, plan) = crate::plan_limits::resolve_effective_permissions(
+        &conn,
+        org_id,
+        crate::middleware::rbac::load_user_permissions(&conn, user.id, user.is_super_admin),
+    );
 
+    let org_slug = load_org_slug(&conn, user.organization_id);
     let token = match generate_token(
         user.id,
         &user.email,
+        user.organization_id,
+        &org_slug,
         user.is_super_admin,
         &jwt_secret,
-        expiration_hours,
+        app_config.jwt_expiration_hours,
     ) {
         Ok(t) => t,
         Err(_) => {
@@ -71,20 +141,34 @@ pub async fn login(
     let _ = conn.execute(
         "INSERT INTO jwt_refresh_tokens (user_id, token, expires_at, created_at, revoked)
          VALUES (?1, ?2, ?3, datetime('now'), 0)",
-        rusqlite::params![user.id, &refresh_token, &refresh_expires],
+        crate::params![user.id, &refresh_token, &refresh_expires],
     );
 
-    // Load roles for response
+    if user.is_super_admin {
+        let ip = crate::presence::client_ip(&req);
+        let _ = crate::presence::upsert_user_presence(
+            &conn,
+            user.id,
+            org_id,
+            &ip,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
     let roles = load_user_roles(&conn, user.id);
     let mut summary = user.to_summary();
     summary.roles = Some(roles);
+    attach_org_to_summary(&conn, &mut summary);
 
-    // Load department & designation
     if let Some(dept_id) = summary.department_id {
         summary.department = conn
             .query_row(
-                "SELECT * FROM departments WHERE id = ?1",
-                [dept_id],
+                "SELECT * FROM departments WHERE id = ?1 AND organization_id = ?2",
+                crate::params![dept_id, org_id],
                 crate::models::department::Department::from_row,
             )
             .ok();
@@ -92,23 +176,14 @@ pub async fn login(
     if let Some(desg_id) = summary.designation_id {
         summary.designation = conn
             .query_row(
-                "SELECT * FROM designations WHERE id = ?1",
-                [desg_id],
+                "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
+                crate::params![desg_id, org_id],
                 crate::models::designation::Designation::from_row,
             )
             .ok();
     }
 
-    let mut settings = std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM app_settings") {
-        if let Ok(iter) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
-        }) {
-            for item in iter.flatten() {
-                settings.insert(item.0, item.1);
-            }
-        }
-    }
+    let settings = load_tenant_settings(&conn, org_id);
 
     #[derive(serde::Serialize)]
     struct LoginResponseExt {
@@ -117,24 +192,21 @@ pub async fn login(
         user: crate::models::user::UserSummary,
         permissions: Vec<String>,
         settings: std::collections::HashMap<String, String>,
+        plan: Option<crate::plan_limits::OrgPlanInfo>,
     }
 
-    let response = LoginResponseExt {
+    HttpResponse::Ok().json(ApiResponse::success(LoginResponseExt {
         token,
         refresh_token,
         user: summary,
         permissions,
         settings,
-    };
-
-    HttpResponse::Ok().json(ApiResponse::success(response))
+        plan,
+    }))
 }
 
 /// GET /api/auth/me — returns current user info
-pub async fn me(
-    pool: web::Data<DbPool>,
-    req: HttpRequest,
-) -> HttpResponse {
+pub async fn me(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
@@ -145,26 +217,33 @@ pub async fn me(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
+    let org_id = crate::tenant::org_id_from_claims(&claims);
+
     let user = match conn.query_row(
-        "SELECT * FROM users WHERE id = ?1 AND deleted_at IS NULL",
-        [claims.sub],
+        "SELECT * FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+        crate::params![claims.sub, org_id],
         User::from_row,
     ) {
         Ok(u) => u,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("User not found")),
     };
 
-    let permissions = crate::middleware::rbac::load_user_permissions(&conn, user.id, user.is_super_admin);
+    let (permissions, plan) = crate::plan_limits::resolve_effective_permissions(
+        &conn,
+        org_id,
+        crate::middleware::rbac::load_user_permissions(&conn, user.id, user.is_super_admin),
+    );
     let roles = load_user_roles(&conn, user.id);
 
     let mut summary = user.to_summary();
     summary.roles = Some(roles);
+    attach_org_to_summary(&conn, &mut summary);
 
     if let Some(dept_id) = summary.department_id {
         summary.department = conn
             .query_row(
-                "SELECT * FROM departments WHERE id = ?1",
-                [dept_id],
+                "SELECT * FROM departments WHERE id = ?1 AND organization_id = ?2",
+                crate::params![dept_id, org_id],
                 crate::models::department::Department::from_row,
             )
             .ok();
@@ -172,22 +251,28 @@ pub async fn me(
     if let Some(desg_id) = summary.designation_id {
         summary.designation = conn
             .query_row(
-                "SELECT * FROM designations WHERE id = ?1",
-                [desg_id],
+                "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
+                crate::params![desg_id, org_id],
                 crate::models::designation::Designation::from_row,
             )
             .ok();
     }
 
-    let mut settings = std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM app_settings") {
-        if let Ok(iter) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
-        }) {
-            for item in iter.flatten() {
-                settings.insert(item.0, item.1);
-            }
-        }
+    let settings = load_tenant_settings(&conn, org_id);
+
+    if user.is_super_admin {
+        let ip = crate::presence::client_ip(&req);
+        let _ = crate::presence::upsert_user_presence(
+            &conn,
+            user.id,
+            org_id,
+            &ip,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
     }
 
     #[derive(serde::Serialize)]
@@ -195,12 +280,14 @@ pub async fn me(
         user: crate::models::user::UserSummary,
         permissions: Vec<String>,
         settings: std::collections::HashMap<String, String>,
+        plan: Option<crate::plan_limits::OrgPlanInfo>,
     }
 
     HttpResponse::Ok().json(ApiResponse::success(MeResponse {
         user: summary,
         permissions,
         settings,
+        plan,
     }))
 }
 
@@ -218,8 +305,14 @@ pub struct LogoutRequest {
 pub async fn refresh(
     pool: web::Data<DbPool>,
     jwt_secret: web::Data<Arc<String>>,
+    app_config: web::Data<Arc<AppConfig>>,
+    req: HttpRequest,
     body: web::Json<RefreshTokenRequest>,
 ) -> HttpResponse {
+    if let Err(msg) = crate::rate_limit::limit_auth_refresh(&req) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -229,9 +322,10 @@ pub async fn refresh(
         .query_row(
             "SELECT user_id, expires_at, revoked FROM jwt_refresh_tokens WHERE token=?1",
             [&body.refresh_token],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+            |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<String>(1)?, r.get_idx::<i64>(2)? != 0)),
         )
-        .ok();
+        .optional()
+        .unwrap_or(None);
 
     let Some((user_id, expires_at, revoked)) = row else {
         return HttpResponse::Unauthorized().json(ApiError::new("Invalid refresh token"));
@@ -253,17 +347,28 @@ pub async fn refresh(
         Err(_) => return HttpResponse::Unauthorized().json(ApiError::new("User not found")),
     };
 
-    let expiration_hours: u64 = std::env::var("JWT_EXPIRATION_HOURS")
-        .unwrap_or_else(|_| "24".to_string())
-        .parse()
-        .unwrap_or(24);
+    if let Err(msg) =
+        crate::subscription_period::ensure_org_subscription_enforced(&conn, user.organization_id)
+    {
+        return HttpResponse::Forbidden().json(ApiError::new(&msg));
+    }
 
-    let token = match generate_token(user.id, &user.email, user.is_super_admin, &jwt_secret, expiration_hours) {
+    let org_slug = load_org_slug(&conn, user.organization_id);
+    let token = match generate_token(
+        user.id,
+        &user.email,
+        user.organization_id,
+        &org_slug,
+        user.is_super_admin,
+        &jwt_secret,
+        app_config.jwt_expiration_hours,
+    ) {
         Ok(t) => t,
-        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Failed to generate token")),
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to generate token"))
+        }
     };
 
-    // Rotate refresh token: revoke old, issue new
     let new_refresh = uuid::Uuid::new_v4().to_string();
     let refresh_expires = (chrono::Utc::now() + chrono::Duration::days(7))
         .format("%Y-%m-%d %H:%M:%S")
@@ -275,7 +380,7 @@ pub async fn refresh(
     let _ = conn.execute(
         "INSERT INTO jwt_refresh_tokens (user_id, token, expires_at, created_at, revoked)
          VALUES (?1, ?2, ?3, ?4, 0)",
-        rusqlite::params![user_id, &new_refresh, &refresh_expires, &now],
+        crate::params![user_id, &new_refresh, &refresh_expires, &now],
     );
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
@@ -301,22 +406,526 @@ pub async fn logout(pool: web::Data<DbPool>, body: Option<web::Json<LogoutReques
     })))
 }
 
-// Helper functions
+#[derive(serde::Deserialize)]
+pub struct PresenceRequest {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub accuracy_meters: Option<f64>,
+}
+
+/// POST /api/auth/presence — heartbeat for company admin live tracking
+pub async fn presence(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: Option<web::Json<PresenceRequest>>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    let org_id = crate::tenant::org_id_from_claims(&claims);
+
+    let is_super_admin: bool = conn
+        .query_row(
+            "SELECT is_super_admin FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![claims.sub, org_id],
+            |row| row.get_idx::<i64>(0).map(|v| v != 0),
+        )
+        .unwrap_or(false);
+
+    if !is_super_admin {
+        return HttpResponse::Forbidden().json(ApiError::new("Only company admins are tracked"));
+    }
+
+    let ip = crate::presence::client_ip(&req);
+    let latitude = body.as_ref().and_then(|b| b.latitude);
+    let longitude = body.as_ref().and_then(|b| b.longitude);
+    let city = body.as_ref().and_then(|b| b.city.as_deref());
+    let region = body.as_ref().and_then(|b| b.region.as_deref());
+    let accuracy_meters = body.as_ref().and_then(|b| b.accuracy_meters);
+
+    if let Err(e) = crate::presence::upsert_user_presence(
+        &conn,
+        claims.sub,
+        org_id,
+        &ip,
+        latitude,
+        longitude,
+        city,
+        region,
+        accuracy_meters,
+    ) {
+        return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}")));
+    }
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "ok": true,
+        "ip_address": ip,
+    })))
+}
+
+fn admin_email_available(conn: &crate::db::Connection, email: &str) -> bool {
+    let normalized = email.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    conn.query_row(
+        "SELECT 1 FROM users WHERE LOWER(TRIM(email)) = ?1 AND deleted_at IS NULL LIMIT 1",
+        crate::params![normalized],
+        |_| Ok(()),
+    )
+    .is_err()
+}
+
+fn validate_signup_payload(
+    conn: &crate::db::Connection,
+    payload: &SignupOtpPayload,
+) -> Result<(String, String), HttpResponse> {
+    let org_name = payload.organization_name.trim();
+    if org_name.is_empty() {
+        return Err(HttpResponse::BadRequest().json(ApiError::new("Organization name is required")));
+    }
+
+    let slug = normalize_org_slug(&payload.org_slug);
+    if slug.len() < 2 {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("Organization slug must be at least 2 characters")));
+    }
+    if slug == "default" {
+        return Err(HttpResponse::BadRequest().json(ApiError::new("Organization slug is reserved")));
+    }
+    if !slug_available(conn, &slug) {
+        return Err(HttpResponse::Conflict().json(ApiError::new("Organization slug is already taken")));
+    }
+
+    let admin_email = payload.admin_email.trim();
+    if admin_email.is_empty() || payload.admin_password.len() < 8 {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("Valid admin email and password (min 8 chars) required")));
+    }
+    if !admin_email_available(conn, admin_email) {
+        return Err(HttpResponse::Conflict().json(ApiError::new(
+            "An account with this work email already exists. Sign in or use a different email.",
+        )));
+    }
+
+    if payload.company_email.trim().is_empty()
+        || payload.company_phone.trim().is_empty()
+        || payload.contact_person.trim().is_empty()
+        || payload.country.trim().is_empty()
+        || payload.timezone.trim().is_empty()
+        || payload.admin_mobile.trim().is_empty()
+        || payload.admin_name.trim().is_empty()
+    {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("All company and admin fields are required")));
+    }
+
+    Ok((org_name.to_string(), slug))
+}
+
+fn validate_signup_fields(
+    conn: &crate::db::Connection,
+    body: &SignupRequest,
+) -> Result<(String, String), HttpResponse> {
+    let org_name = body.organization_name.trim();
+    if org_name.is_empty() {
+        return Err(HttpResponse::BadRequest().json(ApiError::new("Organization name is required")));
+    }
+
+    let slug = normalize_org_slug(&body.org_slug);
+    if slug.len() < 2 {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("Organization slug must be at least 2 characters")));
+    }
+    if slug == "default" {
+        return Err(HttpResponse::BadRequest().json(ApiError::new("Organization slug is reserved")));
+    }
+    if !slug_available(conn, &slug) {
+        return Err(HttpResponse::Conflict().json(ApiError::new("Organization slug is already taken")));
+    }
+
+    let admin_email = body.admin_email.trim();
+    if admin_email.is_empty() || body.admin_password.len() < 8 {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("Valid admin email and password (min 8 chars) required")));
+    }
+
+    if body.admin_password != body.confirm_password {
+        return Err(HttpResponse::BadRequest().json(ApiError::new("Passwords do not match")));
+    }
+
+    if !admin_email_available(conn, admin_email) {
+        return Err(HttpResponse::Conflict().json(ApiError::new(
+            "An account with this work email already exists. Sign in or use a different email.",
+        )));
+    }
+
+    let company_email = body.company_email.trim();
+    let company_phone = body.company_phone.trim();
+    let contact_person = body.contact_person.trim();
+    let country = body.country.trim();
+    let timezone = body.timezone.trim();
+    let admin_mobile = body.admin_mobile.trim();
+
+    if company_email.is_empty()
+        || company_phone.is_empty()
+        || contact_person.is_empty()
+        || country.is_empty()
+        || timezone.is_empty()
+        || admin_mobile.is_empty()
+        || body.admin_name.trim().is_empty()
+    {
+        return Err(HttpResponse::BadRequest()
+            .json(ApiError::new("All company and admin fields are required")));
+    }
+
+    Ok((org_name.to_string(), slug))
+}
+
+fn finalize_signup_response(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    org_id: i64,
+    admin_email: &str,
+    slug: &str,
+    jwt_secret: &Arc<String>,
+    jwt_expiration_hours: u64,
+) -> HttpResponse {
+    let token = match generate_token(
+        user_id,
+        admin_email,
+        org_id,
+        slug,
+        true,
+        jwt_secret,
+        jwt_expiration_hours,
+    ) {
+        Ok(t) => t,
+        Err(_) => {
+            return HttpResponse::InternalServerError()
+                .json(ApiError::new("Failed to generate token"))
+        }
+    };
+
+    let user = match conn.query_row("SELECT * FROM users WHERE id = ?1", [user_id], User::from_row) {
+        Ok(u) => u,
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to load user"))
+        }
+    };
+
+    let mut summary = user.to_summary();
+    attach_org_to_summary(conn, &mut summary);
+    let settings = load_tenant_settings(conn, org_id);
+    let (permissions, plan) =
+        crate::plan_limits::resolve_effective_permissions(conn, org_id, vec!["*".to_string()]);
+
+    let refresh_token = uuid::Uuid::new_v4().to_string();
+    let refresh_expires = (chrono::Utc::now() + chrono::Duration::days(7))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    let _ = conn.execute(
+        "INSERT INTO jwt_refresh_tokens (user_id, token, expires_at, created_at, revoked)
+         VALUES (?1, ?2, ?3, datetime('now'), 0)",
+        crate::params![user_id, &refresh_token, &refresh_expires],
+    );
+
+    HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
+        "token": token,
+        "refresh_token": refresh_token,
+        "user": summary,
+        "permissions": permissions,
+        "plan": plan,
+        "settings": settings,
+        "message": "Organization created successfully",
+    })))
+}
+
+fn create_organization_from_payload(
+    conn: &crate::db::Connection,
+    payload: &SignupOtpPayload,
+    org_name: &str,
+    slug: &str,
+) -> Result<(i64, i64), HttpResponse> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let admin_email = payload.admin_email.trim();
+
+    if conn
+        .execute(
+            "INSERT INTO organizations (name, slug, status, plan, company_email, company_phone, contact_person, country, timezone, created_at, updated_at)
+             VALUES (?1, ?2, 'active', 'trial', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            crate::params![
+                org_name,
+                slug,
+                payload.company_email.trim(),
+                payload.company_phone.trim(),
+                payload.contact_person.trim(),
+                payload.country.trim(),
+                payload.timezone.trim(),
+                &now
+            ],
+        )
+        .is_err()
+    {
+        return Err(HttpResponse::InternalServerError()
+            .json(ApiError::new("Failed to create organization")));
+    }
+
+    let org_id = conn.last_insert_rowid();
+    let _ = crate::subscription_period::assign_org_subscription(conn, org_id, "trial");
+
+    let hashed = match bcrypt::hash(&payload.admin_password, 12) {
+        Ok(h) => h,
+        Err(_) => {
+            return Err(HttpResponse::InternalServerError()
+                .json(ApiError::new("Failed to hash password")))
+        }
+    };
+
+    if conn
+        .execute(
+            "INSERT INTO users (name, email, password, organization_id, is_super_admin, phone, timezone, country, email_verified_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?8, ?8)",
+            crate::params![
+                payload.admin_name.trim(),
+                admin_email,
+                hashed,
+                org_id,
+                payload.admin_mobile.trim(),
+                payload.timezone.trim(),
+                payload.country.trim(),
+                &now
+            ],
+        )
+        .is_err()
+    {
+        let _ = conn.execute("DELETE FROM organizations WHERE id = ?1", [org_id]);
+        return Err(HttpResponse::Conflict().json(ApiError::new("Admin email could not be registered")));
+    }
+
+    let user_id = conn.last_insert_rowid();
+    seed_new_organization_defaults(conn, org_id);
+    seed_signup_app_settings(
+        conn,
+        org_id,
+        org_name,
+        &payload.contact_person,
+        &payload.company_email,
+        &payload.company_phone,
+        &payload.country,
+        &payload.timezone,
+    );
+
+    Ok((org_id, user_id))
+}
+
+/// POST /api/public/signup/check-availability — early slug / email checks before OTP step
+pub async fn check_signup_availability(
+    pool: web::Data<DbPool>,
+    body: web::Json<CheckSignupAvailabilityRequest>,
+) -> HttpResponse {
+    if !crate::config::AppConfig::public_signup_enabled() {
+        return HttpResponse::Forbidden().json(ApiError::new(
+            "Public signup is disabled. Contact your administrator for access.",
+        ));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    if let Some(raw_slug) = body.org_slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let slug = normalize_org_slug(raw_slug);
+        if slug.len() < 2 {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Organization slug must be at least 2 characters",
+            ));
+        }
+        if slug == "default" {
+            return HttpResponse::BadRequest().json(ApiError::new("Organization slug is reserved"));
+        }
+        if !slug_available(&conn, &slug) {
+            return HttpResponse::Conflict()
+                .json(ApiError::new("Organization slug is already taken"));
+        }
+    }
+
+    if let Some(email) = body.admin_email.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !admin_email_available(&conn, email) {
+            return HttpResponse::Conflict().json(ApiError::new(
+                "An account with this work email already exists. Sign in or use a different email.",
+            ));
+        }
+    }
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({ "available": true })))
+}
+
+/// POST /api/public/signup/send-otp — validate signup form and send email/WhatsApp OTP
+pub async fn send_signup_otp(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<SendSignupOtpRequest>,
+) -> HttpResponse {
+    if !crate::config::AppConfig::public_signup_enabled() {
+        return HttpResponse::Forbidden().json(ApiError::new(
+            "Public signup is disabled. Contact your administrator for access.",
+        ));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    if let Err(resp) = validate_signup_fields(&conn, &body.signup) {
+        return resp;
+    }
+
+    let channel = body.channel.trim().to_lowercase();
+    if channel != "email" && channel != "whatsapp" {
+        return HttpResponse::BadRequest().json(ApiError::new("Channel must be email or whatsapp"));
+    }
+
+    let payload = SignupOtpPayload::from_request(&body.signup);
+    let destination = match signup_otp::destination_for_channel(&channel, &payload) {
+        Some(d) if !d.trim().is_empty() => d,
+        _ => {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Missing destination for selected channel"))
+        }
+    };
+
+    if let Err(msg) = crate::rate_limit::limit_signup_otp_send(&req, &destination) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
+    let otp = signup_otp::generate_otp();
+    let verification_id = match signup_otp::store_challenge(&conn, &channel, &destination, &otp, &payload)
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(ApiError::new(&format!("Failed to store verification: {e}")))
+        }
+    };
+
+    if let Err(e) = signup_otp::dispatch_otp(&channel, &destination, &otp).await {
+        let _ = conn.execute(
+            "DELETE FROM signup_otp_challenges WHERE id = ?1",
+            [&verification_id],
+        );
+        return HttpResponse::BadGateway().json(ApiError::new(&e));
+    }
+
+    let masked = if channel == "email" {
+        signup_otp::mask_email(&destination)
+    } else {
+        signup_otp::mask_phone(&destination)
+    };
+
+    let mut data = serde_json::json!({
+        "verification_id": verification_id,
+        "channel": channel,
+        "destination_masked": masked,
+        "expires_in": 600,
+        "message": "Verification code sent",
+    });
+
+    if signup_otp::signup_otp_debug_enabled() {
+        data["debug_otp"] = serde_json::json!(otp);
+    }
+
+    HttpResponse::Ok().json(ApiResponse::success(data))
+}
+
+/// POST /api/public/signup — create organization + first tenant admin
+pub async fn signup(
+    pool: web::Data<DbPool>,
+    jwt_secret: web::Data<Arc<String>>,
+    app_config: web::Data<Arc<AppConfig>>,
+    req: HttpRequest,
+    body: web::Json<SignupRequest>,
+) -> HttpResponse {
+    if !crate::config::AppConfig::public_signup_enabled() {
+        return HttpResponse::Forbidden().json(ApiError::new(
+            "Public signup is disabled. Contact your administrator for access.",
+        ));
+    }
+    if let Err(msg) = crate::rate_limit::limit_public_signup(&req) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    let payload = if signup_otp::signup_otp_required() {
+        let verification_id = body
+            .verification_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty());
+        let otp = body.otp.as_deref().filter(|s| !s.trim().is_empty());
+        let (Some(verification_id), Some(otp)) = (verification_id, otp) else {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Email or WhatsApp verification is required before signup. Request a code first.",
+            ));
+        };
+        match signup_otp::verify_and_consume(&conn, verification_id, otp.trim()) {
+            Ok(p) => p,
+            Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
+        }
+    } else {
+        if let Err(resp) = validate_signup_fields(&conn, &body) {
+            return resp;
+        }
+        SignupOtpPayload::from_request(&body)
+    };
+
+    let (org_name, slug) = match validate_signup_payload(&conn, &payload) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    let admin_email = payload.admin_email.trim();
+    let (org_id, user_id) = match create_organization_from_payload(&conn, &payload, &org_name, &slug) {
+        Ok(ids) => ids,
+        Err(resp) => return resp,
+    };
+
+    finalize_signup_response(
+        &conn,
+        user_id,
+        org_id,
+        admin_email,
+        &slug,
+        &jwt_secret,
+        app_config.jwt_expiration_hours,
+    )
+}
 
 fn load_user_roles(
-    conn: &r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
+    conn: &crate::db::Connection,
     user_id: i64,
 ) -> Vec<crate::models::role::Role> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.* FROM roles r
-             JOIN role_user ru ON r.id = ru.role_id
-             WHERE ru.user_id = ?1",
-        )
-        .unwrap();
+    let Ok(stmt) = conn.prepare(
+        "SELECT r.* FROM roles r
+         JOIN role_user ru ON r.id = ru.role_id
+         WHERE ru.user_id = ?1",
+    ) else {
+        return Vec::new();
+    };
 
     stmt.query_map([user_id], crate::models::role::Role::from_row)
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect()
 }

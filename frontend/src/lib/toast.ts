@@ -49,8 +49,11 @@ export function showToast({ type = 'info', message, duration = 4000 }: ToastOpti
  * Handle API response and show appropriate toast
  */
 export function handleApiResponse(response: any) {
-    const { type, message } = response.data;
-    
+    const body = response?.data ?? {};
+    const type = body.type ?? 'success';
+    // Success payloads nest the message under `data`; errors put it at the top level.
+    const message = body.message ?? body.data?.message;
+
     if (message) {
         showToast({ type, message });
     }

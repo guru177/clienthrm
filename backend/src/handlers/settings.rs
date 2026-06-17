@@ -1,12 +1,16 @@
+use actix_multipart::Multipart;
 use actix_web::{web, HttpRequest, HttpResponse};
+use futures_util::StreamExt;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 /// GET /api/admin/settings/app — return all settings as an array
 /// Tries app_settings first, then falls back to the legacy Laravel 'settings' table
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     // Read CLOUDFRONT_URL from env for URL rewriting
@@ -94,23 +98,25 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     };
 
     // Try app_settings first
-    if let Ok(mut stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings ORDER BY id") {
-        let items: Vec<serde_json::Value> = stmt.query_map([], |row| {
+    if let Ok(mut stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings WHERE organization_id = ?1 ORDER BY id") {
+        let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
             Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "key": row.get::<_, String>(1)?,
-                "value": row.get::<_, Option<String>>(2)?,
-                "type": row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "text".to_string()),
-                "description": row.get::<_, Option<String>>(4)?
+                "id": row.get_idx::<i64>(0)?,
+                "key": row.get_idx::<String>(1)?,
+                "value": row.get_idx::<Option<String>>(2)?,
+                "type": row.get_idx::<Option<String>>(3)?.unwrap_or_else(|| "text".to_string()),
+                "description": row.get_idx::<Option<String>>(4)?
             }))
-        }).unwrap().filter_map(|r| r.ok()).collect();
+        });
 
         if !items.is_empty() {
             // Rewrite CloudFront URLs in values
             let items: Vec<serde_json::Value> = items.into_iter().map(|mut item| {
                 if let Some(v) = item.get("value").and_then(|v| v.as_str()) {
                     if let Some(rewritten) = rewrite_url(Some(v.to_string())) {
-                        item.as_object_mut().unwrap().insert("value".to_string(), serde_json::json!(rewritten));
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert("value".to_string(), serde_json::json!(rewritten));
+                        }
                     }
                 }
                 item
@@ -120,52 +126,14 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         }
     }
 
-    // Fallback: try legacy Laravel 'settings' table (key/value pairs)
-    if let Ok(mut stmt) = conn.prepare("SELECT id, key, value FROM settings ORDER BY id") {
-        let items: Vec<serde_json::Value> = stmt.query_map([], |row| {
-            let key: String = row.get(1)?;
-            let stype = if key.contains("color") {
-                "color".to_string()
-            } else if key == "enable_registration" || key == "enable_2fa" || key == "pf_registered" || key == "esi_registered" {
-                "boolean".to_string()
-            } else if key == "company_address" || key == "business_location" {
-                "textarea".to_string()
-            } else if key.contains("password") || key == "msg91_auth_key" {
-                "password".to_string()
-            } else {
-                "text".to_string()
-            };
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "key": key,
-                "value": row.get::<_, Option<String>>(2)?,
-                "type": stype,
-                "description": serde_json::Value::Null
-            }))
-        }).unwrap().filter_map(|r| r.ok()).collect();
-
-        if !items.is_empty() {
-            // Rewrite CloudFront URLs in legacy settings too
-            let items: Vec<serde_json::Value> = items.into_iter().map(|mut item| {
-                if let Some(v) = item.get("value").and_then(|v| v.as_str()) {
-                    if let Some(rewritten) = rewrite_url(Some(v.to_string())) {
-                        item.as_object_mut().unwrap().insert("value".to_string(), serde_json::json!(rewritten));
-                    }
-                }
-                item
-            }).collect();
-            let items = merge_env(items);
-            return HttpResponse::Ok().json(ApiResponse::success(mask_secrets(items)));
-        }
-    }
-
-    // No settings found in either table, just return env vars
+    // No org-scoped app_settings — return env defaults only (never cross-tenant legacy table).
     let items = merge_env(Vec::new());
     HttpResponse::Ok().json(ApiResponse::success(mask_secrets(items)))
 }
 
 pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     if let Some(obj) = body.as_object() {
@@ -174,10 +142,18 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<s
             if val_str == "********" || val_str.is_empty() && (key.contains("pass") || key.contains("key")) {
                 continue;
             }
-            // Upsert into app_settings
+            if key == "annual_leave_quota" {
+                let quota: i64 = val_str.parse().unwrap_or(-1);
+                if quota < 0 || quota > 365 {
+                    return HttpResponse::BadRequest().json(ApiError::new(
+                        "Annual leave quota must be between 0 and 365 days",
+                    ));
+                }
+            }
             let _ = conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                rusqlite::params![key, val_str],
+                "INSERT INTO app_settings (organization_id, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(organization_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                crate::params![org_id, key, val_str],
             );
         }
     }
@@ -226,7 +202,7 @@ pub async fn update_password(
     let stored_hash: String = match conn.query_row(
         "SELECT password FROM users WHERE id=?1 AND deleted_at IS NULL",
         [claims.sub],
-        |row| row.get(0),
+        |row| row.get_idx::<String>(0),
     ) {
         Ok(h) => h,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("User not found")),
@@ -244,7 +220,7 @@ pub async fn update_password(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let _ = conn.execute(
         "UPDATE users SET password=?1, updated_at=?2 WHERE id=?3",
-        rusqlite::params![new_hash, &now, claims.sub],
+        crate::params![new_hash, &now, claims.sub],
     );
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Password updated successfully"})))
@@ -260,6 +236,7 @@ pub async fn update_profile(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = crate::tenant::org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -281,12 +258,116 @@ pub async fn update_profile(
                 continue;
             }
             let val_str = val.as_str().unwrap_or(&val.to_string()).to_string();
-            let sql = format!("UPDATE users SET {}=?1, updated_at=?2 WHERE id=?3", key);
-            let _ = conn.execute(&sql, rusqlite::params![val_str, &now, claims.sub]);
+            if key == "email" {
+                let email = val_str.trim().to_lowercase();
+                if email.is_empty() {
+                    continue;
+                }
+                let taken: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM users WHERE organization_id = ?1 AND LOWER(email) = ?2
+                         AND id != ?3 AND deleted_at IS NULL",
+                        crate::params![org_id, &email, claims.sub],
+                        |_| Ok(()),
+                    )
+                    .is_ok();
+                if taken {
+                    return HttpResponse::Conflict()
+                        .json(ApiError::new("Email is already used in this organization"));
+                }
+                let _ = conn.execute(
+                    "UPDATE users SET email=?1, updated_at=?2 WHERE id=?3 AND organization_id=?4",
+                    crate::params![email, &now, claims.sub, org_id],
+                );
+                continue;
+            }
+            let sql = format!(
+                "UPDATE users SET {}=?1, updated_at=?2 WHERE id=?3 AND organization_id=?4",
+                key
+            );
+            let _ = conn.execute(&sql, crate::params![val_str, &now, claims.sub, org_id]);
         }
     }
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Profile updated"})))
+}
+
+/// POST /api/admin/settings/profile/photo — self-service profile photo upload (multipart)
+pub async fn update_profile_photo(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    mut payload: Multipart,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let mut photo_data: Option<(Option<String>, Option<String>, Vec<u8>)> = None;
+    while let Some(field) = payload.next().await {
+        let mut field = match field {
+            Ok(f) => f,
+            Err(e) => {
+                return HttpResponse::BadRequest()
+                    .json(ApiError::new(&format!("Upload error: {}", e)))
+            }
+        };
+        let name = field.name().unwrap_or("").to_string();
+        let content_type = field.content_type().map(|ct| ct.to_string());
+        let filename = field
+            .content_disposition()
+            .and_then(|cd| cd.get_filename().map(|s| s.to_string()));
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = field.next().await {
+            match chunk {
+                Ok(data) => bytes.extend_from_slice(&data),
+                Err(e) => {
+                    return HttpResponse::BadRequest()
+                        .json(ApiError::new(&format!("Upload error: {}", e)))
+                }
+            }
+        }
+        if name == "photo" && !bytes.is_empty() {
+            photo_data = Some((content_type, filename, bytes));
+        }
+    }
+
+    let Some((mime, fname, data)) = photo_data else {
+        return HttpResponse::BadRequest().json(ApiError::new("No photo provided"));
+    };
+
+    let relative = match crate::storage::save_user_photo(&data, mime.as_deref(), fname.as_deref()) {
+        Ok(rel) => rel,
+        Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
+    };
+
+    // Remove the previous photo file if any.
+    if let Ok(old) = conn.query_row(
+        "SELECT photo FROM users WHERE id = ?1 AND organization_id = ?2",
+        crate::params![claims.sub, org_id],
+        |row| row.get_idx::<Option<String>>(0),
+    ) {
+        if let Some(old_path) = old.filter(|p| !p.is_empty()) {
+            crate::storage::delete_photo_path(&old_path);
+        }
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = conn.execute(
+        "UPDATE users SET photo = ?1, updated_at = ?2 WHERE id = ?3 AND organization_id = ?4",
+        crate::params![&relative, &now, claims.sub, org_id],
+    );
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "message": "Profile photo updated",
+        "photo": relative,
+    })))
 }
 
 /// POST /api/onboarding/complete — first-time employee profile setup
@@ -321,7 +402,7 @@ pub async fn complete_onboarding(
             }
             let val_str = val.as_str().unwrap_or(&val.to_string()).to_string();
             let sql = format!("UPDATE users SET {}=?1, updated_at=?2 WHERE id=?3", key);
-            let _ = conn.execute(&sql, rusqlite::params![val_str, &now, claims.sub]);
+            let _ = conn.execute(&sql, crate::params![val_str, &now, claims.sub]);
         }
     }
 

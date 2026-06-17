@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
+import { storageUrl } from '@/lib/storage-url';
 import {
     Search,
     RefreshCw,
@@ -338,11 +339,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                     </TableRow>
                                 ) : (
                                     users.map((user) => {
-                                        const userPhotoUrl = user.photo
-                                            ? user.photo.startsWith('http')
-                                                ? user.photo
-                                                : `/storage/${user.photo}`
-                                            : null;
+                                        const userPhotoUrl = user.photo ? storageUrl(user.photo) : null;
                                         const initials = user.name
                                             .split(' ')
                                             .map(n => n[0])

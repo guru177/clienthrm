@@ -1,13 +1,28 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import { defineConfig } from 'vite';
+import type { Connect } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+
+/** Block direct /storage access — files must go through authenticated API. */
+function blockPublicStorage(): Plugin {
+    return {
+        name: 'block-public-storage',
+        configureServer(server) {
+            server.middlewares.use('/storage', (_req: Connect.IncomingMessage, res) => {
+                res.statusCode = 403;
+                res.end('Forbidden — use authenticated file API');
+            });
+        },
+    };
+}
 
 export default defineConfig({
     base: './',
     plugins: [
         react(),
         tailwindcss(),
+        blockPublicStorage(),
     ],
     resolve: {
         alias: {
@@ -23,6 +38,16 @@ export default defineConfig({
                 target: 'http://127.0.0.1:3001',
                 changeOrigin: true,
                 ws: true,
+                configure: (proxy) => {
+                    proxy.on('proxyReq', (proxyReq, req) => {
+                        const remote =
+                            req.socket?.remoteAddress?.replace('::ffff:', '') ||
+                            req.headers['x-forwarded-for'];
+                        if (typeof remote === 'string' && remote.length > 0) {
+                            proxyReq.setHeader('X-Forwarded-For', remote);
+                        }
+                    });
+                },
             },
 
         },

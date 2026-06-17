@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
+import { storageUrl } from '@/lib/storage-url';
 import { ArrowLeft, Banknote, Briefcase, Building2, Camera, Save, Trash2, Upload, Users } from 'lucide-react';
 import { useRef, useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
@@ -153,11 +154,7 @@ export default function EditUserPage() {
                 });
 
                 if (userData.photo) {
-                    setPhotoPreview(
-                        userData.photo.startsWith('http')
-                            ? userData.photo
-                            : `/storage/${userData.photo}`
-                    );
+                    setPhotoPreview(storageUrl(userData.photo));
                 }
             } catch (error) {
                 console.error('Failed to fetch data:', error);
@@ -331,9 +328,7 @@ export default function EditUserPage() {
 
             if (response.data?.data?.photo) {
                 const photo = response.data.data.photo as string;
-                setPhotoPreview(
-                    photo.startsWith('http') ? photo : `/storage/${photo}`,
-                );
+                setPhotoPreview(storageUrl(photo));
                 setPhotoFile(null);
                 setRemovePhoto(false);
             } else if (removePhoto) {

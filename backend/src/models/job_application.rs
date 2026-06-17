@@ -43,7 +43,7 @@ pub struct UpdateStatusRequest {
 }
 
 impl JobApplication {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             career_id: row.get("career_id")?,
@@ -72,6 +72,7 @@ impl JobApplication {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct JobApplicationQuery {
     pub search: Option<String>,
     pub status: Option<String>,

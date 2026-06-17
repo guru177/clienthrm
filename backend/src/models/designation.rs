@@ -16,12 +16,10 @@ pub struct CreateDesignationRequest {
     pub name: String,
     pub description: Option<String>,
     pub level: Option<i64>,
-    #[serde(default)]
-    pub is_active: Option<bool>,
 }
 
 impl Designation {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             name: row.get("name")?,

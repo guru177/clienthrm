@@ -30,6 +30,7 @@ pub struct User {
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub timezone: Option<String>,
+    pub organization_id: i64,
     pub is_super_admin: bool,
     pub onboarded: bool,
     pub account_number: Option<String>,
@@ -57,7 +58,10 @@ pub struct UserSummary {
     pub employee_id: Option<String>,
     pub employment_type: Option<String>,
     pub status: Option<String>,
+    pub organization_id: i64,
     pub is_super_admin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization: Option<super::organization::OrganizationSummary>,
     pub email_verified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -73,22 +77,31 @@ pub struct UserSummary {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub org_slug: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub token: String,
-    pub user: UserSummary,
-    pub permissions: Vec<String>,
+fn default_organization_id() -> i64 {
+    1
+}
+
+fn default_tenant_aud() -> String {
+    "tenant".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
-    pub sub: i64,         // user_id
+    pub sub: i64, // user_id
     pub email: String,
     pub exp: usize,
     pub iat: usize,
+    #[serde(default = "default_organization_id")]
+    pub organization_id: i64,
+    #[serde(default)]
+    pub org_slug: Option<String>,
     pub is_super_admin: bool,
+    #[serde(default = "default_tenant_aud")]
+    pub aud: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +109,8 @@ pub struct CreateUserRequest {
     pub name: String,
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub password_confirmation: Option<String>,
     pub phone: Option<String>,
     pub department_id: Option<i64>,
     pub designation_id: Option<i64>,
@@ -103,7 +118,11 @@ pub struct CreateUserRequest {
     pub employee_id: Option<String>,
     pub date_of_joining: Option<String>,
     pub work_location: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
     pub role_ids: Option<Vec<i64>>,
+    pub manager_id: Option<i64>,
+    pub reporting_manager_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +162,7 @@ pub struct UpdateUserRequest {
 }
 
 impl User {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             name: row.get("name")?,
@@ -172,8 +191,11 @@ impl User {
             employment_type: row.get("employment_type")?,
             status: row.get("status")?,
             timezone: row.get("timezone")?,
-            is_super_admin: row.get::<_, Option<bool>>("is_super_admin")?.unwrap_or(false),
-            onboarded: row.get::<_, Option<bool>>("onboarded")?.unwrap_or(false),
+            organization_id: row
+                .get::<Option<i64>>("organization_id")?
+                .unwrap_or(1),
+            is_super_admin: row.get::<Option<bool>>("is_super_admin")?.unwrap_or(false),
+            onboarded: row.get::<Option<bool>>("onboarded")?.unwrap_or(false),
             account_number: row.get("account_number")?,
             ifsc_code: row.get("ifsc_code")?,
             bank_name: row.get("bank_name")?,
@@ -200,12 +222,14 @@ impl User {
             employee_id: self.employee_id.clone(),
             employment_type: self.employment_type.clone(),
             status: self.status.clone(),
+            organization_id: self.organization_id,
             is_super_admin: self.is_super_admin,
             email_verified_at: self.email_verified_at.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             department: None,
             designation: None,
+            organization: None,
             roles: None,
         }
     }

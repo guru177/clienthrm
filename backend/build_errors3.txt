@@ -1,0 +1,869 @@
+﻿cargo :     Blocking waiting for file lock on build directory
+At C:\Users\ASUS\AppData\Local\Temp\ps-script-9b3a341e-9a0a-4910-af01-64713f178d83.ps1:90 char:40
++ cd c:\Users\ASUS\Pictures\HRM\backend; cargo build 2>&1 | Out-File bu ...
++                                        ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Blocking wa...build directory:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling hrm-backend v0.1.0 (C:\Users\ASUS\Pictures\HRM\backend)
+warning: unused import: `OptionalExt`
+ --> src\biometric_device_logic.rs:1:29
+  |
+1 | use crate::db::{Connection, OptionalExt};
+  |                             ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Statement`
+  --> src\db\mod.rs:11:47
+   |
+11 | pub use connection::{Connection, OptionalExt, Statement, Transaction};
+   |                                               ^^^^^^^^^
+
+warning: unused imports: `ToParams`, `from_one`, and `from_two`
+  --> src\db\mod.rs:14:18
+   |
+14 | pub use params::{from_one, from_two, into_param_value, Params, ParamValue, ToParams};
+   |                  ^^^^^^^^  ^^^^^^^^                                        ^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:261:9
+    |
+261 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:305:9
+    |
+305 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:374:9
+    |
+374 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\subscription_plans.rs:119:9
+    |
+119 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:194:13
+    |
+194 |         let mut stmt = conn.prepare(&sql).unwrap();
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:202:13
+    |
+202 |         let mut stmt = conn
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:903:9
+    |
+903 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\departments.rs:13:9
+   |
+13 |     let mut stmt = conn.prepare("SELECT * FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\departments.rs:120:9
+    |
+120 |     let mut stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\designations.rs:12:9
+   |
+12 |     let mut stmt = conn.prepare("SELECT * FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\designations.rs:88:9
+   |
+88 |     let mut stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\attendance.rs:271:9
+    |
+271 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\attendance.rs:338:9
+    |
+338 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\leave_credits.rs:141:9
+    |
+141 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\holidays.rs:12:9
+   |
+12 |     let mut stmt = conn.prepare("SELECT * FROM holidays WHERE organization_id = ?1 ORDER BY date").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\projects.rs:10:9
+   |
+10 |     let mut stmt = conn.prepare("SELECT * FROM projects WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\tasks.rs:30:9
+   |
+30 |     let mut stmt = conn.prepare("SELECT * FROM tasks WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\workflows.rs:10:9
+   |
+10 |     let mut stmt = conn.prepare("SELECT * FROM workflows WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:117:9
+    |
+117 |     let mut hstmt = conn
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:165:9
+    |
+165 |     let mut dept_stmt = match conn.prepare(
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:220:19
+    |
+220 |         if let Ok(mut stmt) = conn.prepare(
+    |                   ----^^^^
+    |                   |
+    |                   help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:258:19
+    |
+258 |         if let Ok(mut stmt) = conn.prepare(
+    |                   ----^^^^
+    |                   |
+    |                   help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\reports.rs:47:9
+   |
+47 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\reports.rs:105:9
+    |
+105 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\reports.rs:237:9
+    |
+237 |     let mut users_stmt = match conn.prepare(
+    |         ----^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\settings.rs:99:15
+   |
+99 |     if let Ok(mut stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings WHERE 
+organization_id = ?1 ORDER ...
+   |               ----^^^^
+   |               |
+   |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\careers.rs:279:9
+    |
+279 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\job_applications.rs:60:9
+   |
+60 |     let mut stmt = conn.prepare(&sql).unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\payroll.rs:268:9
+    |
+268 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\payroll.rs:384:9
+    |
+384 |     let mut stmt = conn.prepare(&sql).unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\salaries.rs:87:9
+   |
+87 |     let mut stmt = match conn.prepare(sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:445:9
+    |
+445 |     let mut stmt = conn.prepare(&sql).unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:519:9
+    |
+519 |     let mut dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:524:9
+    |
+524 |     let mut desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:845:9
+    |
+845 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\handlers\salaries.rs:1094:9
+     |
+1094 |     let mut stmt = match conn.prepare(
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\centers.rs:82:9
+   |
+82 |     let mut stmt = match conn.prepare("SELECT * FROM centers WHERE organization_id = ?1 ORDER BY name") {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:619:9
+    |
+619 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:690:9
+    |
+690 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:723:9
+    |
+723 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\biometric.rs:856:42
+    |
+856 |       let last_heartbeat: Option<String> = conn.query_row(
+    |  _________________________--------------___^
+    | |                         |
+    | |                         expected due to this
+857 | |         "SELECT last_heartbeat FROM biometric_devices
+858 | |          WHERE organization_id = ?1
+859 | |          ORDER BY last_heartbeat DESC LIMIT 1",
+860 | |         [org_id],
+861 | |         |r| r.get_idx::<i64>(0),
+862 | |     ).ok();
+    | |__________^ expected `Option<String>`, found `Option<i64>`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+               found enum `std::option::Option<i64>`
+
+warning: variable does not need to be mutable
+  --> src\handlers\payslips.rs:79:9
+   |
+79 |     let mut stmt = match conn.prepare(&sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\payslips.rs:135:77
+    |
+135 |       let row: Option<(String, Option<String>, i32, i32, f64, f64, String)> = conn
+    |  ______________------------------------------------------------------------___^
+    | |              |
+    | |              expected due to this
+136 | |         .query_row(
+137 | |             "SELECT u.name, u.phone, p.month, p.year, p.net_salary, p.gross_salary, p.status
+138 | |              FROM payslips p JOIN users u ON u.id = p.user_id
+...   |
+151 | |             },
+152 | |         );
+    | |_________^ expected `Option<...>`, found `Result<..., ...>`
+    |
+    = note: expected enum `std::option::Option<(std::string::String, std::option::Option<std::string::String>, i32, 
+i32, f64, f64, std::string::String)>`
+               found enum `std::result::Result<(i64, i64, i64, i64, i64, i64, i64), db::error::DbError>`
+
+warning: variable does not need to be mutable
+   --> src\handlers\shifts.rs:105:9
+    |
+105 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\shifts.rs:487:12
+    |
+487 |         Ok(mut stmt) => stmt
+    |            ----^^^^
+    |            |
+    |            help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\shifts.rs:624:15
+    |
+624 |     if let Ok(mut stmt) = conn.prepare(
+    |               ----^^^^
+    |               |
+    |               help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:350:34
+    |
+350 |       let spaces: Vec<ChatSpace> = space_ids
+    |  _________________--------------___^
+    | |                 |
+    | |                 expected due to this
+351 | |         .into_iter()
+352 | |         .filter_map(|id| {
+353 | |             let mut space = load_space_row(&conn, id, org_id, user_id)?;
+...   |
+370 | |             Some(space)
+371 | |         });
+    | |__________^ expected `Vec<ChatSpace>`, found `FilterMap<IntoIter<i64>, {closure@...}>`
+    |
+    = note: expected struct `Vec<ChatSpace>`
+               found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:352:21: 
+352:25}>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:482:46
+    |
+482 |       let existing: Option<(String, String)> = conn
+    |  ___________________------------------------___^
+    | |                   |
+    | |                   expected due to this
+483 | |         .query_row(
+484 | |             "SELECT kind, COALESCE(name,'') FROM chat_spaces WHERE id = ?1 AND organization_id = ?2",
+485 | |             crate::params![space_id, org_id],
+...   |
+488 | |         .optional().ok().flatten();
+    | |__________________________________^ expected `Option<(String, String)>`, found `Option<(i64, i64)>`
+    |
+    = note: expected enum `std::option::Option<(std::string::String, std::string::String)>`
+               found enum `std::option::Option<(i64, i64)>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:565:32
+    |
+565 |       let slug: Option<String> = conn
+    |  _______________--------------___^
+    | |               |
+    | |               expected due to this
+566 | |         .query_row(
+567 | |             "SELECT slug FROM chat_spaces WHERE id = ?1 AND organization_id = ?2",
+568 | |             crate::params![space_id, org_id],
+...   |
+571 | |         .optional().ok().flatten();
+    | |__________________________________^ expected `Option<String>`, found `Option<i64>`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+               found enum `std::option::Option<i64>`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:750:9
+    |
+750 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1246:38
+     |
+1246 |       let messages: Vec<ChatMessage> = ids
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1247 | |         .into_iter()
+1248 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1248:21: 
+1248:25}>`
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1276:38
+     |
+1276 |       let messages: Vec<ChatMessage> = stmt
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1277 | |         .query_map([space_id], |r| r.get_idx::<i64>(0))
+1278 | |         .into_iter()
+1279 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1279:21: 
+1279:25}>`
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1303:38
+     |
+1303 |       let messages: Vec<ChatMessage> = stmt
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1304 | |         .query_map([user_id], |r| r.get_idx::<i64>(0))
+1305 | |         .into_iter()
+1306 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1306:21: 
+1306:25}>`
+
+warning: variable does not need to be mutable
+    --> src\handlers\chat.rs:1325:9
+     |
+1325 |     let mut stmt = match conn.prepare(
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\chat_department_channels.rs:42:9
+   |
+42 |     let mut stmt = conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\chat_department_channels.rs:125:9
+    |
+125 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:156:60
+    |
+156 |     pub fn query_map<T, P, F>(&self, sql: &str, params: P, mut f: F) -> Vec<T>
+    |                                                            ----^
+    |                                                            |
+    |                                                            help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:270:49
+    |
+270 |     pub fn query_map<T, P, F>(&self, params: P, mut f: F) -> Vec<T>
+    |                                                 ----^
+    |                                                 |
+    |                                                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:279:56
+    |
+279 |     pub fn query_map_result<T, P, F>(&self, params: P, mut f: F) -> Result<Vec<T>>
+    |                                                        ----^
+    |                                                        |
+    |                                                        help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\auth.rs:20:15
+   |
+20 |     if let Ok(mut stmt) = conn.prepare(
+   |               ----^^^^
+   |               |
+   |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\users.rs:42:9
+   |
+42 |     let mut stmt = conn
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\roles.rs:13:9
+   |
+13 |     let mut stmt = conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\permissions.rs:14:9
+   |
+14 |     let mut stmt = match conn.prepare("SELECT * FROM permissions ORDER BY \"group\", name") {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\attendance.rs:55:9
+   |
+55 |     let mut stmt = match conn.prepare(sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\leave_requests.rs:202:9
+    |
+202 |     let mut stmt = conn.prepare(&sql).unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\careers.rs:19:9
+   |
+19 |     let mut stmt = match conn.prepare(&sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:983:9
+    |
+983 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\payslips.rs:255:13
+    |
+255 |         let mut stmt = match conn.prepare(
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:169:9
+    |
+169 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:197:9
+    |
+197 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:225:9
+    |
+225 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:302:9
+    |
+302 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\middleware\rbac.rs:21:9
+   |
+21 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\shift_logic.rs:358:12
+    |
+358 |         Ok(mut stmt) => stmt
+    |            ----^^^^
+    |            |
+    |            help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\shift_logic.rs:384:9
+    |
+384 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\shift_logic.rs:549:9
+    |
+549 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_split.rs:346:15
+    |
+346 |     if let Ok(mut stmt) = conn.prepare(
+    |               ----^^^^
+    |               |
+    |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_split.rs:382:15
+    |
+382 |     if let Ok(mut stmt) = conn.prepare(
+    |               ----^^^^
+    |               |
+    |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\statutory_logic.rs:104:9
+    |
+104 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\statutory_logic.rs:206:9
+    |
+206 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\salary_logic.rs:76:9
+   |
+76 |     let mut stmt = conn
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_logic.rs:273:9
+    |
+273 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\leave_type_logic.rs:36:9
+   |
+36 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:137:9
+    |
+137 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:210:9
+    |
+210 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:251:9
+    |
+251 |     let mut stmt = match conn.prepare(sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:304:9
+    |
+304 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:372:9
+    |
+372 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:521:9
+    |
+521 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:625:9
+    |
+625 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:775:9
+    |
+775 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:800:9
+    |
+800 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\workflow_logic.rs:66:13
+   |
+66 |         let mut stmt = match conn.prepare(
+   |             ----^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\subscription_period.rs:221:9
+    |
+221 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+For more information about this error, try `rustc --explain E0308`.
+warning: `hrm-backend` (bin "hrm-backend") generated 89 warnings
+error: could not compile `hrm-backend` (bin "hrm-backend") due to 8 previous errors; 89 warnings emitted

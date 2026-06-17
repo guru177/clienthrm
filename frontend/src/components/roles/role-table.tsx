@@ -21,80 +21,76 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { usePermissions } from '@/hooks/use-permissions';
+import { fetchRolesList, type Permission, type Role } from '@/lib/roles-api';
+import { type PermissionModule } from '@/lib/permissions-api';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 import RoleForm from './role-form';
 
-interface Role {
-    id: number;
-    name: string;
-    slug: string;
-    description: string | null;
-    users_count: number;
-    permissions_count: number;
-    permissions?: Permission[];
-    created_at: string;
-}
-
-interface Permission {
-    id: number;
-    name: string;
-    slug: string;
-    group: string;
-}
-
 interface RoleTableProps {
-    initialRoles: Role[];
+    roles?: Role[];
+    rolesLoading?: boolean;
     allPermissions: Permission[];
+    permissionModules?: PermissionModule[];
+    refreshToken?: number;
     onRoleUpdated?: () => void;
 }
 
 export default function RoleTable({
-    initialRoles,
+    roles: rolesFromParent,
+    rolesLoading = false,
     allPermissions,
+    permissionModules = [],
+    refreshToken = 0,
     onRoleUpdated,
 }: RoleTableProps) {
     const navigate = useNavigate();
     const { can } = usePermissions();
-    const [roles, setRoles] = useState<Role[]>(initialRoles || []);
+    const [roles, setRoles] = useState<Role[]>(rolesFromParent || []);
     const [search, setSearch] = useState('');
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [editingRole, setEditingRole] = useState<Role | null>(null);
     const [loading, setLoading] = useState(false);
-    const [tableLoading, setTableLoading] = useState(true);
+    const [tableLoading, setTableLoading] = useState(!rolesFromParent);
 
     const [sortBy, setSortBy] = useState('created_at');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [currentPage, setCurrentPage] = useState(1);
     const [perPage, setPerPage] = useState(10);
 
-    // Fetch roles if not provided
-    const fetchRoles = async () => {
-        setTableLoading(true);
-        try {
-            const response = await axios.get('/admin/roles/list');
-            if (response.data.success) {
-                const rolesData = response.data.data || [];
-                setRoles(Array.isArray(rolesData) ? rolesData : []);
-            }
-        } catch (error) {
-            console.error('Failed to fetch roles:', error);
-            setRoles([]);
-        } finally {
-            setTableLoading(false);
-        }
-    };
+    const controlled = rolesFromParent !== undefined;
 
-    // Load data on mount or when initialRoles changes
     useEffect(() => {
-        if (Array.isArray(initialRoles) && initialRoles.length > 0) {
-            setRoles(initialRoles);
-            setTableLoading(false);
-        } else if (!initialRoles || initialRoles.length === 0) {
-            // Fetch if no initial roles provided
-            fetchRoles();
+        if (controlled) {
+            setRoles(rolesFromParent);
+            return;
         }
-    }, [initialRoles]);
+
+        let cancelled = false;
+        const loadRoles = async () => {
+            setTableLoading(true);
+            try {
+                const items = await fetchRolesList();
+                if (!cancelled) {
+                    setRoles(items);
+                }
+            } catch (error) {
+                console.error('Failed to fetch roles:', error);
+                if (!cancelled) {
+                    setRoles([]);
+                }
+            } finally {
+                if (!cancelled) {
+                    setTableLoading(false);
+                }
+            }
+        };
+
+        void loadRoles();
+        return () => {
+            cancelled = true;
+        };
+    }, [controlled, rolesFromParent, refreshToken]);
 
     const filteredRoles = Array.isArray(roles)
         ? roles.filter((role) =>
@@ -235,7 +231,7 @@ export default function RoleTable({
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {tableLoading ? (
+                        {tableLoading || rolesLoading ? (
                             <TableRow>
                                 <TableCell
                                     colSpan={6}
@@ -282,12 +278,12 @@ export default function RoleTable({
                                     </TableCell>
                                     <TableCell className="text-center">
                                         <Badge variant="secondary">
-                                            {role.users_count}
+                                            {role.users_count ?? 0}
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-center">
                                         <Badge variant="outline">
-                                            {role.permissions_count}
+                                            {role.permissions_count ?? 0}
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-right">
@@ -379,6 +375,7 @@ export default function RoleTable({
                 }}
                 role={editingRole}
                 allPermissions={allPermissions}
+                permissionModules={permissionModules}
                 onSuccess={handleFormSuccess as (role: any) => void}
             />
         </div>

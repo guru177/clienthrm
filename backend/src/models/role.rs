@@ -14,19 +14,21 @@ pub struct Role {
 #[derive(Debug, Deserialize)]
 pub struct CreateRoleRequest {
     pub name: String,
-    pub slug: String,
+    #[serde(default)]
+    pub slug: Option<String>,
     pub description: Option<String>,
+    #[serde(default, alias = "permissions")]
     pub permission_ids: Option<Vec<i64>>,
 }
 
 impl Role {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             name: row.get("name")?,
             slug: row.get("slug")?,
             description: row.get("description")?,
-            is_default: row.get::<_, Option<bool>>("is_default")?.unwrap_or(false),
+            is_default: row.get::<Option<bool>>("is_default")?.unwrap_or(false),
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })

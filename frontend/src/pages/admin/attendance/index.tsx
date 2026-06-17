@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import axios from '@/lib/axios';
+import { storageUrl } from '@/lib/storage-url';
 import { Clock, LogIn, LogOut, Calendar, Timer } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -101,11 +102,7 @@ export default function AttendancePage() {
     };
 
     const breadcrumbs = [{ label: 'Attendance', href: '/admin/attendance' }];
-    const userPhotoUrl = user?.photo
-        ? user.photo.startsWith('http')
-            ? user.photo
-            : `/storage/${user.photo}`
-        : null;
+    const userPhotoUrl = user?.photo ? storageUrl(user.photo) : null;
 
     const todayShift = todayData?.shift;
     const formatShiftTime = (value?: string) => {
@@ -173,8 +170,8 @@ export default function AttendancePage() {
                             Track your daily clock-in and clock-out times
                         </p>
                     </div>
-                    {hasPermission('manage-leave-requests') && (
-                        <Button onClick={() => navigate('/admin/leave-requests/manage')}>
+                    {hasPermission('view-leave-requests') && (
+                        <Button variant="outline" onClick={() => navigate('/admin/leave-requests')}>
                             Leave Requests
                         </Button>
                     )}

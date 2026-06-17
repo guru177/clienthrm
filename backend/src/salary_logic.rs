@@ -59,7 +59,7 @@ fn is_reimbursement_type(comp_type: &str, calc_type: Option<&str>, slug: &str, n
 
 /// Load salary from `salary_structure_items` + `salary_components` (primary path).
 pub fn load_from_structure_items(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     as_of: &str,
 ) -> Option<PayrollSalaryBreakdown> {
@@ -68,8 +68,8 @@ pub fn load_from_structure_items(
             "SELECT effective_from FROM salary_structure_items
              WHERE user_id=?1 AND effective_from <= ?2
              ORDER BY effective_from DESC LIMIT 1",
-            rusqlite::params![user_id, as_of],
-            |r| r.get(0),
+            crate::params![user_id, as_of],
+            |r| r.get_idx::<String>(0),
         )
         .ok()?;
 
@@ -88,20 +88,18 @@ pub fn load_from_structure_items(
         ..Default::default()
     };
 
-    let rows = stmt
-        .query_map(rusqlite::params![user_id, &effective_from], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, f64>(5)?,
-            ))
-        })
-        .ok()?;
+    let rows = stmt.query_map(crate::params![user_id, &effective_from], |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            row.get_idx::<String>(1)?,
+            row.get_idx::<String>(2)?,
+            row.get_idx::<String>(3)?,
+            row.get_idx::<Option<String>>(4)?,
+            row.get_idx::<f64>(5)?,
+        ))
+    });
 
-    for row in rows.flatten() {
+    for row in rows {
         let (comp_id, name, slug, comp_type, calc_type, amount) = row;
         let reimb = is_reimbursement_type(&comp_type, calc_type.as_deref(), &slug, &name);
         breakdown.components.push(serde_json::json!({
@@ -146,7 +144,7 @@ pub fn load_from_structure_items(
 
 /// Legacy fallback: flat `salary_structures` table.
 pub fn load_from_legacy_structures(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     as_of: &str,
 ) -> Option<PayrollSalaryBreakdown> {
@@ -154,15 +152,15 @@ pub fn load_from_legacy_structures(
         "SELECT basic_salary, hra, transport_allowance, other_allowances, pf_deduction, esi_deduction, tds
          FROM salary_structures WHERE user_id=?1 AND effective_from <= ?2
          ORDER BY effective_from DESC LIMIT 1",
-        rusqlite::params![user_id, as_of],
+        crate::params![user_id, as_of],
         |row| {
-            let basic: f64 = row.get(0)?;
-            let hra: f64 = row.get(1)?;
-            let transport: f64 = row.get(2)?;
-            let other: f64 = row.get(3)?;
-            let pf: f64 = row.get(4)?;
-            let esi: f64 = row.get(5)?;
-            let tds: f64 = row.get(6)?;
+            let basic: f64 = row.get_idx::<f64>(0)?;
+            let hra: f64 = row.get_idx::<f64>(1)?;
+            let transport: f64 = row.get_idx::<f64>(2)?;
+            let other: f64 = row.get_idx::<f64>(3)?;
+            let pf: f64 = row.get_idx::<f64>(4)?;
+            let esi: f64 = row.get_idx::<f64>(5)?;
+            let tds: f64 = row.get_idx::<f64>(6)?;
             let gross = basic + hra + transport + other;
             let fixed = pf + esi + tds;
             Ok(PayrollSalaryBreakdown {
@@ -195,13 +193,14 @@ pub fn load_from_legacy_structures(
 }
 
 pub fn load_user_salary(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     as_of: &str,
 ) -> Option<PayrollSalaryBreakdown> {
     if let Some(profile) = crate::salary_split::load_employee_profile(conn, user_id, as_of) {
-        let comp = crate::salary_split::load_component_split_config(conn);
-        let preview = crate::salary_split::preview_for_profile(conn, &profile);
+        let org_id = crate::tenant::org_id_for_user(conn, user_id);
+        let comp = crate::salary_split::load_component_split_config(conn, org_id);
+        let preview = crate::salary_split::preview_for_profile(conn, org_id, &profile);
         return Some(breakdown_from_preview(&preview, &comp));
     }
     load_from_structure_items(conn, user_id, as_of)
@@ -210,7 +209,7 @@ pub fn load_user_salary(
 
 /// Monthly gross for analytics / reports (uses same resolution as payroll).
 pub fn monthly_gross_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     as_of: &str,
 ) -> f64 {
@@ -258,7 +257,7 @@ fn breakdown_from_preview(
 
 // count_attendance_penalty_days with late arrival or early exit in the active month range.
 pub fn count_attendance_penalty_days(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -280,13 +279,45 @@ pub fn count_attendance_penalty_days(
         Err(_) => return 0,
     };
 
-    stmt.query_map(rusqlite::params![user_id, &start_s, &end_s], |row| row.get::<_, String>(0))
+    stmt.query_map(crate::params![user_id, &start_s, &end_s], |row| row.get_idx::<String>(0))
+        .into_iter()
+        .into_iter()
+        .filter_map(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+        .filter(|d| crate::payroll_logic::is_working_day_for_user(conn, user_id, *d))
+        .count() as i64
+}
+
+/// Late/early attendance penalty amount for a payroll month.
+/// `lop_gross` is gross earnings excluding reimbursements (same base as LOP).
+pub fn shift_penalty_for_month(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    org_id: i64,
+    month: i32,
+    year: i32,
+    lop_gross: f64,
+    working_days: i64,
+) -> (i64, f64) {
+    let penalty_days = count_attendance_penalty_days(conn, user_id, month, year);
+    if penalty_days == 0 || lop_gross <= 0.0 {
+        return (0, 0.0);
+    }
+
+    let factor: f64 = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = 'shift_penalty_half_day_factor'",
+            [org_id],
+            |row| row.get_idx::<String>(0),
+        )
         .ok()
-        .map(|iter| {
-            iter.filter_map(|r| r.ok())
-                .filter_map(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
-                .filter(|d| crate::payroll_logic::is_working_day_for_user(conn, user_id, *d))
-                .count() as i64
-        })
-        .unwrap_or(0)
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(0.5);
+
+    let daily_wage = if working_days > 0 {
+        lop_gross / working_days as f64
+    } else {
+        0.0
+    };
+    let amount = crate::salary_split::round2(penalty_days as f64 * daily_wage * factor);
+    (penalty_days, amount)
 }

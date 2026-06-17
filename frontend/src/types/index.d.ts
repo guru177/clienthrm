@@ -1,5 +1,24 @@
 import { LucideIcon } from 'lucide-react';
 
+export interface ElectronApi {
+    isElectron?: boolean;
+    showNotification?: (options: {
+        title: string;
+        body: string;
+        tag?: string;
+    }) => Promise<boolean>;
+    onNotificationClick?: (callback: (payload: { tag?: string }) => void) => () => void;
+    openExternal?: (url: string) => Promise<boolean>;
+    send?: (channel: string, data: unknown) => void;
+    receive?: (channel: string, func: (...args: unknown[]) => void) => void;
+}
+
+declare global {
+    interface Window {
+        electron?: ElectronApi;
+    }
+}
+
 export interface Auth {
     user: User;
     permissions: string[];

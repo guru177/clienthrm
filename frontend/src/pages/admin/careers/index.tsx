@@ -88,6 +88,11 @@ export default function CareersIndex() {
         setRefreshTrigger((prev) => prev + 1);
     };
 
+    const activePct =
+        stats.total > 0 ? Math.round((stats.active / stats.total) * 100) : 0;
+    const inactivePct =
+        stats.total > 0 ? Math.round((stats.inactive / stats.total) * 100) : 0;
+
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             
@@ -132,13 +137,13 @@ export default function CareersIndex() {
                         title="Active Postings"
                         value={loadingStats ? '-' : stats.active}
                         icon={CheckCircle}
-                        trend={{ value: 0, label: 'Active', isPositive: true }}
+                        trend={{ value: activePct, label: 'of total postings', isPositive: true }}
                     />
                     <StatCard
                         title="Inactive Postings"
                         value={loadingStats ? '-' : stats.inactive}
                         icon={XCircle}
-                        trend={{ value: 0, label: 'Inactive', isPositive: false }}
+                        trend={{ value: inactivePct, label: 'of total postings', isPositive: false }}
                     />
                     <StatCard
                         title="Total Applications"

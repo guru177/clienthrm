@@ -1,161 +1,286 @@
 use actix_web::{web, HttpRequest, HttpResponse};
-use crate::db::DbPool; use crate::middleware::auth::get_claims_from_request;
-use crate::models::{ApiError, ApiResponse}; use crate::models::career::Career;
+use serde::Deserialize;
+use crate::career_logic::{self, json_list_to_db, unique_career_slug, CAREER_COLUMNS};
+use crate::db::DbPool;
+use crate::middleware::auth::get_claims_from_request;
+use crate::models::career::UpsertCareerRequest;
+use crate::models::{ApiError, ApiResponse};
+use crate::tenant::{org_id_from_claims, resolve_organization_id};
+
+#[derive(Debug, Deserialize)]
+pub struct PublicCareersQuery {
+    pub org_slug: Option<String>,
+}
+
+fn list_careers(conn: &crate::db::Connection, org_id: i64) -> Vec<serde_json::Value> {
+    let sql = format!(
+        "SELECT {CAREER_COLUMNS} FROM careers WHERE organization_id = ?1 ORDER BY created_at DESC"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([org_id], career_logic::career_from_row)
+}
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let mut stmt = conn.prepare("SELECT * FROM careers ORDER BY created_at DESC").unwrap();
-    let items: Vec<Career> = stmt.query_map([], Career::from_row).unwrap().filter_map(|r| r.ok()).collect();
-    HttpResponse::Ok().json(ApiResponse::success(items))
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    HttpResponse::Ok().json(ApiResponse::success(list_careers(&conn, org_id)))
 }
+
 pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    match conn.query_row("SELECT * FROM careers WHERE id=?1", [path.into_inner()], Career::from_row) {
-        Ok(c)=>HttpResponse::Ok().json(ApiResponse::success(c)), Err(_)=>HttpResponse::NotFound().json(ApiError::new("Not found"))
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let sql = format!(
+        "SELECT {CAREER_COLUMNS} FROM careers WHERE id=?1 AND organization_id = ?2"
+    );
+    match conn.query_row(&sql, crate::params![path.into_inner(), org_id], career_logic::career_from_row) {
+        Ok(c) => HttpResponse::Ok().json(ApiResponse::success(c)),
+        Err(_) => HttpResponse::NotFound().json(ApiError::new("Not found")),
     }
 }
-pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<crate::models::career::CreateCareerRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+
+pub async fn store(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<UpsertCareerRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    match conn.execute("INSERT INTO careers (title,department,location,employment_type,description,requirements,salary_range,is_active,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8,?9)",
-        rusqlite::params![body.title, body.department, body.location, body.employment_type, body.description, body.requirements, body.salary_range, &now, &now]) {
-        Ok(_)=>HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
-        Err(e)=>HttpResponse::BadRequest().json(ApiError::new(&format!("{}",e)))
+    let slug = body
+        .slug
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| unique_career_slug(&conn, &body.title, org_id, None));
+    let job_type = body.resolved_job_type();
+    let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
+    let requirements = json_list_to_db(&body.requirements);
+    let responsibilities = json_list_to_db(&body.responsibilities);
+
+    match conn.execute(
+        "INSERT INTO careers (title, slug, location, job_type, experience_required, description, requirements, responsibilities, salary_range, is_active, organization_id, posted_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12)",
+        crate::params![
+            body.title.trim(),
+            slug,
+            body.location,
+            job_type,
+            body.experience_required,
+            body.description,
+            requirements,
+            responsibilities,
+            body.salary_range,
+            is_active,
+            org_id,
+            &now,
+        ],
+    ) {
+        Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
+            "id": conn.last_insert_rowid()
+        }))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{e}"))),
     }
 }
-pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<crate::models::career::CreateCareerRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+
+pub async fn update(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<UpsertCareerRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let career_id = path.into_inner();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let existing_slug: Option<String> = conn
+        .query_row(
+            "SELECT slug FROM careers WHERE id=?1 AND organization_id=?2",
+            crate::params![career_id, org_id],
+            |r| r.get_idx::<String>(0),
+        )
+        .ok();
+    let Some(existing_slug) = existing_slug else {
+        return HttpResponse::NotFound().json(ApiError::new("Career not found"));
+    };
+
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let _ = conn.execute("UPDATE careers SET title=?1,department=?2,location=?3,employment_type=?4,description=?5,requirements=?6,salary_range=?7,updated_at=?8 WHERE id=?9",
-        rusqlite::params![body.title, body.department, body.location, body.employment_type, body.description, body.requirements, body.salary_range, &now, path.into_inner()]);
+    let slug = body
+        .slug
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| unique_career_slug(&conn, &body.title, org_id, Some(career_id)));
+    let slug = if slug == existing_slug {
+        existing_slug
+    } else {
+        slug
+    };
+    let job_type = body.resolved_job_type();
+    let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
+    let requirements = json_list_to_db(&body.requirements);
+    let responsibilities = json_list_to_db(&body.responsibilities);
+
+    let updated = conn.execute(
+        "UPDATE careers SET title=?1, slug=?2, location=?3, job_type=?4, experience_required=?5,
+         description=?6, requirements=?7, responsibilities=?8, salary_range=?9, is_active=?10, updated_at=?11
+         WHERE id=?12 AND organization_id = ?13",
+        crate::params![
+            body.title.trim(),
+            slug,
+            body.location,
+            job_type,
+            body.experience_required,
+            body.description,
+            requirements,
+            responsibilities,
+            body.salary_range,
+            is_active,
+            &now,
+            career_id,
+            org_id,
+        ],
+    );
+    if updated.unwrap_or(0) == 0 {
+        return HttpResponse::NotFound().json(ApiError::new("Career not found"));
+    }
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"})))
 }
+
 pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
     let id = path.into_inner();
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM careers WHERE id=?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !exists {
+        return HttpResponse::NotFound().json(ApiError::new("Career not found"));
+    }
     let app_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM job_applications WHERE career_id=?1",
-            [id],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM job_applications WHERE career_id=?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     if app_count > 0 {
         let _ = conn.execute(
-            "UPDATE careers SET is_active=0, updated_at=?1 WHERE id=?2",
-            rusqlite::params![&now, id],
+            "UPDATE careers SET is_active=0, updated_at=?1 WHERE id=?2 AND organization_id = ?3",
+            crate::params![&now, id, org_id],
         );
         return HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
             "message": "Career deactivated (applications preserved)"
         })));
     }
-    let _ = conn.execute("DELETE FROM careers WHERE id=?1", [id]);
+    let _ = conn.execute(
+        "DELETE FROM careers WHERE id=?1 AND organization_id = ?2",
+        crate::params![id, org_id],
+    );
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
 }
+
 pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let t: i64 = conn.query_row("SELECT COUNT(*) FROM careers", [], |r| r.get(0)).unwrap_or(0);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"total": t})))
-}
-pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse { index(pool, req).await }
-
-/// GET /api/public/careers — active job postings (no auth)
-pub async fn public_list(pool: web::Data<DbPool>) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let mut stmt = match conn.prepare(
-        "SELECT id, title, department, location, employment_type, description, requirements, salary_range, created_at
-         FROM careers WHERE is_active = 1 ORDER BY created_at DESC",
-    ) {
+    let (total, active): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0)
+             FROM careers WHERE organization_id = ?1",
+            [org_id],
+            |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<i64>(1)?)),
+        )
+        .unwrap_or((0, 0));
+    let total_applications: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM job_applications WHERE organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "total": total,
+        "active": active,
+        "inactive": total - active,
+        "total_applications": total_applications,
+    })))
+}
+
+pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+    index(pool, req).await
+}
+
+/// GET /api/public/careers — active job postings for a tenant (no auth).
+pub async fn public_list(
+    pool: web::Data<DbPool>,
+    query: web::Query<PublicCareersQuery>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let org_id = match resolve_organization_id(&conn, query.org_slug.as_deref()) {
+        Ok(id) => id,
+        Err(e) => return HttpResponse::NotFound().json(ApiError::new(&e)),
+    };
+    let sql = format!(
+        "SELECT {CAREER_COLUMNS} FROM careers
+         WHERE organization_id = ?1 AND is_active = 1
+         ORDER BY COALESCE(posted_at, created_at) DESC, id DESC"
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
-    let items: Vec<serde_json::Value> = stmt
-        .query_map([], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "title": row.get::<_, String>(1)?,
-                "department": row.get::<_, Option<String>>(2)?,
-                "location": row.get::<_, Option<String>>(3)?,
-                "employment_type": row.get::<_, Option<String>>(4)?,
-                "description": row.get::<_, Option<String>>(5)?,
-                "requirements": row.get::<_, Option<String>>(6)?,
-                "salary_range": row.get::<_, Option<String>>(7)?,
-                "created_at": row.get::<_, Option<String>>(8)?,
-            }))
-        })
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-    HttpResponse::Ok().json(ApiResponse::success(items))
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct PublicApplyRequest {
-    pub career_id: i64,
-    pub name: String,
-    pub email: String,
-    pub phone: Option<String>,
-    pub cover_letter: Option<String>,
-    pub resume_url: Option<String>,
-}
-
-/// POST /api/public/careers/apply — submit job application (no auth)
-pub async fn public_apply(pool: web::Data<DbPool>, body: web::Json<PublicApplyRequest>) -> HttpResponse {
-    let conn = match pool.get() {
-        Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let active: bool = conn
-        .query_row(
-            "SELECT is_active FROM careers WHERE id=?1",
-            [body.career_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|v| v != 0)
-        .unwrap_or(false);
-    if !active {
-        return HttpResponse::BadRequest().json(ApiError::new("Job posting is not active"));
-    }
-    let title: String = conn
-        .query_row(
-            "SELECT title FROM careers WHERE id=?1",
-            [body.career_id],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| "Open Position".into());
-
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let tracking = format!("APP-{}", chrono::Utc::now().timestamp());
-    match conn.execute(
-        "INSERT INTO job_applications (career_id, name, email, phone, cover_letter, resume, applied_position, status, tracking_number, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?9)",
-        rusqlite::params![
-            body.career_id,
-            body.name.trim(),
-            body.email.trim(),
-            body.phone,
-            body.cover_letter,
-            body.resume_url,
-            title,
-            tracking,
-            &now,
-        ],
-    ) {
-        Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
-            "id": conn.last_insert_rowid(),
-            "tracking_number": tracking,
-            "message": "Application submitted successfully",
-        }))),
-        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {e}"))),
-    }
+    let careers: Vec<serde_json::Value> = stmt
+        .query_map([org_id], career_logic::career_from_row);
+    HttpResponse::Ok().json(ApiResponse::success(careers))
 }

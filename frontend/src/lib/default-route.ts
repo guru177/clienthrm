@@ -3,7 +3,9 @@ export function defaultAdminRoute(hasPermission: (slug: string) => boolean): str
     const routes: [string, string][] = [
         ['view-dashboard', '/admin/dashboard'],
         ['view-attendance', '/admin/attendance'],
+        ['view-chat', '/admin/chat'],
         ['view-users', '/admin/users'],
+        ['view-leave-requests', '/admin/leave-requests'],
         ['manage-leave-requests', '/admin/leave-requests/manage'],
         ['view-payroll', '/admin/payroll'],
     ];

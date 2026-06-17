@@ -12,10 +12,12 @@ actix-rt = "2"
 actix-ws = "0.3"
 futures-util = "0.3"
 
-# Database — use compatible versions
+# Database — SQLite (dev) + PostgreSQL (production)
 rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+r2d2_postgres = "0.18"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -35,6 +37,11 @@ env_logger = "0.11"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "builder", "hostname", "smtp-transport"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+totp-rs = { version = "5", default-features = false, features = ["gen_secret", "otpauth"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.dev.package."*"]
 opt-level = 3

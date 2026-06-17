@@ -1,12 +1,14 @@
 /**
- * Browser navigation check — simulates manual walkthrough of HRM frontend.
- * Run: node scripts/ui-nav-check.mjs
+ * Browser navigation check - simulates manual walkthrough of HRM frontend.
+ * Run: node scripts/ui-nav-check.mjs  (from repo root, uses frontend/playwright)
+ *
+ * Setup: cd frontend && npm install && npx playwright install chromium
  */
-import { chromium } from 'playwright';
+import { chromium } from '../frontend/node_modules/playwright/index.mjs';
 
-const BASE = 'http://localhost:5174';
-const EMAIL = 'admin@mashuptech.in';
-const PASSWORD = 'password';
+const BASE = process.env.FE_URL || 'http://localhost:5174';
+const EMAIL = process.env.HRM_EMAIL || 'admin@mashuptech.in';
+const PASSWORD = process.env.HRM_PASSWORD || 'password';
 
 const routes = [
   { path: '/login', name: 'Login', guest: true },
@@ -27,6 +29,10 @@ const routes = [
   { path: '/admin/workflows', name: 'Workflows' },
   { path: '/admin/tasks', name: 'Tasks' },
   { path: '/admin/projects', name: 'Projects' },
+  { path: '/admin/reports', name: 'Reports' },
+  { path: '/admin/subscription', name: 'Subscription' },
+  { path: '/admin/notifications', name: 'Notifications' },
+  { path: '/admin/support', name: 'Support' },
   { path: '/admin/settings/profile', name: 'Profile Settings' },
   { path: '/admin/settings/password', name: 'Password Settings' },
   { path: '/admin/settings/appearance', name: 'Appearance' },

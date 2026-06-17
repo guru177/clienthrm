@@ -15,14 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
-
-
-interface Permission {
-    id: number;
-    name: string;
-    slug: string;
-    group: string;
-}
+import { fetchPermissionsPayload, type Permission, type PermissionModule } from '@/lib/permissions-api';
 
 interface Role {
     id: number;
@@ -37,6 +30,7 @@ interface RoleFormProps {
     onOpenChange: (open: boolean) => void;
     role?: Role | null;
     allPermissions: Permission[];
+    permissionModules?: PermissionModule[];
     onSuccess: (role: Role) => void;
 }
 
@@ -45,6 +39,7 @@ export default function RoleForm({
     onOpenChange,
     role,
     allPermissions,
+    permissionModules = [],
     onSuccess,
 }: RoleFormProps) {
     const [formData, setFormData] = useState({
@@ -54,6 +49,33 @@ export default function RoleForm({
     const [selectedPermissions, setSelectedPermissions] = useState<number[]>([]);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [loading, setLoading] = useState(false);
+    const [livePermissions, setLivePermissions] = useState<Permission[]>(allPermissions);
+    const [liveModules, setLiveModules] = useState<PermissionModule[]>(permissionModules);
+    const [loadingPermissions, setLoadingPermissions] = useState(false);
+
+    useEffect(() => {
+        if (!open) return;
+        let cancelled = false;
+        setLoadingPermissions(true);
+        void fetchPermissionsPayload()
+            .then((payload) => {
+                if (cancelled) return;
+                setLivePermissions(payload.permissions);
+                setLiveModules(payload.modules);
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setLivePermissions(allPermissions);
+                    setLiveModules(permissionModules);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setLoadingPermissions(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [open, allPermissions, permissionModules]);
 
     useEffect(() => {
         if (role) {
@@ -106,10 +128,9 @@ export default function RoleForm({
         );
     };
 
-    const handleGroupToggle = (group: string) => {
-        const groupPermissions = allPermissions
-            .filter((p) => p.group === group)
-            .map((p) => p.id);
+    const handleModuleToggle = (module: PermissionModule) => {
+        const groupPermissions = module.permissions.map((p) => p.id);
+        if (groupPermissions.length === 0) return;
 
         const allSelected = groupPermissions.every((id) =>
             selectedPermissions.includes(id)
@@ -126,36 +147,36 @@ export default function RoleForm({
         }
     };
 
-    const isGroupSelected = (group: string) => {
-        const groupPermissions = allPermissions
-            .filter((p) => p.group === group)
-            .map((p) => p.id);
+    const isModuleSelected = (module: PermissionModule) => {
+        const groupPermissions = module.permissions.map((p) => p.id);
+        if (groupPermissions.length === 0) return false;
         return groupPermissions.every((id) => selectedPermissions.includes(id));
     };
 
-    const groupedPermissions = allPermissions.reduce(
-        (acc, permission) => {
-            if (!acc[permission.group]) {
-                acc[permission.group] = [];
-            }
-            acc[permission.group].push(permission);
-            return acc;
-        },
-        {} as Record<string, Permission[]>
-    );
+    const groupedPermissions =
+        liveModules.length > 0
+            ? liveModules
+            : Object.entries(
+                  livePermissions.reduce((acc, permission) => {
+                      const group = permission.group || 'Other';
+                      if (!acc[group]) acc[group] = [];
+                      acc[group].push(permission);
+                      return acc;
+                  }, {} as Record<string, Permission[]>),
+              ).map(([label, permissions]) => ({ key: label, label, permissions }));
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
+            <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col overflow-hidden">
+                <DialogHeader className="shrink-0">
                     <DialogTitle className="flex items-center gap-2">
                         <Shield className="h-5 w-5" />
                         {role ? 'Edit Role' : 'Create Role'}
                     </DialogTitle>
                 </DialogHeader>
 
-                <form onSubmit={handleSubmit} className="space-y-6">
-                    <div className="space-y-4">
+                <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
+                    <div className="shrink-0 space-y-4">
                         <div className="grid gap-2">
                             <Label htmlFor="name">
                                 Role Name <span className="text-destructive">*</span>
@@ -198,79 +219,88 @@ export default function RoleForm({
                             )}
                         </div>
 
-                        <div className="space-y-4">
-                            <div className="flex items-center justify-between">
-                                <Label>Permissions</Label>
-                                <Badge variant="secondary">
-                                    {selectedPermissions.length} of{' '}
-                                    {allPermissions.length} selected
-                                </Badge>
-                            </div>
-
-                            <div className="space-y-6 border rounded-lg p-4 max-h-96 overflow-y-auto">
-                                {Object.entries(groupedPermissions).map(
-                                    ([group, permissions]) => (
-                                        <div key={group} className="space-y-3">
-                                            <div className="flex items-center gap-2 pb-2 border-b">
-                                                <Checkbox
-                                                    id={`group-${group}`}
-                                                    checked={isGroupSelected(group)}
-                                                    onCheckedChange={() =>
-                                                        handleGroupToggle(group)
-                                                    }
-                                                    disabled={loading}
-                                                />
-                                                <Label
-                                                    htmlFor={`group-${group}`}
-                                                    className="font-semibold text-base cursor-pointer"
-                                                >
-                                                    {group}
-                                                </Label>
-                                                <Badge variant="outline" className="ml-auto">
-                                                    {permissions.length}
-                                                </Badge>
-                                            </div>
-
-                                            <div className="grid grid-cols-2 gap-3 pl-6">
-                                                {permissions.map((permission) => (
-                                                    <div
-                                                        key={permission.id}
-                                                        className="flex items-center gap-2"
-                                                    >
-                                                        <Checkbox
-                                                            id={`permission-${permission.id}`}
-                                                            checked={selectedPermissions.includes(
-                                                                permission.id
-                                                            )}
-                                                            onCheckedChange={() =>
-                                                                handlePermissionToggle(
-                                                                    permission.id
-                                                                )
-                                                            }
-                                                            disabled={loading}
-                                                        />
-                                                        <Label
-                                                            htmlFor={`permission-${permission.id}`}
-                                                            className="text-sm cursor-pointer"
-                                                        >
-                                                            {permission.name}
-                                                        </Label>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )
-                                )}
-                            </div>
-                            {errors.permissions && (
-                                <p className="text-sm text-destructive">
-                                    {errors.permissions[0]}
-                                </p>
-                            )}
+                        <div className="flex items-center justify-between">
+                            <Label>Module Permissions</Label>
+                            <Badge variant="secondary">
+                                {selectedPermissions.length} of{' '}
+                                {livePermissions.length} selected
+                                {loadingPermissions ? ' · refreshing…' : ''}
+                            </Badge>
                         </div>
                     </div>
 
-                    <div className="flex justify-end gap-2 pt-4 border-t">
+                    <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border p-4">
+                        <div className="space-y-6">
+                            {loadingPermissions && groupedPermissions.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">Loading permissions…</p>
+                            ) : null}
+                            {groupedPermissions.map((module) => (
+                                <div key={module.key} className="space-y-3">
+                                    <div className="flex items-center gap-2 border-b pb-2">
+                                        <Checkbox
+                                            id={`group-${module.key}`}
+                                            checked={isModuleSelected(module)}
+                                            onCheckedChange={() =>
+                                                handleModuleToggle(module)
+                                            }
+                                            disabled={loading || module.permissions.length === 0}
+                                        />
+                                        <Label
+                                            htmlFor={`group-${module.key}`}
+                                            className="cursor-pointer text-base font-semibold"
+                                        >
+                                            {module.label}
+                                        </Label>
+                                        <Badge variant="outline" className="ml-auto">
+                                            {module.permissions.length}
+                                        </Badge>
+                                    </div>
+
+                                    {module.permissions.length === 0 ? (
+                                        <p className="pl-6 text-sm text-muted-foreground">
+                                            No permissions configured for this module yet.
+                                        </p>
+                                    ) : (
+                                        <div className="grid grid-cols-2 gap-3 pl-6">
+                                            {module.permissions.map((permission) => (
+                                                <div
+                                                    key={permission.id}
+                                                    className="flex items-center gap-2"
+                                                >
+                                                    <Checkbox
+                                                        id={`permission-${permission.id}`}
+                                                        checked={selectedPermissions.includes(
+                                                            permission.id
+                                                        )}
+                                                        onCheckedChange={() =>
+                                                            handlePermissionToggle(
+                                                                permission.id
+                                                            )
+                                                        }
+                                                        disabled={loading}
+                                                    />
+                                                    <Label
+                                                        htmlFor={`permission-${permission.id}`}
+                                                        className="cursor-pointer text-sm"
+                                                    >
+                                                        {permission.name}
+                                                    </Label>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {errors.permissions && (
+                        <p className="shrink-0 text-sm text-destructive">
+                            {errors.permissions[0]}
+                        </p>
+                    )}
+
+                    <div className="flex shrink-0 justify-end gap-2 border-t pt-4">
                         <Button
                             type="button"
                             variant="outline"

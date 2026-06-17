@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { apiGet, apiPost, setToken, setRefreshToken, getRefreshToken, clearToken, isAuthenticated } from '@/lib/api';
+import type { OrgPlanInfo } from '@/lib/plan-modules';
 
 interface User {
     id: number;
@@ -22,9 +23,11 @@ interface User {
 interface AuthContextType {
     user: User | null;
     permissions: string[];
+    plan: OrgPlanInfo | null;
+    planModules: string[];
     settings: Record<string, string>;
     loading: boolean;
-    login: (email: string, password: string) => Promise<string[]>;
+    login: (email: string, password: string, orgSlug?: string) => Promise<string[]>;
     logout: () => void;
     hasPermission: (slug: string) => boolean;
     refreshUser: () => Promise<void>;
@@ -33,9 +36,11 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
     user: null,
     permissions: [],
+    plan: null,
+    planModules: [],
     settings: {},
     loading: true,
-    login: async () => {},
+    login: async () => [],
     logout: () => {},
     hasPermission: () => false,
     refreshUser: async () => {},
@@ -44,6 +49,7 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [permissions, setPermissions] = useState<string[]>([]);
+    const [plan, setPlan] = useState<OrgPlanInfo | null>(null);
     const [settings, setSettings] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
 
@@ -58,24 +64,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function loadUser() {
         try {
-            const res = await apiGet<{ user: User; permissions: string[]; settings: Record<string, string> }>('/auth/me');
+            const res = await apiGet<{ user: User; permissions: string[]; settings: Record<string, string>; plan?: OrgPlanInfo | null }>('/auth/me');
             setUser(res.data.user);
             setPermissions(res.data.permissions);
+            setPlan(res.data.plan ?? null);
             setSettings(res.data.settings || {});
         } catch {
             clearToken();
             setUser(null);
             setPermissions([]);
+            setPlan(null);
             setSettings({});
         } finally {
             setLoading(false);
         }
     }
 
-    async function login(email: string, password: string): Promise<string[]> {
-        const res = await apiPost<{ token: string; refresh_token?: string; user: User; permissions: string[]; settings: Record<string, string> }>(
+    async function login(email: string, password: string, orgSlug?: string): Promise<string[]> {
+        const payload: Record<string, string> = { email, password };
+        if (orgSlug?.trim()) {
+            payload.org_slug = orgSlug.trim();
+        }
+        const res = await apiPost<{ token: string; refresh_token?: string; user: User; permissions: string[]; settings: Record<string, string>; plan?: OrgPlanInfo | null }>(
             '/auth/login',
-            { email, password },
+            payload,
         );
         setToken(res.data.token);
         if (res.data.refresh_token) {
@@ -83,6 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setUser(res.data.user);
         setPermissions(res.data.permissions);
+        setPlan(res.data.plan ?? null);
         setSettings(res.data.settings || {});
         return res.data.permissions;
     }
@@ -97,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clearToken();
         setUser(null);
         setPermissions([]);
+        setPlan(null);
         setSettings({});
         window.location.href = '/login';
     }
@@ -107,8 +121,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return permissions.includes(slug);
     }
 
+    const planModules = plan?.modules ?? [];
+
     return (
-        <AuthContext.Provider value={{ user, permissions, settings, loading, login, logout, hasPermission, refreshUser: loadUser }}>
+        <AuthContext.Provider value={{ user, permissions, plan, planModules, settings, loading, login, logout, hasPermission, refreshUser: loadUser }}>
             {children}
         </AuthContext.Provider>
     );

@@ -5,14 +5,18 @@ use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
 use crate::models::user::{User, CreateUserRequest, UpdateUserRequest, UserSummary};
 use crate::storage;
+use crate::tenant::{
+    department_in_organization, designation_in_organization, org_id_from_claims,
+    role_in_organization, user_in_organization,
+};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 
-fn load_user_summary(conn: &rusqlite::Connection, user_id: i64) -> Option<UserSummary> {
+fn load_user_summary(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> Option<UserSummary> {
     let user = conn
         .query_row(
-            "SELECT * FROM users WHERE id = ?1 AND deleted_at IS NULL",
-            [user_id],
+            "SELECT * FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![user_id, org_id],
             User::from_row,
         )
         .ok()?;
@@ -20,8 +24,8 @@ fn load_user_summary(conn: &rusqlite::Connection, user_id: i64) -> Option<UserSu
     if let Some(dept_id) = summary.department_id {
         summary.department = conn
             .query_row(
-                "SELECT * FROM departments WHERE id = ?1",
-                [dept_id],
+                "SELECT * FROM departments WHERE id = ?1 AND organization_id = ?2",
+                crate::params![dept_id, org_id],
                 crate::models::department::Department::from_row,
             )
             .ok();
@@ -29,8 +33,8 @@ fn load_user_summary(conn: &rusqlite::Connection, user_id: i64) -> Option<UserSu
     if let Some(desg_id) = summary.designation_id {
         summary.designation = conn
             .query_row(
-                "SELECT * FROM designations WHERE id = ?1",
-                [desg_id],
+                "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
+                crate::params![desg_id, org_id],
                 crate::models::designation::Designation::from_row,
             )
             .ok();
@@ -40,9 +44,7 @@ fn load_user_summary(conn: &rusqlite::Connection, user_id: i64) -> Option<UserSu
         .ok()?;
     let roles: Vec<crate::models::role::Role> = stmt
         .query_map([user_id], crate::models::role::Role::from_row)
-        .ok()?
-        .filter_map(|r| r.ok())
-        .collect();
+        ;
     summary.roles = Some(roles);
     Some(summary)
 }
@@ -87,22 +89,23 @@ fn normalize_string_field(value: &str) -> Option<String> {
 }
 
 fn employee_id_taken(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     employee_id: &str,
+    org_id: i64,
     exclude_user_id: Option<i64>,
 ) -> bool {
     match exclude_user_id {
         Some(uid) => conn
             .query_row(
-                "SELECT 1 FROM users WHERE employee_id=?1 AND deleted_at IS NULL AND id!=?2",
-                rusqlite::params![employee_id, uid],
+                "SELECT 1 FROM users WHERE employee_id=?1 AND organization_id=?2 AND deleted_at IS NULL AND id!=?3",
+                crate::params![employee_id, org_id, uid],
                 |_| Ok(()),
             )
             .is_ok(),
         None => conn
             .query_row(
-                "SELECT 1 FROM users WHERE employee_id=?1 AND deleted_at IS NULL",
-                [employee_id],
+                "SELECT 1 FROM users WHERE employee_id=?1 AND organization_id=?2 AND deleted_at IS NULL",
+                crate::params![employee_id, org_id],
                 |_| Ok(()),
             )
             .is_ok(),
@@ -115,6 +118,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -124,80 +128,87 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let query_string = req.query_string();
     let params: Vec<(String, String)> = serde_urlencoded::from_str(query_string).unwrap_or_default();
     let search = params.iter().find(|(k, _)| k == "search").map(|(_, v)| v.clone());
-    let page: i64 = params.iter().find(|(k, _)| k == "page").and_then(|(_, v)| v.parse().ok()).unwrap_or(1);
-    let per_page: i64 = params.iter().find(|(k, _)| k == "per_page").and_then(|(_, v)| v.parse().ok()).unwrap_or(15);
+    let page: i64 = params
+        .iter()
+        .find(|(k, _)| k == "page")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(1);
+    let per_page: i64 = params
+        .iter()
+        .find(|(k, _)| k == "per_page")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(15);
     let offset = (page - 1) * per_page;
 
     let (where_clause, search_param) = if let Some(ref s) = search {
-        ("WHERE u.deleted_at IS NULL AND (u.name LIKE ?1 OR u.email LIKE ?1)".to_string(), format!("%{}%", s))
+        ("WHERE u.deleted_at IS NULL AND u.organization_id = ?1 AND (u.name LIKE ?2 OR u.email LIKE ?2)".to_string(), format!("%{}%", s))
     } else {
-        ("WHERE u.deleted_at IS NULL".to_string(), String::new())
+        ("WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string(), String::new())
     };
 
     let total: i64 = if search.is_some() {
         conn.query_row(
             &format!("SELECT COUNT(*) FROM users u {}", where_clause),
-            [&search_param],
-            |row| row.get(0),
+            crate::params![org_id, &search_param],
+            |row| row.get_idx::<i64>(0),
         ).unwrap_or(0)
     } else {
         conn.query_row(
             &format!("SELECT COUNT(*) FROM users u {}", where_clause),
-            [],
-            |row| row.get(0),
+            [org_id],
+            |row| row.get_idx::<i64>(0),
         ).unwrap_or(0)
     };
 
     let sql = format!(
-        "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?2 OFFSET ?3",
-        where_clause
+        "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?{} OFFSET ?{}",
+        where_clause,
+        if search.is_some() { 3 } else { 2 },
+        if search.is_some() { 4 } else { 3 },
     );
+
+    let enrich_user = |user: User| -> serde_json::Value {
+        let mut summary = user.to_summary();
+        if let Some(dept_id) = summary.department_id {
+            summary.department = conn
+                .query_row(
+                    "SELECT * FROM departments WHERE id = ?1 AND organization_id = ?2",
+                    crate::params![dept_id, org_id],
+                    crate::models::department::Department::from_row,
+                )
+                .ok();
+        }
+        if let Some(desg_id) = summary.designation_id {
+            summary.designation = conn
+                .query_row(
+                    "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
+                    crate::params![desg_id, org_id],
+                    crate::models::designation::Designation::from_row,
+                )
+                .ok();
+        }
+        serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)
+    };
 
     let users: Vec<serde_json::Value> = if search.is_some() {
         let mut stmt = conn.prepare(&sql).unwrap();
-        stmt.query_map(rusqlite::params![&search_param, per_page, offset], |row| {
-            let user = User::from_row(row)?;
-            Ok(user)
-        }).unwrap().filter_map(|r| r.ok()).map(|u| {
-            let mut summary = u.to_summary();
-            // Load department
-            if let Some(dept_id) = summary.department_id {
-                summary.department = conn.query_row(
-                    "SELECT * FROM departments WHERE id = ?1", [dept_id],
-                    crate::models::department::Department::from_row,
-                ).ok();
-            }
-            if let Some(desg_id) = summary.designation_id {
-                summary.designation = conn.query_row(
-                    "SELECT * FROM designations WHERE id = ?1", [desg_id],
-                    crate::models::designation::Designation::from_row,
-                ).ok();
-            }
-            serde_json::to_value(summary).unwrap()
-        }).collect()
+        stmt.query_map(crate::params![org_id, &search_param, per_page, offset], |row| {
+            User::from_row(row)
+        })
+        .into_iter()
+        .map(enrich_user)
+        .collect()
     } else {
-        let mut stmt = conn.prepare(
-            &format!("SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?1 OFFSET ?2", where_clause)
-        ).unwrap();
-        stmt.query_map(rusqlite::params![per_page, offset], |row| {
-            let user = User::from_row(row)?;
-            Ok(user)
-        }).unwrap().filter_map(|r| r.ok()).map(|u| {
-            let mut summary = u.to_summary();
-            if let Some(dept_id) = summary.department_id {
-                summary.department = conn.query_row(
-                    "SELECT * FROM departments WHERE id = ?1", [dept_id],
-                    crate::models::department::Department::from_row,
-                ).ok();
-            }
-            if let Some(desg_id) = summary.designation_id {
-                summary.designation = conn.query_row(
-                    "SELECT * FROM designations WHERE id = ?1", [desg_id],
-                    crate::models::designation::Designation::from_row,
-                ).ok();
-            }
-            serde_json::to_value(summary).unwrap()
-        }).collect()
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?2 OFFSET ?3",
+                where_clause
+            ))
+            .unwrap();
+        stmt.query_map(crate::params![org_id, per_page, offset], |row| User::from_row(row))
+            .into_iter()
+            .map(enrich_user)
+            .collect()
     };
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -212,10 +223,11 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 
 /// GET /api/admin/users/{id}
 pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -223,7 +235,7 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
     };
 
     let user_id = path.into_inner();
-    match load_user_summary(&conn, user_id) {
+    match load_user_summary(&conn, user_id, org_id) {
         Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
         None => HttpResponse::NotFound().json(ApiError::new("User not found")),
     }
@@ -231,34 +243,117 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
 
 /// POST /api/admin/users
 pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<CreateUserRequest>) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let hashed = bcrypt::hash(&body.password, 12).unwrap();
+    let name = body.name.trim();
+    let email = body.email.trim().to_lowercase();
+    if name.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new("Name is required"));
+    }
+    if email.is_empty() || !email.contains('@') {
+        return HttpResponse::BadRequest().json(ApiError::new("A valid email is required"));
+    }
+    if body.password.len() < 8 {
+        return HttpResponse::BadRequest().json(ApiError::new("Password must be at least 8 characters"));
+    }
+    if let Some(ref confirm) = body.password_confirmation {
+        if !confirm.is_empty() && confirm != &body.password {
+            return HttpResponse::BadRequest().json(ApiError::new("Password confirmation does not match"));
+        }
+    }
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM users WHERE email = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![email, org_id],
+            |row| row.get_idx::<i64>(0).map(|n| n > 0),
+        )
+        .unwrap_or(false);
+    if exists {
+        return HttpResponse::BadRequest().json(ApiError::new("A user with this email already exists"));
+    }
+
+    if let Err(msg) = crate::plan_limits::ensure_user_capacity(&conn, org_id) {
+        return HttpResponse::BadRequest().json(ApiError::new(&msg));
+    }
+
+    if let Some(dept_id) = body.department_id {
+        if !department_in_organization(&conn, dept_id, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Department does not belong to this organization"));
+        }
+    }
+    if let Some(desg_id) = body.designation_id {
+        if !designation_in_organization(&conn, desg_id, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Designation does not belong to this organization"));
+        }
+    }
+    if let Some(ref role_ids) = body.role_ids {
+        for role_id in role_ids {
+            if !role_in_organization(&conn, *role_id, org_id) {
+                return HttpResponse::BadRequest()
+                    .json(ApiError::new("Role does not belong to this organization"));
+            }
+        }
+    }
+    if let Some(mid) = body.manager_id {
+        if !user_in_organization(&conn, mid, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Manager must be an active user in this organization"));
+        }
+    }
+    if let Some(rmid) = body.reporting_manager_id {
+        if !user_in_organization(&conn, rmid, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Reporting manager must be an active user in this organization",
+            ));
+        }
+    }
+
+    let hashed = match bcrypt::hash(&body.password, 12) {
+        Ok(h) => h,
+        Err(_) => {
+            return HttpResponse::InternalServerError()
+                .json(ApiError::new("Failed to hash password"))
+        }
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let employee_id = normalize_optional_string(body.employee_id.clone());
     if let Some(ref eid) = employee_id {
-        if employee_id_taken(&conn, eid, None) {
+        if employee_id_taken(&conn, eid, org_id, None) {
             return HttpResponse::BadRequest()
                 .json(ApiError::new("Employee ID is already assigned to another user"));
         }
     }
 
+    let phone = normalize_optional_string(body.phone.clone());
+    let status = body
+        .status
+        .as_deref()
+        .filter(|s| matches!(*s, "active" | "inactive" | "suspended"))
+        .unwrap_or("active");
+
     let result = conn.execute(
-        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, employee_id, date_of_joining, work_location, email_verified_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-        rusqlite::params![
-            body.name, body.email, hashed, body.phone,
+        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        crate::params![
+            name, email, hashed, phone,
             body.department_id, body.designation_id,
             body.employment_type.as_deref().unwrap_or("full-time"),
             employee_id, body.date_of_joining, body.work_location,
+            status,
+            org_id,
+            body.manager_id, body.reporting_manager_id,
             &now, &now, &now,
         ],
     );
@@ -272,7 +367,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
                 for role_id in role_ids {
                     let _ = conn.execute(
                         "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                        rusqlite::params![user_id, role_id, &now, &now],
+                        crate::params![user_id, role_id, &now, &now],
                     );
                 }
             }
@@ -284,6 +379,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
                 .map(|d| d.to_string())
                 .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
             let _ = crate::shift_logic::assign_general_shift_to_user(&conn, user_id, &shift_from);
+            crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
 
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
                 "id": user_id,
@@ -296,10 +392,11 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
 
 /// PUT /api/admin/users/{id}
 pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<UpdateUserRequest>) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -307,18 +404,23 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     };
 
     let user_id = path.into_inner();
+
+    if !user_in_organization(&conn, user_id, org_id) {
+        return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
+
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Build dynamic UPDATE query
     let mut sets = Vec::new();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut params: Vec<crate::db::ParamValue> = Vec::new();
     let mut idx = 1;
 
     macro_rules! maybe_set {
         ($field:ident, $col:expr) => {
             if let Some(ref val) = body.$field {
                 sets.push(format!("{} = ?{}", $col, idx));
-                params.push(Box::new(val.clone()));
+                params.push(crate::db::into_param_value(val.clone()));
                 idx += 1;
             }
         };
@@ -343,77 +445,126 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     if body.employee_id.is_some() {
         let employee_id = normalize_optional_string(body.employee_id.clone());
         if let Some(ref eid) = employee_id {
-            if employee_id_taken(&conn, eid, Some(user_id)) {
+            if employee_id_taken(&conn, eid, org_id, Some(user_id)) {
                 return HttpResponse::BadRequest()
                     .json(ApiError::new("Employee ID is already assigned to another user"));
             }
         }
         sets.push(format!("employee_id = ?{}", idx));
-        params.push(Box::new(employee_id));
+        params.push(crate::db::into_param_value(employee_id));
         idx += 1;
     }
     maybe_set!(account_number, "account_number");
     maybe_set!(ifsc_code, "ifsc_code");
     maybe_set!(bank_name, "bank_name");
     maybe_set!(pan_number, "pan_number");
+    maybe_set!(esi_number, "esi_number");
+    maybe_set!(pf_number, "pf_number");
+    maybe_set!(aadhar_number, "aadhar_number");
 
     if let Some(ref val) = body.account_type {
         sets.push(format!("account_type = ?{}", idx));
-        params.push(Box::new(val.clone()));
+        params.push(crate::db::into_param_value(val.clone()));
         idx += 1;
     }
 
     if let Some(dept_id) = body.department_id {
+        if !department_in_organization(&conn, dept_id, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Department does not belong to this organization"));
+        }
         sets.push(format!("department_id = ?{}", idx));
-        params.push(Box::new(dept_id));
+        params.push(crate::db::into_param_value(dept_id));
         idx += 1;
     }
     if let Some(desg_id) = body.designation_id {
+        if !designation_in_organization(&conn, desg_id, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Designation does not belong to this organization"));
+        }
         sets.push(format!("designation_id = ?{}", idx));
-        params.push(Box::new(desg_id));
+        params.push(crate::db::into_param_value(desg_id));
         idx += 1;
     }
 
-    if sets.is_empty() {
+    if let Some(ref roles) = body.roles {
+        for role_id in roles {
+            if !role_in_organization(&conn, *role_id, org_id) {
+                return HttpResponse::BadRequest()
+                    .json(ApiError::new("Role does not belong to this organization"));
+            }
+        }
+    }
+
+    if let Some(mid) = body.manager_id {
+        if mid == user_id || !user_in_organization(&conn, mid, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Manager must be an active user in this organization"));
+        }
+        sets.push(format!("manager_id = ?{}", idx));
+        params.push(crate::db::into_param_value(mid));
+        idx += 1;
+    }
+    if let Some(rmid) = body.reporting_manager_id {
+        if rmid == user_id || !user_in_organization(&conn, rmid, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Reporting manager must be an active user in this organization",
+            ));
+        }
+        sets.push(format!("reporting_manager_id = ?{}", idx));
+        params.push(crate::db::into_param_value(rmid));
+        idx += 1;
+    }
+
+    if sets.is_empty() && body.roles.is_none() {
         return HttpResponse::BadRequest().json(ApiError::new("No fields to update"));
     }
 
-    sets.push(format!("updated_at = ?{}", idx));
     let now_for_roles = now.clone();
-    params.push(Box::new(now));
-    idx += 1;
 
-    params.push(Box::new(user_id));
+    if !sets.is_empty() {
+        sets.push(format!("updated_at = ?{}", idx));
+        params.push(crate::db::into_param_value(now));
+        idx += 1;
 
-    let sql = format!(
-        "UPDATE users SET {} WHERE id = ?{}",
-        sets.join(", "),
-        idx
-    );
+        params.push(crate::db::into_param_value(user_id));
+        params.push(crate::db::into_param_value(org_id));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let sql = format!(
+            "UPDATE users SET {} WHERE id = ?{} AND organization_id = ?{}",
+            sets.join(", "),
+            idx,
+            idx + 1
+        );
 
-    match conn.execute(&sql, param_refs.as_slice()) {
-        Ok(_) => {
-            // Update roles if provided
-            if let Some(ref roles) = body.roles {
-                let _ = conn.execute("DELETE FROM role_user WHERE user_id = ?1", rusqlite::params![user_id]);
-                for role_id in roles {
-                    let _ = conn.execute(
-                        "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                        rusqlite::params![user_id, role_id, &now_for_roles, &now_for_roles],
-                    );
-                }
-            }
+        if let Err(e) = conn.execute(&sql, &params) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new(&format!("Failed to update user: {}", e)));
+        }
+    } else if body.roles.is_some() {
+        // Role-only update must still target a user in this org (checked above).
+    }
 
-            match load_user_summary(&conn, user_id) {
-                Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
-                None => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-                    "message": "User updated successfully"
-                }))),
-            }
-        },
-        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed to update user: {}", e))),
+    if let Some(ref roles) = body.roles {
+        let _ = conn.execute(
+            "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
+            crate::params![user_id, org_id],
+        );
+        for role_id in roles {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                crate::params![user_id, role_id, &now_for_roles, &now_for_roles],
+            );
+        }
+    }
+
+    crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
+
+    match load_user_summary(&conn, user_id, org_id) {
+        Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
+        None => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": "User updated successfully"
+        }))),
     }
 }
 
@@ -424,10 +575,11 @@ pub async fn update_form(
     path: web::Path<i64>,
     mut payload: Multipart,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -435,7 +587,7 @@ pub async fn update_form(
     };
 
     let user_id = path.into_inner();
-    if load_user_summary(&conn, user_id).is_none() {
+    if load_user_summary(&conn, user_id, org_id).is_none() {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
 
@@ -500,14 +652,14 @@ pub async fn update_form(
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut sets = Vec::new();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut params: Vec<crate::db::ParamValue> = Vec::new();
     let mut idx = 1;
 
     macro_rules! set_field {
         ($key:expr, $col:expr) => {
             if let Some(val) = fields.get($key) {
                 sets.push(format!("{} = ?{}", $col, idx));
-                params.push(Box::new(val.clone()));
+                params.push(crate::db::into_param_value(val.clone()));
                 idx += 1;
             }
         };
@@ -519,13 +671,13 @@ pub async fn update_form(
     if fields.contains_key("employee_id") {
         let employee_id = normalize_string_field(fields.get("employee_id").map(|s| s.as_str()).unwrap_or(""));
         if let Some(ref eid) = employee_id {
-            if employee_id_taken(&conn, eid, Some(user_id)) {
+            if employee_id_taken(&conn, eid, org_id, Some(user_id)) {
                 return HttpResponse::BadRequest()
                     .json(ApiError::new("Employee ID is already assigned to another user"));
             }
         }
         sets.push(format!("employee_id = ?{}", idx));
-        params.push(Box::new(employee_id));
+        params.push(crate::db::into_param_value(employee_id));
         idx += 1;
     }
     set_field!("status", "status");
@@ -543,42 +695,52 @@ pub async fn update_form(
 
     if let Some(v) = fields.get("department_id").and_then(|s| opt_i64(s)) {
         sets.push(format!("department_id = ?{}", idx));
-        params.push(Box::new(v));
+        params.push(crate::db::into_param_value(v));
         idx += 1;
     }
     if let Some(v) = fields.get("designation_id").and_then(|s| opt_i64(s)) {
         sets.push(format!("designation_id = ?{}", idx));
-        params.push(Box::new(v));
+        params.push(crate::db::into_param_value(v));
+        idx += 1;
+    }
+    if let Some(v) = fields.get("manager_id").and_then(|s| opt_i64(s)) {
+        sets.push(format!("manager_id = ?{}", idx));
+        params.push(crate::db::into_param_value(v));
+        idx += 1;
+    }
+    if let Some(v) = fields.get("reporting_manager_id").and_then(|s| opt_i64(s)) {
+        sets.push(format!("reporting_manager_id = ?{}", idx));
+        params.push(crate::db::into_param_value(v));
         idx += 1;
     }
 
     if remove_photo {
-        if let Ok(old) = conn.query_row::<Option<String>, _, _>(
+        if let Ok(old) = conn.query_row(
             "SELECT photo FROM users WHERE id=?1",
             [user_id],
-            |r| r.get(0),
+            |r| r.get_idx::<Option<String>>(0),
         ) {
             if let Some(ref p) = old {
                 storage::delete_photo_path(p);
             }
         }
         sets.push(format!("photo = ?{}", idx));
-        params.push(Box::new(None::<String>));
+        params.push(crate::db::into_param_value(None::<String>));
         idx += 1;
     } else if let Some((mime, fname, data)) = photo_data {
         match storage::save_user_photo(&data, mime.as_deref(), fname.as_deref()) {
             Ok(path) => {
-                if let Ok(old) = conn.query_row::<Option<String>, _, _>(
+                if let Ok(old) = conn.query_row(
                     "SELECT photo FROM users WHERE id=?1",
                     [user_id],
-                    |r| r.get(0),
+                    |r| r.get_idx::<Option<String>>(0),
                 ) {
                     if let Some(ref p) = old {
                         storage::delete_photo_path(p);
                     }
                 }
                 sets.push(format!("photo = ?{}", idx));
-                params.push(Box::new(path));
+                params.push(crate::db::into_param_value(path));
                 idx += 1;
             }
             Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
@@ -589,39 +751,81 @@ pub async fn update_form(
         return HttpResponse::BadRequest().json(ApiError::new("No fields to update"));
     }
 
+    if let Some(v) = fields.get("department_id").and_then(|s| opt_i64(s)) {
+        if !department_in_organization(&conn, v, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Department does not belong to this organization"));
+        }
+    }
+    if let Some(v) = fields.get("designation_id").and_then(|s| opt_i64(s)) {
+        if !designation_in_organization(&conn, v, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Designation does not belong to this organization"));
+        }
+    }
+    for role_id in &roles {
+        if !role_in_organization(&conn, *role_id, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Role does not belong to this organization"));
+        }
+    }
+    if let Some(raw) = fields.get("manager_id").and_then(|s| opt_i64(s)) {
+        if raw == user_id || !user_in_organization(&conn, raw, org_id) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Manager must be an active user in this organization"));
+        }
+    }
+    if let Some(raw) = fields.get("reporting_manager_id").and_then(|s| opt_i64(s)) {
+        if raw == user_id || !user_in_organization(&conn, raw, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Reporting manager must be an active user in this organization",
+            ));
+        }
+    }
+
     if !sets.is_empty() {
         sets.push(format!("updated_at = ?{}", idx));
         let now_for_roles = now.clone();
-        params.push(Box::new(now.clone()));
+        params.push(crate::db::into_param_value(now.clone()));
         idx += 1;
-        params.push(Box::new(user_id));
+        params.push(crate::db::into_param_value(user_id));
+        params.push(crate::db::into_param_value(org_id));
 
-        let sql = format!("UPDATE users SET {} WHERE id = ?{}", sets.join(", "), idx);
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        if let Err(e) = conn.execute(&sql, param_refs.as_slice()) {
+        let sql = format!("UPDATE users SET {} WHERE id = ?{} AND organization_id = ?{}", sets.join(", "), idx, idx + 1);
+        if let Err(e) = conn.execute(&sql, &params) {
             return HttpResponse::BadRequest().json(ApiError::new(&format!("Failed to update user: {}", e)));
         }
 
         if !roles.is_empty() {
-            let _ = conn.execute("DELETE FROM role_user WHERE user_id = ?1", [user_id]);
+            let _ = conn.execute(
+                "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
+                crate::params![user_id, org_id],
+            );
             for role_id in &roles {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![user_id, role_id, &now_for_roles, &now_for_roles],
+                    crate::params![user_id, role_id, &now_for_roles, &now_for_roles],
                 );
             }
         }
+
+        if fields.contains_key("department_id") {
+            crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
+        }
     } else if !roles.is_empty() {
-        let _ = conn.execute("DELETE FROM role_user WHERE user_id = ?1", [user_id]);
+        let _ = conn.execute(
+            "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
+            crate::params![user_id, org_id],
+        );
         for role_id in &roles {
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![user_id, role_id, &now, &now],
+                crate::params![user_id, role_id, &now, &now],
             );
         }
     }
 
-    match load_user_summary(&conn, user_id) {
+    match load_user_summary(&conn, user_id, org_id) {
         Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
         None => HttpResponse::NotFound().json(ApiError::new("User not found")),
     }
@@ -629,10 +833,11 @@ pub async fn update_form(
 
 /// DELETE /api/admin/users/{id}
 pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -642,33 +847,37 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
     let user_id = path.into_inner();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Soft delete
     match conn.execute(
-        "UPDATE users SET deleted_at = ?1 WHERE id = ?2",
-        rusqlite::params![&now, user_id],
+        "UPDATE users SET deleted_at = ?1 WHERE id = ?2 AND organization_id = ?3",
+        crate::params![&now, user_id, org_id],
     ) {
-        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-            "message": "User deleted successfully"
-        }))),
+        Ok(rows) if rows > 0 => {
+            crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "message": "User deleted successfully"
+            })))
+        }
+        Ok(_) => HttpResponse::NotFound().json(ApiError::new("User not found")),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed to delete user: {}", e))),
     }
 }
 
 /// GET /api/admin/users/stats
 pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0);
-    let active: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND status = 'active'", [], |r| r.get(0)).unwrap_or(0);
-    let on_leave: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND status = 'on-leave'", [], |r| r.get(0)).unwrap_or(0);
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
+    let active: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1 AND status = 'active'", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
+    let on_leave: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1 AND status = 'on-leave'", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "total": total,
@@ -680,10 +889,11 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 
 /// GET /api/admin/users/list (simple list for dropdowns)
 pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -691,17 +901,17 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     };
 
     let mut stmt = conn.prepare(
-        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL ORDER BY name"
+        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name"
     ).unwrap();
 
-    let users: Vec<serde_json::Value> = stmt.query_map([], |row| {
+    let users: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
         Ok(serde_json::json!({
-            "id": row.get::<_, i64>(0)?,
-            "name": row.get::<_, String>(1)?,
-            "email": row.get::<_, String>(2)?,
-            "employee_id": row.get::<_, Option<String>>(3)?,
+            "id": row.get_idx::<i64>(0)?,
+            "name": row.get_idx::<String>(1)?,
+            "email": row.get_idx::<String>(2)?,
+            "employee_id": row.get_idx::<Option<String>>(3)?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    });
 
     HttpResponse::Ok().json(ApiResponse::success(users))
 }

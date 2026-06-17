@@ -4,14 +4,25 @@ import {
     ChevronRight,
     ChevronsLeft,
     ChevronsRight,
+    Pencil,
+    Plus,
     Search,
+    Trash2,
 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
     Select,
     SelectContent,
@@ -27,7 +38,9 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
-import { handleApiError } from '@/lib/toast';
+import { Textarea } from '@/components/ui/textarea';
+import { usePermissions } from '@/hooks/use-permissions';
+import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface ShiftInfo {
     template_name?: string;
@@ -54,11 +67,30 @@ interface AttendanceRecord {
     shift?: ShiftInfo | null;
 }
 
+interface EmployeeOption {
+    id: number;
+    name: string;
+    email?: string;
+}
+
+const STATUS_OPTIONS = ['present', 'absent', 'half_day', 'leave', 'sick_leave', 'holiday'];
+
+/** Extract an "HH:MM" value for a time input from a combined datetime or time string. */
+function toTimeInput(value?: string | null): string {
+    if (!value) return '';
+    const part = value.includes('T') ? value.split('T')[1] ?? '' : value;
+    return part.slice(0, 5);
+}
+
 export default function AttendanceTable() {
+    const { hasPermission } = usePermissions();
+    const canManage = hasPermission('manage-attendance');
+
     const [records, setRecords] = useState<AttendanceRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [status, setStatus] = useState('all');
+    const [onlyOpen, setOnlyOpen] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
     const [lastPage, setLastPage] = useState(1);
     const [total, setTotal] = useState(0);
@@ -66,17 +98,33 @@ export default function AttendanceTable() {
     const [from, setFrom] = useState(0);
     const [to, setTo] = useState(0);
 
-    useEffect(() => {
-        fetchRecords();
-    }, [search, status, currentPage, perPage]);
+    const [employees, setEmployees] = useState<EmployeeOption[]>([]);
 
-    const fetchRecords = async () => {
+    // Edit dialog state
+    const [editOpen, setEditOpen] = useState(false);
+    const [editRow, setEditRow] = useState<AttendanceRecord | null>(null);
+    const [editForm, setEditForm] = useState({ clock_in: '', clock_out: '', status: 'present', notes: '' });
+    const [saving, setSaving] = useState(false);
+
+    // Add dialog state
+    const [addOpen, setAddOpen] = useState(false);
+    const [addForm, setAddForm] = useState({
+        user_id: '',
+        date: new Date().toISOString().slice(0, 10),
+        clock_in: '',
+        clock_out: '',
+        status: 'present',
+        notes: '',
+    });
+
+    const fetchRecords = useCallback(async () => {
         setLoading(true);
         try {
             const response = await axios.get('/admin/attendance/list', {
                 params: {
                     search,
                     status: status !== 'all' ? status : undefined,
+                    only_open: onlyOpen ? true : undefined,
                     page: currentPage,
                     per_page: perPage,
                 },
@@ -96,6 +144,101 @@ export default function AttendanceTable() {
             handleApiError(error);
         } finally {
             setLoading(false);
+        }
+    }, [search, status, onlyOpen, currentPage, perPage]);
+
+    useEffect(() => {
+        fetchRecords();
+    }, [fetchRecords]);
+
+    const loadEmployees = useCallback(async () => {
+        if (employees.length > 0) return;
+        try {
+            const res = await axios.get('/admin/attendance/users');
+            if (res.data.success) setEmployees(res.data.data ?? []);
+        } catch {
+            /* ignore */
+        }
+    }, [employees.length]);
+
+    const openEdit = (record: AttendanceRecord) => {
+        setEditRow(record);
+        setEditForm({
+            clock_in: toTimeInput(record.clock_in),
+            clock_out: toTimeInput(record.clock_out),
+            status: record.status || 'present',
+            notes: '',
+        });
+        setEditOpen(true);
+    };
+
+    const submitEdit = async () => {
+        if (!editRow) return;
+        setSaving(true);
+        try {
+            const res = await axios.patch(`/admin/attendance/${editRow.id}`, {
+                clock_in: editForm.clock_in || '',
+                clock_out: editForm.clock_out || '',
+                status: editForm.status,
+                notes: editForm.notes || undefined,
+            });
+            handleApiResponse(res);
+            setEditOpen(false);
+            setEditRow(null);
+            fetchRecords();
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const openAdd = () => {
+        void loadEmployees();
+        setAddForm({
+            user_id: '',
+            date: new Date().toISOString().slice(0, 10),
+            clock_in: '',
+            clock_out: '',
+            status: 'present',
+            notes: '',
+        });
+        setAddOpen(true);
+    };
+
+    const submitAdd = async () => {
+        if (!addForm.user_id) {
+            handleApiError({ response: { data: { message: 'Select an employee' } } });
+            return;
+        }
+        setSaving(true);
+        try {
+            const res = await axios.post('/admin/attendance/manual', {
+                user_id: Number(addForm.user_id),
+                date: addForm.date,
+                clock_in: addForm.clock_in || undefined,
+                clock_out: addForm.clock_out || undefined,
+                status: addForm.status,
+                notes: addForm.notes || undefined,
+            });
+            handleApiResponse(res);
+            setAddOpen(false);
+            fetchRecords();
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const deleteRecord = async (record: AttendanceRecord) => {
+        if (!window.confirm('Delete this attendance record? This cannot be undone.')) return;
+        try {
+            const res = await axios.delete(`/admin/attendance/${record.id}`);
+            handleApiResponse(res);
+            fetchRecords();
+        } catch (error) {
+            handleApiError(error);
         }
     };
 
@@ -131,6 +274,8 @@ export default function AttendanceTable() {
         d.setHours(h, m, 0, 0);
         return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
     };
+
+    const colSpan = canManage ? 9 : 8;
 
     return (
         <Card>
@@ -173,6 +318,20 @@ export default function AttendanceTable() {
                             </SelectContent>
                         </Select>
 
+                        {/* Open-sessions filter */}
+                        <Button
+                            type="button"
+                            variant={onlyOpen ? 'default' : 'outline'}
+                            size="sm"
+                            onClick={() => {
+                                setOnlyOpen((v) => !v);
+                                setCurrentPage(1);
+                            }}
+                            title="Show sessions clocked in but never clocked out"
+                        >
+                            Open sessions
+                        </Button>
+
                         {/* Per Page Selector */}
                         <Select
                             value={perPage.toString()}
@@ -190,6 +349,12 @@ export default function AttendanceTable() {
                                 <SelectItem value="50">50</SelectItem>
                             </SelectContent>
                         </Select>
+
+                        {canManage && (
+                            <Button type="button" size="sm" onClick={openAdd}>
+                                <Plus className="mr-1 h-4 w-4" /> Add entry
+                            </Button>
+                        )}
                     </div>
                 </div>
             </CardHeader>
@@ -207,15 +372,13 @@ export default function AttendanceTable() {
                                 <TableHead>Duration</TableHead>
                                 <TableHead>Status</TableHead>
                                 <TableHead>Source</TableHead>
+                                {canManage && <TableHead className="text-right">Actions</TableHead>}
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {loading ? (
                                 <TableRow>
-                                    <TableCell
-                                        colSpan={8}
-                                        className="text-center py-8"
-                                    >
+                                    <TableCell colSpan={colSpan} className="text-center py-8">
                                         <div className="flex items-center justify-center">
                                             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                                         </div>
@@ -224,7 +387,7 @@ export default function AttendanceTable() {
                             ) : records.length === 0 ? (
                                 <TableRow>
                                     <TableCell
-                                        colSpan={8}
+                                        colSpan={colSpan}
                                         className="text-center py-8 text-muted-foreground"
                                     >
                                         No records found
@@ -250,19 +413,21 @@ export default function AttendanceTable() {
                                             <div>
                                                 <p>{formatTime(record.clock_in)}</p>
                                                 {record.is_late && (
-                                                    <p className="text-xs text-red-600">
-                                                        Late
-                                                    </p>
+                                                    <p className="text-xs text-red-600">Late</p>
                                                 )}
                                             </div>
                                         </TableCell>
                                         <TableCell>
                                             <div>
-                                                <p>{formatTime(record.clock_out)}</p>
+                                                <p>
+                                                    {record.clock_out ? (
+                                                        formatTime(record.clock_out)
+                                                    ) : (
+                                                        <span className="text-amber-600">Open</span>
+                                                    )}
+                                                </p>
                                                 {record.is_early_exit && (
-                                                    <p className="text-xs text-orange-600">
-                                                        Early
-                                                    </p>
+                                                    <p className="text-xs text-orange-600">Early</p>
                                                 )}
                                             </div>
                                         </TableCell>
@@ -286,14 +451,34 @@ export default function AttendanceTable() {
                                                 ? `${Math.floor(record.duration_minutes / 60)}h ${record.duration_minutes % 60}m`
                                                 : '--'}
                                         </TableCell>
-                                        <TableCell>
-                                            {getStatusBadge(record.status)}
-                                        </TableCell>
+                                        <TableCell>{getStatusBadge(record.status)}</TableCell>
                                         <TableCell>
                                             <Badge variant="outline" className="capitalize">
                                                 {record.source || 'manual'}
                                             </Badge>
                                         </TableCell>
+                                        {canManage && (
+                                            <TableCell className="text-right">
+                                                <div className="flex justify-end gap-1">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => openEdit(record)}
+                                                        title="Edit / regularize"
+                                                    >
+                                                        <Pencil className="h-4 w-4" />
+                                                    </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => deleteRecord(record)}
+                                                        title="Delete record"
+                                                    >
+                                                        <Trash2 className="h-4 w-4 text-red-600" />
+                                                    </Button>
+                                                </div>
+                                            </TableCell>
+                                        )}
                                     </TableRow>
                                 ))
                             )}
@@ -347,6 +532,171 @@ export default function AttendanceTable() {
                     </div>
                 )}
             </CardContent>
+
+            {/* Edit dialog */}
+            <Dialog open={editOpen} onOpenChange={setEditOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>
+                            Edit attendance — {editRow?.user?.name || `User #${editRow?.user_id}`}
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <p className="text-sm text-muted-foreground">
+                            {editRow ? new Date(editRow.date).toLocaleDateString() : ''} · leave clock-out
+                            empty to mark the session open.
+                        </p>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <Label htmlFor="edit_in">Clock in</Label>
+                                <Input
+                                    id="edit_in"
+                                    type="time"
+                                    value={editForm.clock_in}
+                                    onChange={(e) => setEditForm((f) => ({ ...f, clock_in: e.target.value }))}
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label htmlFor="edit_out">Clock out</Label>
+                                <Input
+                                    id="edit_out"
+                                    type="time"
+                                    value={editForm.clock_out}
+                                    onChange={(e) => setEditForm((f) => ({ ...f, clock_out: e.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Status</Label>
+                            <Select
+                                value={editForm.status}
+                                onValueChange={(v) => setEditForm((f) => ({ ...f, status: v }))}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {STATUS_OPTIONS.map((s) => (
+                                        <SelectItem key={s} value={s} className="capitalize">
+                                            {s.replace('_', ' ')}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-1">
+                            <Label htmlFor="edit_notes">Notes</Label>
+                            <Textarea
+                                id="edit_notes"
+                                placeholder="Reason for correction (optional)"
+                                value={editForm.notes}
+                                onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditOpen(false)} disabled={saving}>
+                            Cancel
+                        </Button>
+                        <Button onClick={submitEdit} disabled={saving}>
+                            {saving ? 'Saving...' : 'Save changes'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Add dialog */}
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Add attendance entry</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <div className="space-y-1">
+                            <Label>Employee</Label>
+                            <Select
+                                value={addForm.user_id}
+                                onValueChange={(v) => setAddForm((f) => ({ ...f, user_id: v }))}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select employee" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {employees.map((e) => (
+                                        <SelectItem key={e.id} value={String(e.id)}>
+                                            {e.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-1">
+                            <Label htmlFor="add_date">Date</Label>
+                            <Input
+                                id="add_date"
+                                type="date"
+                                value={addForm.date}
+                                onChange={(e) => setAddForm((f) => ({ ...f, date: e.target.value }))}
+                            />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                                <Label htmlFor="add_in">Clock in</Label>
+                                <Input
+                                    id="add_in"
+                                    type="time"
+                                    value={addForm.clock_in}
+                                    onChange={(e) => setAddForm((f) => ({ ...f, clock_in: e.target.value }))}
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label htmlFor="add_out">Clock out</Label>
+                                <Input
+                                    id="add_out"
+                                    type="time"
+                                    value={addForm.clock_out}
+                                    onChange={(e) => setAddForm((f) => ({ ...f, clock_out: e.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Status</Label>
+                            <Select
+                                value={addForm.status}
+                                onValueChange={(v) => setAddForm((f) => ({ ...f, status: v }))}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {STATUS_OPTIONS.map((s) => (
+                                        <SelectItem key={s} value={s} className="capitalize">
+                                            {s.replace('_', ' ')}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-1">
+                            <Label htmlFor="add_notes">Notes</Label>
+                            <Textarea
+                                id="add_notes"
+                                placeholder="Reason (optional)"
+                                value={addForm.notes}
+                                onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setAddOpen(false)} disabled={saving}>
+                            Cancel
+                        </Button>
+                        <Button onClick={submitAdd} disabled={saving}>
+                            {saving ? 'Saving...' : 'Create entry'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </Card>
     );
 }

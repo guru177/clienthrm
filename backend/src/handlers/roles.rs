@@ -2,25 +2,72 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 use crate::models::role::Role;
+use crate::plan_limits::{load_org_plan, permissions_from_modules, validate_permission_ids_for_org};
+
+fn role_list_json(
+    conn: &crate::db::Connection,
+    org_id: i64,
+) -> crate::db::Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.name, r.slug, r.description, r.created_at,
+                (SELECT COUNT(*)
+                 FROM role_user ru
+                 INNER JOIN users u ON u.id = ru.user_id
+                 WHERE ru.role_id = r.id
+                   AND u.deleted_at IS NULL
+                   AND u.organization_id = r.organization_id) AS users_count,
+                (SELECT COUNT(*) FROM permission_role pr WHERE pr.role_id = r.id) AS permissions_count
+         FROM roles r
+         WHERE r.organization_id = ?1
+         ORDER BY r.name",
+    )?;
+    let rows = stmt
+        .query_map([org_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "slug": row.get_idx::<String>(2)?,
+                "description": row.get_idx::<Option<String>>(3)?,
+                "created_at": row.get_idx::<Option<String>>(4)?,
+                "users_count": row.get_idx::<i64>(5)?,
+                "permissions_count": row.get_idx::<i64>(6)?,
+            }))
+        });
+    Ok(rows)
+}
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let mut stmt = conn.prepare("SELECT * FROM roles ORDER BY name").unwrap();
-    let items: Vec<Role> = stmt.query_map([], Role::from_row).unwrap().filter_map(|r| r.ok()).collect();
-    HttpResponse::Ok().json(ApiResponse::success(items))
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    match role_list_json(&conn, org_id) {
+        Ok(items) => HttpResponse::Ok().json(ApiResponse::success(items)),
+        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    }
 }
 
 pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let role_id = path.into_inner();
-    let role = match conn.query_row("SELECT * FROM roles WHERE id=?1", [role_id], Role::from_row) {
+    let role = match conn.query_row(
+        "SELECT * FROM roles WHERE id=?1 AND organization_id=?2",
+        crate::params![role_id, org_id],
+        Role::from_row,
+    ) {
         Ok(r) => r,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Not found")),
     };
-    let mut stmt = conn
+    let stmt = conn
         .prepare(
             "SELECT p.id, p.name, p.slug, p.\"group\" FROM permissions p
              JOIN permission_role pr ON p.id = pr.permission_id
@@ -30,17 +77,24 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
     let permissions: Vec<serde_json::Value> = stmt
         .query_map([role_id], |row| {
             Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "slug": row.get::<_, String>(2)?,
-                "group": row.get::<_, Option<String>>(3)?,
+                "id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "slug": row.get_idx::<String>(2)?,
+                "group": row.get_idx::<Option<String>>(3)?,
             }))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
     let users_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM role_user WHERE role_id=?1", [role_id], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*)
+             FROM role_user ru
+             INNER JOIN users u ON u.id = ru.user_id
+             INNER JOIN roles r ON r.id = ru.role_id
+             WHERE ru.role_id = ?1
+               AND u.deleted_at IS NULL
+               AND u.organization_id = r.organization_id",
+            [role_id],
+            |r| r.get_idx::<i64>(0),
+        )
         .unwrap_or(0);
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "id": role.id,
@@ -48,22 +102,39 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
         "slug": role.slug,
         "description": role.description,
         "users_count": users_count,
+        "permissions_count": permissions.len(),
         "permissions": permissions,
+        "created_at": role.created_at,
     })))
 }
 
 pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<crate::models::role::CreateRoleRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    match conn.execute("INSERT INTO roles (name,slug,description,created_at,updated_at) VALUES (?1,?2,?3,?4,?5)",
-        rusqlite::params![body.name, body.slug, body.description, &now, &now]) {
+    let slug = body
+        .slug
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| body.name.to_lowercase().replace(' ', "-"));
+    match conn.execute(
+        "INSERT INTO roles (name,slug,description,organization_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+        crate::params![body.name, slug, body.description, org_id, &now, &now],
+    ) {
         Ok(_) => {
             let role_id = conn.last_insert_rowid();
             if let Some(ref pids) = body.permission_ids {
+                if let Err(msg) = validate_permission_ids_for_org(&conn, org_id, pids) {
+                    let _ = conn.execute(
+                        "DELETE FROM roles WHERE id = ?1 AND organization_id = ?2",
+                        crate::params![role_id, org_id],
+                    );
+                    return HttpResponse::BadRequest().json(ApiError::new(&msg));
+                }
                 for pid in pids {
                     let _ = conn.execute("INSERT OR IGNORE INTO permission_role (permission_id,role_id,created_at,updated_at) VALUES (?1,?2,?3,?4)",
-                        rusqlite::params![pid, role_id, &now, &now]);
+                        crate::params![pid, role_id, &now, &now]);
                 }
             }
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": role_id})))
@@ -82,44 +153,83 @@ pub struct UpdateRoleBody {
 }
 
 pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<UpdateRoleBody>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let id = path.into_inner();
     let slug = body.slug.clone().unwrap_or_else(|| body.name.to_lowercase().replace(' ', "_"));
-    let _ = conn.execute("UPDATE roles SET name=?1,slug=?2,description=?3,updated_at=?4 WHERE id=?5",
-        rusqlite::params![body.name, slug, body.description, &now, id]);
+    match conn.execute(
+        "UPDATE roles SET name=?1,slug=?2,description=?3,updated_at=?4 WHERE id=?5 AND organization_id=?6",
+        crate::params![body.name, slug, body.description, &now, id, org_id],
+    ) {
+        Ok(0) => return HttpResponse::NotFound().json(ApiError::new("Not found")),
+        Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
+        _ => {}
+    }
     let pids = body.permission_ids.as_ref().or(body.permissions.as_ref());
     if let Some(pids) = pids {
+        if let Err(msg) = validate_permission_ids_for_org(&conn, org_id, pids) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
         let _ = conn.execute("DELETE FROM permission_role WHERE role_id=?1", [id]);
         for pid in pids {
             let _ = conn.execute("INSERT INTO permission_role (permission_id,role_id,created_at,updated_at) VALUES (?1,?2,?3,?4)",
-                rusqlite::params![pid, id, &now, &now]);
+                crate::params![pid, id, &now, &now]);
         }
     }
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"})))
 }
 
 pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let _ = conn.execute("DELETE FROM roles WHERE id=?1", [path.into_inner()]);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
+    match conn.execute(
+        "DELETE FROM roles WHERE id=?1 AND organization_id=?2",
+        crate::params![path.into_inner(), org_id],
+    ) {
+        Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
+    }
 }
 
 pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let t: i64 = conn.query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0)).unwrap_or(0);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"total": t})))
+    let t: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM roles WHERE organization_id=?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    let permissions_total = match load_org_plan(&conn, org_id) {
+        Some(plan) => permissions_from_modules(&plan.modules).len() as i64,
+        None => conn
+            .query_row("SELECT COUNT(*) FROM permissions", [], |r| r.get_idx::<i64>(0))
+            .unwrap_or(0),
+    };
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "total": t,
+        "permissions_total": permissions_total,
+    })))
 }
 
 pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let mut stmt = conn.prepare("SELECT id, name, slug FROM roles ORDER BY name").unwrap();
-    let items: Vec<serde_json::Value> = stmt.query_map([], |row| {
-        Ok(serde_json::json!({"id": row.get::<_,i64>(0)?, "name": row.get::<_,String>(1)?, "slug": row.get::<_,String>(2)?}))
-    }).unwrap().filter_map(|r| r.ok()).collect();
-    HttpResponse::Ok().json(ApiResponse::success(items))
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    match role_list_json(&conn, org_id) {
+        Ok(items) => HttpResponse::Ok().json(ApiResponse::success(items)),
+        Err(e) => HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    }
 }

@@ -1,5 +1,10 @@
 mod bio_park_tcp;
+mod biometric_device_logic;
 mod biometric_events;
+mod career_logic;
+mod chat_events;
+mod chat_department_channels;
+mod role_defaults;
 mod config;
 mod db;
 mod handlers;
@@ -15,10 +20,20 @@ mod payroll_logic;
 mod attendance_logic;
 mod workflow_logic;
 mod storage;
+mod tenant;
+mod plan_limits;
+mod presence;
+mod subscription_period;
+mod payslip_render;
+mod rate_limit;
+mod signup_otp;
+mod signup_otp_email;
 
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, middleware as actix_middleware};
 use std::sync::Arc;
+
+use crate::config::AppConfig;
 
 async fn run_biometric_server(
     host: &str,
@@ -47,16 +62,15 @@ async fn run_api_server(
     port: u16,
     pool: web::Data<db::DbPool>,
     jwt_secret: web::Data<Arc<String>>,
+    app_config: web::Data<Arc<AppConfig>>,
     events: web::Data<biometric_events::BiometricEvents>,
+    chat_events: web::Data<chat_events::ChatEvents>,
 ) -> std::io::Result<()> {
     log::info!("🚀 HRM API http://{}:{}", host, port);
+    let cors_origins = app_config.cors_origins.clone();
     HttpServer::new(move || {
+        let allowed = cors_origins.clone();
         let cors = Cors::default()
-            .allowed_origin("http://localhost:5173")
-            .allowed_origin("http://127.0.0.1:5173")
-            .allowed_origin("http://localhost:5174")
-            .allowed_origin("http://127.0.0.1:5174")
-            .allowed_origin("http://localhost:3000")
             .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
             .allowed_headers(vec![
                 actix_web::http::header::AUTHORIZATION,
@@ -64,9 +78,16 @@ async fn run_api_server(
                 actix_web::http::header::ACCEPT,
             ])
             .supports_credentials()
-            .max_age(3600);
+            .max_age(3600)
+            .allowed_origin_fn(move |origin, _req_head| {
+                if origin.as_bytes() == b"null" {
+                    return true;
+                }
+                allowed.iter().any(|o| origin == o.as_str())
+            });
 
         App::new()
+            .app_data(web::PayloadConfig::new(10 * 1024 * 1024))
             .wrap(cors)
             .wrap(actix_middleware::Logger::default())
             .wrap(actix_web::middleware::from_fn(
@@ -74,7 +95,9 @@ async fn run_api_server(
             ))
             .app_data(pool.clone())
             .app_data(jwt_secret.clone())
+            .app_data(app_config.clone())
             .app_data(events.clone())
+            .app_data(chat_events.clone())
             .configure(routes::configure)
     })
     .bind(format!("{host}:{port}"))?
@@ -84,28 +107,62 @@ async fn run_api_server(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    dotenv::dotenv().ok();
+    config::load_dotenv();
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let cfg = config::AppConfig::from_env();
-    let pool = db::init_pool(&cfg.database_path);
-    db::migrations::run_migrations(&pool);
+    if std::env::var("SMTP_HOST")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        log::info!("Signup email OTP: SMTP_HOST is configured");
+    } else {
+        log::warn!("Signup email OTP: SMTP_HOST is not set");
+    }
+    if std::env::var("MSG91_AUTH_KEY")
+        .or_else(|_| std::env::var("MSG91_AUTHKEY"))
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        log::info!("Signup WhatsApp OTP: MSG91 is configured");
+    } else {
+        log::warn!("Signup WhatsApp OTP: MSG91_AUTH_KEY / MSG91_AUTHKEY is not set");
+    }
+    cfg.validate_security();
+    let pool = db::init_pool(&cfg.database_path, cfg.database_url.as_deref());
+    let _ = std::fs::create_dir_all(crate::storage::storage_root());
+    db::run_migrations(&pool);
 
-    let jwt_secret = Arc::new(cfg.jwt_secret.clone());
-    let pool_data = web::Data::new(pool.clone());
-    let jwt_data = web::Data::new(jwt_secret);
+    if pool.backend() == db::Backend::Postgres && !db::postgres_bootstrap::schema_ready(&pool) {
+        panic!(
+            "PostgreSQL schema is not ready (users table missing). \
+             Run scripts/migrate-sqlite-to-postgres.py before starting with DATABASE_URL."
+        );
+    }
+
+    if let Ok(conn) = pool.get() {
+        crate::plan_limits::seed_all_permissions(&conn);
+        crate::role_defaults::sync_role_defaults(&conn);
+    }
 
     let host = cfg.host.clone();
     let api_port = cfg.port;
     let biometric_port = cfg.biometric_port;
     let tcp_port = cfg.bio_park_tcp_port;
 
+    let jwt_secret = Arc::new(cfg.jwt_secret.clone());
+    let app_config = web::Data::new(Arc::new(cfg));
+    let pool_data = web::Data::new(pool.clone());
+    let jwt_data = web::Data::new(jwt_secret);
+
     let events_inner = biometric_events::BiometricEvents::new();
     let events = web::Data::new(events_inner.clone());
+    let chat_events = web::Data::new(chat_events::ChatEvents::new());
     let pool_bio = pool_data.clone();
     let pool_api = pool_data.clone();
     let events_bio = events.clone();
-    let events_api = events;
+    let events_api = events.clone();
+    let chat_events_api = chat_events.clone();
 
     let host_bio = host.clone();
     let host_api = host.clone();
@@ -120,7 +177,15 @@ async fn main() -> std::io::Result<()> {
     });
 
     tokio::try_join!(
-        run_api_server(&host_api, api_port, pool_api, jwt_data, events_api),
+        run_api_server(
+            &host_api,
+            api_port,
+            pool_api,
+            jwt_data,
+            app_config,
+            events_api,
+            chat_events_api,
+        ),
         run_biometric_server(&host_bio, biometric_port, pool_bio, events_bio),
     )?;
 

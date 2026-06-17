@@ -14,9 +14,44 @@ function isNavGroup(item: NavItem | NavGroup): item is NavGroup {
     return 'items' in item;
 }
 
+function collectNavHrefs(items: (NavItem | NavGroup)[]): string[] {
+    return items.flatMap((item) =>
+        isNavGroup(item) ? item.items.map((sub) => sub.href) : [item.href],
+    );
+}
+
+function isNavHrefActive(pathname: string, href: string, allHrefs: string[]): boolean {
+    if (pathname === href) {
+        return true;
+    }
+    // App Settings sub-pages (leave policy, etc.)
+    if (
+        href === '/admin/settings/app' &&
+        pathname.startsWith('/admin/settings/') &&
+        !pathname.startsWith('/admin/settings/profile') &&
+        !pathname.startsWith('/admin/settings/password') &&
+        !pathname.startsWith('/admin/settings/appearance')
+    ) {
+        return true;
+    }
+    if (!pathname.startsWith(`${href}/`)) {
+        return false;
+    }
+    // Prefer the most specific nav link (e.g. /leave-requests/manage over /leave-requests).
+    const hasMoreSpecificMatch = allHrefs.some(
+        (other) =>
+            other !== href &&
+            other.startsWith(`${href}/`) &&
+            (pathname === other || pathname.startsWith(`${other}/`)),
+    );
+    return !hasMoreSpecificMatch;
+}
+
 export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
     const location = useLocation();
-    const urlIsActive = (href: string) => location.pathname === href || location.pathname.startsWith(href + '/');
+    const navHrefs = collectNavHrefs(items);
+    const urlIsActive = (href: string) =>
+        isNavHrefActive(location.pathname, href, navHrefs);
 
     return (
         <SidebarGroup className="px-2 py-0">

@@ -3,12 +3,25 @@ use chrono::{Datelike, Local};
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
-use crate::models::attendance::{Attendance, AttendanceListQuery, ClockInRequest};
+use crate::models::attendance::{
+    Attendance, AttendanceListQuery, ClockInRequest, CreateAttendanceRequest,
+    UpdateAttendanceRequest,
+};
 use crate::attendance_logic::{close_open_session_before_clock_in, combine_clock_out_datetime, combine_datetime, find_open_attendance_session};
 use crate::shift_logic::{
     calc_duration_minutes, is_early_departure, is_late_arrival,
     resolve_shift_for_user, ShiftConfig,
 };
+use crate::models::user::JwtClaims;
+use crate::tenant::org_id_from_claims;
+
+fn can_view_org_attendance(conn: &crate::db::Connection, claims: &JwtClaims, org_id: i64) -> bool {
+    if crate::middleware::rbac::effective_super_admin(conn, claims, org_id) {
+        return true;
+    }
+    let perms = crate::middleware::rbac::load_user_permissions(conn, claims.sub, false);
+    crate::middleware::rbac::has_permission(&perms, "manage-attendance")
+}
 
 fn session_json(att: &Attendance, shift: Option<&ShiftConfig>) -> serde_json::Value {
     let clock_in = att.clock_in.as_ref().map(|t| combine_datetime(&att.date, t));
@@ -37,7 +50,7 @@ fn session_json(att: &Attendance, shift: Option<&ShiftConfig>) -> serde_json::Va
 }
 
 fn fetch_user_sessions(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     date: &str,
 ) -> Vec<Attendance> {
@@ -46,11 +59,7 @@ fn fetch_user_sessions(
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(rusqlite::params![user_id, date], Attendance::from_row);
-    match rows {
-        Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
-        Err(_) => Vec::new(),
-    }
+    stmt.query_map(crate::params![user_id, date], Attendance::from_row)
 }
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
@@ -59,6 +68,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         status: None,
         page: Some(1),
         per_page: Some(100),
+        only_open: None,
     })).await
 }
 
@@ -113,7 +123,10 @@ pub async fn clock_in(
     let shift = resolve_shift_for_user(&conn, claims.sub, &date);
     let is_late = is_late_arrival(&time, &shift.start_time, &shift.end_time, shift.grace_in_minutes);
     let face_verified = body.face_verified.unwrap_or(false);
-    let location_json = body.location.as_ref().and_then(|loc| serde_json::to_string(loc).ok());
+    let location_json = body
+        .location
+        .as_ref()
+        .and_then(|loc| serde_json::to_string(loc).ok());
 
     // Close any open session (today or prior-day overnight) before starting a new one
     close_open_session_before_clock_in(&conn, claims.sub, &date, &time, &ts, &shift);
@@ -121,7 +134,7 @@ pub async fn clock_in(
     match conn.execute(
         "INSERT INTO attendance (user_id, date, clock_in, status, is_late, clock_in_location, clock_in_face_verified, clock_in_face_match_score, source, created_at, updated_at)
          VALUES (?1, ?2, ?3, 'present', ?4, ?5, ?6, ?7, 'manual', ?8, ?8)",
-        rusqlite::params![
+        crate::params![
             claims.sub,
             &date,
             &time,
@@ -175,7 +188,7 @@ pub async fn clock_out(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespons
 
     match conn.execute(
         "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
-        rusqlite::params![&time, duration, if early_exit { 1 } else { 0 }, &ts, att_id],
+        crate::params![&time, duration, if early_exit { 1 } else { 0 }, &ts, att_id],
     ) {
         Ok(rows) if rows > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
             "message": "Clocked out",
@@ -203,31 +216,38 @@ pub async fn list(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
+    let org_id = org_id_from_claims(&claims);
     let per_page = query.per_page.unwrap_or(10).clamp(1, 100);
     let page = query.page.unwrap_or(1).max(1);
     let offset = (page - 1) * per_page;
 
-    let mut conditions = vec!["a.deleted_at IS NULL".to_string()];
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut conditions = vec!["a.deleted_at IS NULL".to_string(), "u.organization_id = ?".to_string()];
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
 
-    if !claims.is_super_admin {
+    if !can_view_org_attendance(&conn, &claims, org_id) {
         conditions.push("a.user_id = ?".to_string());
-        params.push(Box::new(claims.sub));
+        params.push(crate::db::into_param_value(claims.sub));
     }
 
     if let Some(ref status) = query.status {
         if !status.is_empty() && status != "all" {
             conditions.push("a.status = ?".to_string());
-            params.push(Box::new(status.clone()));
+            params.push(crate::db::into_param_value(status.clone()));
         }
+    }
+
+    if query.only_open.unwrap_or(false) {
+        conditions.push(
+            "a.clock_in IS NOT NULL AND TRIM(a.clock_in) != '' AND a.clock_out IS NULL".to_string(),
+        );
     }
 
     if let Some(ref search) = query.search {
         if !search.is_empty() {
             conditions.push("(u.name LIKE ? OR u.email LIKE ?)".to_string());
             let like = format!("%{}%", search);
-            params.push(Box::new(like.clone()));
-            params.push(Box::new(like));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like));
         }
     }
 
@@ -239,8 +259,8 @@ pub async fn list(
     let total: i64 = conn
         .query_row(
             &count_sql,
-            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            |r| r.get(0),
+            &params,
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
@@ -254,9 +274,9 @@ pub async fn list(
         where_clause
     );
 
-    let mut list_params: Vec<Box<dyn rusqlite::types::ToSql>> = params;
-    list_params.push(Box::new(per_page));
-    list_params.push(Box::new(offset));
+    let mut list_params: Vec<crate::db::ParamValue> = params;
+    list_params.push(crate::db::into_param_value(per_page));
+    list_params.push(crate::db::into_param_value(offset));
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -271,18 +291,15 @@ pub async fn list(
 
     let list_rows: Vec<ListRow> = stmt
         .query_map(
-            rusqlite::params_from_iter(list_params.iter().map(|p| p.as_ref())),
+            &list_params,
             |row| {
                 Ok(ListRow {
                     att: Attendance::from_row(row)?,
-                    user_name: row.get("user_name").ok(),
-                    user_email: row.get("user_email").ok(),
+                    user_name: row.get::<Option<String>>("user_name").ok().flatten(),
+                    user_email: row.get::<Option<String>>("user_email").ok().flatten(),
                 })
             },
-        )
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        );
 
     let rows: Vec<serde_json::Value> = list_rows
         .iter()
@@ -319,31 +336,29 @@ pub async fn list(
 }
 
 pub async fn users(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, name, email FROM users WHERE deleted_at IS NULL ORDER BY name",
+        "SELECT id, name, email FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let items: Vec<serde_json::Value> = stmt
-        .query_map([], |row| {
+        .query_map([org_id], |row| {
             Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "email": row.get::<_, Option<String>>(2)?,
+                "id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "email": row.get_idx::<Option<String>>(2)?,
             }))
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        });
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -352,6 +367,7 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -360,47 +376,51 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let today = Local::now();
     let month_start = format!("{}-{:02}-01", today.year(), today.month());
 
-    let user_clause = if claims.is_super_admin {
-        ""
+    let view_org = can_view_org_attendance(&conn, &claims, org_id);
+
+    let user_clause = if view_org {
+        " AND a.user_id IN (SELECT id FROM users WHERE organization_id = ?2 AND deleted_at IS NULL)"
     } else {
-        " AND user_id=?2"
+        " AND a.user_id = ?2"
     };
 
-    let month_params: Vec<Box<dyn rusqlite::types::ToSql>> = if claims.is_super_admin {
-        vec![Box::new(month_start.clone())]
+    let month_params: Vec<crate::db::ParamValue> = if view_org {
+        vec![crate::db::into_param_value(month_start.clone()), crate::db::into_param_value(org_id)]
     } else {
-        vec![Box::new(month_start.clone()), Box::new(claims.sub)]
+        vec![crate::db::into_param_value(month_start.clone()), crate::db::into_param_value(claims.sub)]
     };
 
     let q = |sql: &str| -> i64 {
         conn.query_row(
             &format!("{sql}{user_clause}"),
-            rusqlite::params_from_iter(month_params.iter().map(|p| p.as_ref())),
-            |r| r.get(0),
+            &month_params,
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0)
     };
 
-    let total_days = q("SELECT COUNT(DISTINCT date) FROM attendance WHERE deleted_at IS NULL AND date >= ?1");
-    let present_days = q("SELECT COUNT(*) FROM attendance WHERE deleted_at IS NULL AND clock_out IS NOT NULL AND date >= ?1");
-    let late_days = q("SELECT COUNT(*) FROM attendance WHERE deleted_at IS NULL AND is_late=1 AND date >= ?1");
-    let early_exit_days = q("SELECT COUNT(*) FROM attendance WHERE deleted_at IS NULL AND is_early_exit=1 AND date >= ?1");
-    let total_minutes = q("SELECT COALESCE(SUM(duration_minutes),0) FROM attendance WHERE deleted_at IS NULL AND date >= ?1");
+    let total_days = q("SELECT COUNT(DISTINCT a.date) FROM attendance a WHERE a.deleted_at IS NULL AND a.date >= ?1");
+    let present_days = q("SELECT COUNT(*) FROM attendance a WHERE a.deleted_at IS NULL AND a.clock_out IS NOT NULL AND a.date >= ?1");
+    let late_days = q("SELECT COUNT(*) FROM attendance a WHERE a.deleted_at IS NULL AND a.is_late=1 AND a.date >= ?1");
+    let early_exit_days = q("SELECT COUNT(*) FROM attendance a WHERE a.deleted_at IS NULL AND a.is_early_exit=1 AND a.date >= ?1");
+    let total_minutes = q("SELECT COALESCE(SUM(a.duration_minutes),0) FROM attendance a WHERE a.deleted_at IS NULL AND a.date >= ?1");
 
-    if claims.is_super_admin {
+    if view_org {
         let today_str = today.format("%Y-%m-%d").to_string();
         let present: i64 = conn
             .query_row(
-                "SELECT COUNT(DISTINCT user_id) FROM attendance WHERE date=?1 AND deleted_at IS NULL AND clock_out IS NOT NULL",
-                [&today_str],
-                |r| r.get(0),
+                "SELECT COUNT(DISTINCT a.user_id) FROM attendance a
+                 INNER JOIN users u ON u.id = a.user_id AND u.organization_id = ?2
+                 WHERE a.date=?1 AND a.deleted_at IS NULL AND a.clock_out IS NOT NULL",
+                crate::params![&today_str, org_id],
+                |r| r.get_idx::<i64>(0),
             )
             .unwrap_or(0);
         let total: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND is_super_admin=0",
-                [],
-                |r| r.get(0),
+                "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1",
+                [org_id],
+                |r| r.get_idx::<i64>(0),
             )
             .unwrap_or(0);
 
@@ -424,5 +444,263 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         "late_days": late_days,
         "early_exit_days": early_exit_days,
         "total_hours": total_minutes / 60,
+    })))
+}
+
+/// Normalize a "HH:MM" or "HH:MM:SS" time string to "HH:MM:SS"; None/empty → None.
+fn normalize_time(value: Option<&str>) -> Option<String> {
+    let v = value?.trim();
+    if v.is_empty() {
+        return None;
+    }
+    // Accept an ISO "<date>T<time>" too — keep only the time part.
+    let t = if let Some((_, time)) = v.split_once('T') { time } else { v };
+    let t = t.trim();
+    match t.len() {
+        5 => Some(format!("{t}:00")), // HH:MM
+        8 => Some(t.to_string()),     // HH:MM:SS
+        _ => crate::shift_logic::parse_time(t).map(|p| p.format("%H:%M:%S").to_string()),
+    }
+}
+
+/// Recompute duration / late / early flags for a session against the user's shift.
+fn recompute_flags(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    date: &str,
+    clock_in: Option<&str>,
+    clock_out: Option<&str>,
+) -> (Option<i64>, bool, bool) {
+    let shift = resolve_shift_for_user(conn, user_id, date);
+    let is_late = clock_in
+        .map(|ci| is_late_arrival(ci, &shift.start_time, &shift.end_time, shift.grace_in_minutes))
+        .unwrap_or(false);
+    let (duration, early) = match (clock_in, clock_out) {
+        (Some(ci), Some(co)) => (
+            Some(calc_duration_minutes(ci, co)),
+            is_early_departure(co, &shift.start_time, &shift.end_time, shift.grace_out_minutes),
+        ),
+        _ => (None, false),
+    };
+    (duration, is_late, early)
+}
+
+/// PATCH /api/admin/attendance/{id} — edit/regularize an attendance record.
+pub async fn update(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<UpdateAttendanceRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    if !can_view_org_attendance(&conn, &claims, org_id) {
+        return HttpResponse::Forbidden()
+            .json(ApiError::new("You do not have permission to edit attendance"));
+    }
+
+    let att_id = path.into_inner();
+    // Load the record, scoped to the caller's organization.
+    let existing = conn.query_row(
+        "SELECT a.* FROM attendance a
+         JOIN users u ON u.id = a.user_id
+         WHERE a.id = ?1 AND u.organization_id = ?2 AND a.deleted_at IS NULL",
+        crate::params![att_id, org_id],
+        Attendance::from_row,
+    );
+    let existing = match existing {
+        Ok(a) => a,
+        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Attendance record not found")),
+    };
+
+    // Resolve final field values (provided value overrides, else keep existing).
+    let clock_in = match body.clock_in.as_deref() {
+        Some(_) => normalize_time(body.clock_in.as_deref()),
+        None => existing.clock_in.clone(),
+    };
+    let clock_out = if body.clear_clock_out.unwrap_or(false) {
+        None
+    } else {
+        match body.clock_out.as_deref() {
+            Some(_) => normalize_time(body.clock_out.as_deref()),
+            None => existing.clock_out.clone(),
+        }
+    };
+
+    if clock_in.is_none() && clock_out.is_some() {
+        return HttpResponse::BadRequest()
+            .json(ApiError::new("Cannot set a clock-out without a clock-in"));
+    }
+
+    let status = body
+        .status
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or(existing.status.clone())
+        .unwrap_or_else(|| "present".to_string());
+
+    let (duration, is_late, is_early) = recompute_flags(
+        &conn,
+        existing.user_id,
+        &existing.date,
+        clock_in.as_deref(),
+        clock_out.as_deref(),
+    );
+
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let result = conn.execute(
+        "UPDATE attendance
+         SET clock_in=?1, clock_out=?2, duration_minutes=?3, is_late=?4, is_early_exit=?5,
+             status=?6, notes=?7, source='manual', updated_at=?8
+         WHERE id=?9",
+        crate::params![
+            clock_in,
+            clock_out,
+            duration,
+            if is_late { 1 } else { 0 },
+            if is_early { 1 } else { 0 },
+            status,
+            body.notes.clone().or(existing.notes.clone()),
+            &now,
+            att_id
+        ],
+    );
+
+    match result {
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": "Attendance updated",
+            "id": att_id,
+        }))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
+    }
+}
+
+/// POST /api/admin/attendance/manual — create an attendance record for an employee.
+pub async fn store_manual(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<CreateAttendanceRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    if !can_view_org_attendance(&conn, &claims, org_id) {
+        return HttpResponse::Forbidden()
+            .json(ApiError::new("You do not have permission to add attendance"));
+    }
+
+    // Target employee must belong to the caller's organization.
+    let in_org = conn
+        .query_row(
+            "SELECT 1 FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![body.user_id, org_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !in_org {
+        return HttpResponse::BadRequest().json(ApiError::new("Employee not found in organization"));
+    }
+
+    let date = body.date.trim();
+    if date.len() < 10 {
+        return HttpResponse::BadRequest().json(ApiError::new("A valid date (YYYY-MM-DD) is required"));
+    }
+
+    let clock_in = normalize_time(body.clock_in.as_deref());
+    let clock_out = normalize_time(body.clock_out.as_deref());
+    if clock_in.is_none() && clock_out.is_some() {
+        return HttpResponse::BadRequest()
+            .json(ApiError::new("Cannot set a clock-out without a clock-in"));
+    }
+
+    let status = body
+        .status
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "present".to_string());
+
+    let (duration, is_late, is_early) =
+        recompute_flags(&conn, body.user_id, date, clock_in.as_deref(), clock_out.as_deref());
+
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let result = conn.execute(
+        "INSERT INTO attendance
+            (user_id, date, clock_in, clock_out, duration_minutes, is_late, is_early_exit,
+             status, notes, source, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'manual', ?10, ?10)",
+        crate::params![
+            body.user_id,
+            date,
+            clock_in,
+            clock_out,
+            duration,
+            if is_late { 1 } else { 0 },
+            if is_early { 1 } else { 0 },
+            status,
+            body.notes.clone(),
+            &now
+        ],
+    );
+
+    match result {
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": "Attendance entry created",
+            "id": conn.last_insert_rowid(),
+        }))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
+    }
+}
+
+/// DELETE /api/admin/attendance/{id} — soft-delete an attendance record.
+pub async fn destroy(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    if !can_view_org_attendance(&conn, &claims, org_id) {
+        return HttpResponse::Forbidden()
+            .json(ApiError::new("You do not have permission to delete attendance"));
+    }
+
+    let att_id = path.into_inner();
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let rows = conn
+        .execute(
+            "UPDATE attendance SET deleted_at=?1, updated_at=?1
+             WHERE id=?2 AND user_id IN (SELECT id FROM users WHERE organization_id = ?3)",
+            crate::params![&now, att_id, org_id],
+        )
+        .unwrap_or(0);
+
+    if rows == 0 {
+        return HttpResponse::NotFound().json(ApiError::new("Attendance record not found"));
+    }
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "message": "Attendance record deleted",
     })))
 }

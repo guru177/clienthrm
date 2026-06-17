@@ -3,12 +3,15 @@ import { Lock, Home, ArrowLeft } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
+import { useAuth } from '@/contexts/AuthContext';
+import { defaultAdminRoute } from '@/lib/default-route';
 
 export default function Unauthorized() {
+    const { hasPermission } = useAuth();
+    const homeHref = defaultAdminRoute(hasPermission);
+
     return (
         <AppLayout breadcrumbs={[{ label: 'Access Denied', href: '#' }]}>
-            
-
             <div className="flex items-center justify-center min-h-[400px]">
                 <div className="text-center space-y-6">
                     <div className="flex justify-center">
@@ -29,14 +32,11 @@ export default function Unauthorized() {
                     </p>
 
                     <div className="flex justify-center gap-3 pt-4">
-                        <Button
-                            variant="outline"
-                            onClick={() => window.history.back()}
-                        >
+                        <Button variant="outline" onClick={() => window.history.back()}>
                             <ArrowLeft className="mr-2 h-4 w-4" />
                             Go Back
                         </Button>
-                        <Link to="/admin/dashboard">
+                        <Link to={homeHref}>
                             <Button>
                                 <Home className="mr-2 h-4 w-4" />
                                 Go Home

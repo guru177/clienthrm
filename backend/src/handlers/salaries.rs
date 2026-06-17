@@ -3,14 +3,15 @@ use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
 use crate::models::salary::SalaryComponent;
+use crate::tenant::{org_id_from_claims, salary_component_in_organization, user_in_organization};
 use serde::Deserialize;
 
-fn row_component_amount(row: &rusqlite::Row) -> Option<f64> {
-    row.get::<_, Option<f64>>("default_value")
+fn row_component_amount(row: &crate::db::Row) -> Option<f64> {
+    row.get::<Option<f64>>("default_value")
         .ok()
         .flatten()
-        .or_else(|| row.get::<_, Option<f64>>("amount").ok().flatten())
-        .or_else(|| row.get::<_, Option<f64>>("max_amount_per_month").ok().flatten())
+        .or_else(|| row.get::<Option<f64>>("amount").ok().flatten())
+        .or_else(|| row.get::<Option<f64>>("max_amount_per_month").ok().flatten())
 }
 
 fn normalize_calculation_type(raw: Option<&str>) -> String {
@@ -37,16 +38,16 @@ fn statutory_preview_json(p: &crate::salary_split::CtcStatutoryPreview) -> serde
     serde_json::to_value(p).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-fn row_is_reimbursement(row: &rusqlite::Row, component_type: &str) -> bool {
+fn row_is_reimbursement(row: &crate::db::Row, component_type: &str) -> bool {
     if component_type == "reimbursement" {
         return true;
     }
-    row.get::<_, Option<String>>("reimbursement_type")
+    row.get::<Option<String>>("reimbursement_type")
         .ok()
         .flatten()
         .filter(|s| !s.is_empty())
         .is_some()
-        || row.get::<_, Option<String>>("calculation_type")
+        || row.get::<Option<String>>("calculation_type")
             .ok()
             .flatten()
             .as_deref()
@@ -55,7 +56,8 @@ fn row_is_reimbursement(row: &rusqlite::Row, component_type: &str) -> bool {
 
 /// List salary components filtered by type (earning/deduction/reimbursement)
 pub async fn components_list(pool: web::Data<DbPool>, req: HttpRequest, query: web::Query<ComponentQuery>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let sql = if let Some(ref ctype) = query.r#type {
@@ -64,27 +66,29 @@ pub async fn components_list(pool: web::Data<DbPool>, req: HttpRequest, query: w
         }
         if ctype == "reimbursement" {
             "SELECT * FROM salary_components
-             WHERE COALESCE(component_type, type)='reimbursement'
+             WHERE organization_id=?1
+               AND (COALESCE(component_type, type)='reimbursement'
                 OR reimbursement_type IS NOT NULL
-                OR calculation_type='reimbursement'
+                OR calculation_type='reimbursement')
              ORDER BY name"
         } else {
             "SELECT * FROM salary_components
-             WHERE COALESCE(component_type, type)=?1
+             WHERE organization_id=?2
+               AND COALESCE(component_type, type)=?1
                AND COALESCE(component_type, type) != 'reimbursement'
                AND reimbursement_type IS NULL
                AND (calculation_type IS NULL OR calculation_type != 'reimbursement')
              ORDER BY name"
         }
     } else {
-        "SELECT * FROM salary_components ORDER BY name"
+        "SELECT * FROM salary_components WHERE organization_id=?1 ORDER BY name"
     };
 
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<serde_json::Value>::new()))
     };
-    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<serde_json::Value> {
+    let map_row = |row: &crate::db::Row| -> crate::db::Result<serde_json::Value> {
         let c = SalaryComponent::from_row(row)?;
         let comp_type = if row_is_reimbursement(row, c.component_type.as_str()) {
             "reimbursement".to_string()
@@ -97,16 +101,16 @@ pub async fn components_list(pool: web::Data<DbPool>, req: HttpRequest, query: w
             "id": c.id,
             "name": c.name,
             "type": comp_type,
-            "description": row.get::<_, Option<String>>("description").ok().flatten(),
-            "is_active": row.get::<_, Option<i64>>("is_active").ok().flatten().unwrap_or(1) != 0,
-            "earning_type": row.get::<_, Option<String>>("earning_type").ok().flatten(),
-            "name_in_payslip": row.get::<_, Option<String>>("name_in_payslip").ok().flatten().unwrap_or_else(|| c.name.clone()),
+            "description": row.get::<Option<String>>("description").ok().flatten(),
+            "is_active": row.get::<Option<i64>>("is_active").ok().flatten().unwrap_or(1) != 0,
+            "earning_type": row.get::<Option<String>>("earning_type").ok().flatten(),
+            "name_in_payslip": row.get::<Option<String>>("name_in_payslip").ok().flatten().unwrap_or_else(|| c.name.clone()),
             "calculation_type": calc_type,
             "amount": amount.map(|v| v.to_string()),
-            "deduction_type": row.get::<_, Option<String>>("deduction_type").ok().flatten(),
-            "deduction_frequency": row.get::<_, Option<String>>("deduction_frequency").ok().flatten().unwrap_or_else(|| "recurring".into()),
+            "deduction_type": row.get::<Option<String>>("deduction_type").ok().flatten(),
+            "deduction_frequency": row.get::<Option<String>>("deduction_frequency").ok().flatten().unwrap_or_else(|| "recurring".into()),
             "is_pre_tax": c.is_taxable,
-            "reimbursement_type": row.get::<_, Option<String>>("reimbursement_type").ok().flatten(),
+            "reimbursement_type": row.get::<Option<String>>("reimbursement_type").ok().flatten(),
             "max_amount_per_month": amount.map(|v| v.to_string()),
             "component_type": c.component_type,
             "default_value": c.default_value,
@@ -115,16 +119,13 @@ pub async fn components_list(pool: web::Data<DbPool>, req: HttpRequest, query: w
     };
     let items: Vec<serde_json::Value> = if let Some(ref ctype) = query.r#type {
         if ctype == "reimbursement" {
-            stmt.query_map([], map_row)
+            stmt.query_map([org_id], map_row)
         } else {
-            stmt.query_map([ctype], map_row)
+            stmt.query_map(crate::params![ctype, org_id], map_row)
         }
     } else {
-        stmt.query_map([], map_row)
-    }
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect();
+        stmt.query_map([org_id], map_row)
+    };
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -252,11 +253,12 @@ fn resolve_component_fields(body: &CreateComponentRequest) -> ResolvedComponent 
 }
 
 fn persist_component(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     id: Option<i64>,
+    org_id: i64,
     body: &CreateComponentRequest,
     now: &str,
-) -> Result<(), rusqlite::Error> {
+) -> crate::db::Result<usize> {
     let slug = body.name.to_lowercase().replace(' ', "_");
     let r = resolve_component_fields(body);
     let is_active = if r.is_active { 1 } else { 0 };
@@ -271,8 +273,8 @@ fn persist_component(
                 deduction_type=?10, deduction_frequency=?11, is_pre_tax=?12,
                 reimbursement_type=?13, max_amount_per_month=?14,
                 slug=?15, component_type=?16, default_value=?17, is_taxable=?18
-             WHERE id=?19",
-            rusqlite::params![
+             WHERE id=?19 AND organization_id=?20",
+            crate::params![
                 body.name,
                 r.comp_type,
                 body.description,
@@ -292,8 +294,9 @@ fn persist_component(
                 r.amount,
                 is_taxable,
                 cid,
+                org_id,
             ],
-        )?;
+        )
     } else {
         conn.execute(
             "INSERT INTO salary_components (
@@ -301,9 +304,9 @@ fn persist_component(
                 earning_type, name_in_payslip, calculation_type, amount,
                 deduction_type, deduction_frequency, is_pre_tax,
                 reimbursement_type, max_amount_per_month,
-                slug, component_type, default_value, is_taxable
-             ) VALUES (?1,?2,?3,?4,?5,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-            rusqlite::params![
+                slug, component_type, default_value, is_taxable, organization_id
+             ) VALUES (?1,?2,?3,?4,?5,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            crate::params![
                 body.name,
                 r.comp_type,
                 body.description,
@@ -322,71 +325,82 @@ fn persist_component(
                 r.comp_type,
                 r.amount,
                 is_taxable,
+                org_id,
             ],
-        )?;
+        )
     }
-    Ok(())
 }
 
 pub async fn components_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<CreateComponentRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    match persist_component(&conn, None, &body, &now) {
+    match persist_component(&conn, None, org_id, &body, &now) {
         Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
 
 pub async fn components_update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<CreateComponentRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let id = path.into_inner();
-    match persist_component(&conn, Some(id), &body, &now) {
-        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
+    match persist_component(&conn, Some(id), org_id, &body, &now) {
+        Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
+        Ok(_) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
 
 pub async fn components_destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let _ = conn.execute("DELETE FROM salary_components WHERE id=?1", [path.into_inner()]);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
+    match conn.execute(
+        "DELETE FROM salary_components WHERE id=?1 AND organization_id=?2",
+        crate::params![path.into_inner(), org_id],
+    ) {
+        Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
+    }
 }
 
 /// List employees with salary structures — returns paginated format
 pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: web::Query<EmployeeListQuery>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let per_page = query.per_page.unwrap_or(15).min(100) as i64;
     let page = query.page.unwrap_or(1).max(1) as i64;
     let offset = (page - 1) * per_page;
 
-    let mut conditions = vec!["u.deleted_at IS NULL".to_string()];
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut conditions = vec!["u.deleted_at IS NULL".to_string(), "u.organization_id = ?".to_string()];
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
 
     let status = query.status.as_deref().unwrap_or("active");
     if status != "all" {
         conditions.push("u.status = ?".to_string());
-        params.push(Box::new(status.to_string()));
+        params.push(crate::db::into_param_value(status.to_string()));
     }
     if let Some(ref search) = query.search {
         if !search.is_empty() {
             conditions.push("(u.name LIKE ? OR u.email LIKE ? OR u.employee_id LIKE ?)".to_string());
             let like = format!("%{}%", search);
-            params.push(Box::new(like.clone()));
-            params.push(Box::new(like.clone()));
-            params.push(Box::new(like));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like));
         }
     }
     if let Some(ref dept) = query.department_id {
         if dept != "all" {
             if let Ok(dept_id) = dept.parse::<i64>() {
                 conditions.push("u.department_id = ?".to_string());
-                params.push(Box::new(dept_id));
+                params.push(crate::db::into_param_value(dept_id));
             }
         }
     }
@@ -394,7 +408,7 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
         if desig != "all" {
             if let Ok(desig_id) = desig.parse::<i64>() {
                 conditions.push("u.designation_id = ?".to_string());
-                params.push(Box::new(desig_id));
+                params.push(crate::db::into_param_value(desig_id));
             }
         }
     }
@@ -404,8 +418,8 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
     let total: i64 = conn
         .query_row(
             &count_sql,
-            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            |r| r.get(0),
+            &params,
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let last_page = ((total as f64) / (per_page as f64)).ceil().max(1.0) as i64;
@@ -424,31 +438,28 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
          WHERE {} ORDER BY u.name LIMIT ? OFFSET ?",
         where_clause
     );
-    params.push(Box::new(per_page));
-    params.push(Box::new(offset));
+    params.push(crate::db::into_param_value(per_page));
+    params.push(crate::db::into_param_value(offset));
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut stmt = conn.prepare(&sql).unwrap();
     let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>, Option<String>)> = stmt
-        .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+        .query_map(&params, |row| {
             Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7).ok(),
-                row.get(8).ok(),
-                row.get(9).ok(),
-                row.get(10).ok(),
-                row.get(11).ok(),
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<Option<String>>(2)?,
+                row.get_idx::<Option<String>>(3)?,
+                row.get_idx::<Option<String>>(4)?,
+                row.get_idx::<Option<String>>(5)?,
+                row.get_idx::<Option<String>>(6)?,
+                row.get_idx::<Option<i64>>(7)?,
+                row.get_idx::<Option<String>>(8)?,
+                row.get_idx::<Option<i64>>(9)?,
+                row.get_idx::<Option<String>>(10)?,
+                row.get_idx::<Option<String>>(11)?,
             ))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
 
     let items: Vec<serde_json::Value> = rows
         .into_iter()
@@ -501,18 +512,19 @@ pub struct EmployeeListQuery {
 }
 
 pub async fn employees_filter_options(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let mut dept_stmt = conn.prepare("SELECT id, name FROM departments ORDER BY name").unwrap();
-    let departments: Vec<serde_json::Value> = dept_stmt.query_map([], |row| {
-        Ok(serde_json::json!({"id": row.get::<_, i64>(0)?, "name": row.get::<_, String>(1)?}))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    let mut dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
+    let departments: Vec<serde_json::Value> = dept_stmt.query_map([org_id], |row| {
+        Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
+    });
 
-    let mut desig_stmt = conn.prepare("SELECT id, name FROM designations ORDER BY name").unwrap();
-    let designations: Vec<serde_json::Value> = desig_stmt.query_map([], |row| {
-        Ok(serde_json::json!({"id": row.get::<_, i64>(0)?, "name": row.get::<_, String>(1)?}))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    let mut desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
+    let designations: Vec<serde_json::Value> = desig_stmt.query_map([org_id], |row| {
+        Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
+    });
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "departments": departments,
@@ -535,21 +547,12 @@ pub struct UserSalaryStructureItem {
     pub amount: f64,
 }
 
-fn user_exists(conn: &rusqlite::Connection, user_id: i64) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM users WHERE id=?1 AND deleted_at IS NULL",
-        [user_id],
-        |_| Ok(()),
-    )
-    .is_ok()
-}
-
-fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> serde_json::Value {
+fn build_user_salary_structure(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> serde_json::Value {
     let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let ctc_profile = crate::salary_split::load_employee_profile(conn, user_id, &as_of);
     let monthly_ctc = ctc_profile.as_ref().map(|p| crate::salary_split::round2(p.yearly_ctc / 12.0));
     let gross_monthly = ctc_profile.as_ref().map(|p| {
-        crate::salary_split::preview_for_profile(conn, p).gross
+        crate::salary_split::preview_for_profile(conn, org_id, p).gross
     });
 
     let effective_from: String = ctc_profile
@@ -559,14 +562,13 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
             conn.query_row(
                 "SELECT effective_from FROM salary_structure_items WHERE user_id=?1 ORDER BY effective_from DESC LIMIT 1",
                 [user_id],
-                |r| r.get(0),
+                |r| r.get_idx::<String>(0),
             )
             .ok()
         })
         .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
 
-    let mut stmt = conn
-        .prepare(
+    let Ok(stmt) = conn.prepare(
             "SELECT sc.id, sc.name, COALESCE(sc.component_type, sc.type) AS comp_type,
                     sc.calculation_type,
                     COALESCE(sc.default_value, sc.amount) AS default_value,
@@ -575,10 +577,12 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
              FROM salary_components sc
              LEFT JOIN salary_structure_items ssi
                ON ssi.salary_component_id = sc.id AND ssi.user_id = ?1 AND ssi.effective_from = ?2
+             WHERE sc.organization_id = ?3
              ORDER BY CASE COALESCE(sc.component_type, sc.type)
                  WHEN 'earning' THEN 0 WHEN 'deduction' THEN 1 ELSE 2 END, sc.name",
-        )
-        .unwrap();
+    ) else {
+        return serde_json::json!({"error": "DB error"});
+    };
 
     let mut components: Vec<serde_json::Value> = Vec::new();
     let mut gross_salary = 0.0f64;
@@ -586,13 +590,13 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
     let mut basic_amount = 0.0f64;
 
     let rows: Vec<_> = stmt
-        .query_map(rusqlite::params![user_id, &effective_from], |row| {
-            let comp_type: String = row.get(2)?;
-            let stored: Option<f64> = row.get(6)?;
-            let default_amt: Option<f64> = row.get(4)?;
-            let raw_calc: Option<String> = row.get(3)?;
+        .query_map(crate::params![user_id, &effective_from, org_id], |row| {
+            let comp_type: String = row.get_idx::<String>(2)?;
+            let stored: Option<f64> = row.get_idx::<Option<f64>>(6)?;
+            let default_amt: Option<f64> = row.get_idx::<Option<f64>>(4)?;
+            let raw_calc: Option<String> = row.get_idx::<Option<String>>(3)?;
             let calc_type = normalize_calculation_type(raw_calc.as_deref());
-            let slug: String = row.get(8)?;
+            let slug: String = row.get_idx::<String>(8)?;
             let pct = default_amt.unwrap_or(0.0);
 
             Ok((
@@ -601,15 +605,12 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
                 calc_type,
                 pct,
                 slug,
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(5).unwrap_or(0) != 0,
-                row.get::<_, Option<String>>(7)?,
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<i64>(5).unwrap_or(0) != 0,
+                row.get_idx::<Option<String>>(7)?,
             ))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
 
     // First pass: resolve basic for percentage_of_basic dependencies
     for row in &rows {
@@ -621,15 +622,15 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
             let mctc = monthly_ctc.unwrap_or(0.0);
             let g = gross_monthly.unwrap_or(mctc);
             if calc_type == "percentage_of_gross" {
-                return crate::salary_split::amount_from_calc(calc_type, *pct, mctc, g, 0.0);
+                return crate::salary_split::amount_from_calc(&calc_type, *pct, mctc, g, 0.0);
             }
             if calc_type == "percentage_of_ctc" {
                 if monthly_ctc.is_some() {
-                    return crate::salary_split::amount_from_calc(calc_type, *pct, mctc, g, 0.0);
+                    return crate::salary_split::amount_from_calc(&calc_type, *pct, mctc, g, 0.0);
                 }
             }
             if monthly_ctc.is_some() {
-                crate::salary_split::amount_from_calc(calc_type, *pct, mctc, g, 0.0)
+                crate::salary_split::amount_from_calc(&calc_type, *pct, mctc, g, 0.0)
             } else {
                 *pct
             }
@@ -718,7 +719,7 @@ fn build_user_salary_structure(conn: &rusqlite::Connection, user_id: i64) -> ser
             None
         },
         "ctc_profile": ctc_profile.map(|p| {
-            let comp = crate::salary_split::load_component_split_config(conn);
+            let comp = crate::salary_split::load_component_split_config(conn, org_id);
             serde_json::json!({
                 "yearly_ctc": p.yearly_ctc,
                 "monthly_ctc": crate::salary_split::round2(p.yearly_ctc / 12.0),
@@ -741,21 +742,22 @@ pub async fn user_salary_structure_show(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    if !user_exists(&conn, user_id) {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
 
-    HttpResponse::Ok().json(ApiResponse::success(build_user_salary_structure(&conn, user_id)))
+    HttpResponse::Ok().json(ApiResponse::success(build_user_salary_structure(&conn, user_id, org_id)))
 }
 
 /// POST /api/admin/users/{id}/salary-structure
@@ -765,17 +767,18 @@ pub async fn user_salary_structure_store(
     path: web::Path<i64>,
     body: web::Json<StoreUserSalaryStructureRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    if !user_exists(&conn, user_id) {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
 
@@ -792,17 +795,22 @@ pub async fn user_salary_structure_store(
     };
     if let Err(e) = tx.execute(
         "DELETE FROM salary_structure_items WHERE user_id=?1 AND effective_from=?2",
-        rusqlite::params![user_id, &body.effective_from],
+        crate::params![user_id, &body.effective_from],
     ) {
         return HttpResponse::InternalServerError().json(ApiError::new(&format!("{}", e)));
     }
 
     let now_ts = now.as_str();
     for item in &body.items {
+        if !salary_component_in_organization(&conn, item.salary_component_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Salary component does not belong to this organization",
+            ));
+        }
         if let Err(e) = tx.execute(
             "INSERT INTO salary_structure_items (user_id, salary_component_id, amount, effective_from, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            rusqlite::params![
+            crate::params![
                 user_id,
                 item.salary_component_id,
                 item.amount,
@@ -818,42 +826,40 @@ pub async fn user_salary_structure_store(
     }
 
     HttpResponse::Ok().json(ApiResponse::success(build_user_salary_structure(
-        &conn, user_id,
+        &conn, user_id, org_id,
     )))
 }
 
 // ── Phase 1: CTC templates & employee profiles ──
 
 pub async fn templates_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, name, basic_pct, hra_pct, conv_pct, special_pct, is_default FROM salary_templates ORDER BY name",
+        "SELECT id, name, basic_pct, hra_pct, conv_pct, special_pct, is_default FROM salary_templates WHERE organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,
         Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<serde_json::Value>::new())),
     };
     let items: Vec<serde_json::Value> = stmt
-        .query_map([], |row| {
+        .query_map([org_id], |row| {
             Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "basic_pct": row.get::<_, f64>(2)?,
-                "hra_pct": row.get::<_, f64>(3)?,
-                "conv_pct": row.get::<_, f64>(4)?,
-                "special_pct": row.get::<_, f64>(5)?,
-                "is_default": row.get::<_, i64>(6).unwrap_or(0) != 0,
+                "id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "basic_pct": row.get_idx::<f64>(2)?,
+                "hra_pct": row.get_idx::<f64>(3)?,
+                "conv_pct": row.get_idx::<f64>(4)?,
+                "special_pct": row.get_idx::<f64>(5)?,
+                "is_default": row.get_idx::<i64>(6).unwrap_or(0) != 0,
             }))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -871,24 +877,25 @@ pub async fn user_ctc_profile_show(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    if !user_exists(&conn, user_id) {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
     let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let profile = crate::salary_split::load_employee_profile(&conn, user_id, &as_of);
-    let comp = crate::salary_split::load_component_split_config(&conn);
+    let comp = crate::salary_split::load_component_split_config(&conn, org_id);
 
     let split_preview = profile.as_ref().map(|p| {
-        crate::salary_split::preview_for_profile(&conn, p)
+        crate::salary_split::preview_for_profile(&conn, org_id, p)
     });
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
@@ -932,10 +939,11 @@ pub async fn ctc_preview(
     req: HttpRequest,
     body: web::Json<CtcPreviewRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     if body.yearly_ctc <= 0.0 {
         return HttpResponse::BadRequest().json(ApiError::new("Yearly CTC must be positive"));
     }
@@ -943,8 +951,8 @@ pub async fn ctc_preview(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let comp = crate::salary_split::load_component_split_config(&conn);
-    let cfg = crate::statutory_logic::load_statutory_config(&conn);
+    let comp = crate::salary_split::load_component_split_config(&conn, org_id);
+    let cfg = crate::statutory_logic::load_statutory_config(&conn, org_id);
     let pf = body.pf_applicable.unwrap_or(true) && comp.has_pf;
     let esi = body.esi_applicable.unwrap_or(true) && comp.has_esi;
     let preview = crate::salary_split::split_with_statutory_from_components(
@@ -964,16 +972,17 @@ pub async fn user_ctc_profile_store(
     path: web::Path<i64>,
     body: web::Json<StoreCtcProfileRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    if !user_exists(&conn, user_id) {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
     if body.yearly_ctc <= 0.0 {
@@ -981,7 +990,7 @@ pub async fn user_ctc_profile_store(
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let comp = crate::salary_split::load_component_split_config(&conn);
+    let comp = crate::salary_split::load_component_split_config(&conn, org_id);
     let pf = if comp.has_pf {
         body.pf_applicable.unwrap_or(true)
     } else {
@@ -1002,7 +1011,7 @@ pub async fn user_ctc_profile_store(
     if let Err(e) = conn.execute(
         "INSERT INTO employee_salary_profiles (user_id, yearly_ctc, template_id, pf_applicable, esi_applicable, effective_from, created_at, updated_at)
          VALUES (?1,?2,NULL,?3,?4,?5,?6,?6)",
-        rusqlite::params![user_id, body.yearly_ctc, pf_i, esi_i, &body.effective_from, &now],
+        crate::params![user_id, body.yearly_ctc, pf_i, esi_i, &body.effective_from, &now],
     ) {
         return HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e)));
     }
@@ -1015,7 +1024,7 @@ pub async fn user_ctc_profile_store(
         esi_applicable: esi,
         effective_from: body.effective_from.clone(),
     };
-    let preview = crate::salary_split::preview_for_profile(&conn, &profile);
+    let preview = crate::salary_split::preview_for_profile(&conn, org_id, &profile);
     if let Err(e) = crate::salary_split::sync_structure_from_preview(&conn, user_id, &body.effective_from, &preview) {
         log::warn!("CTC structure sync: {}", e);
     }
@@ -1029,16 +1038,17 @@ pub async fn user_ctc_profile_destroy(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    if !user_exists(&conn, user_id) {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
     let deleted = conn.execute(
@@ -1068,15 +1078,19 @@ pub async fn advances_list(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    if !user_in_organization(&conn, user_id, org_id) {
+        return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
     let mut stmt = match conn.prepare(
         "SELECT id, amount, balance, monthly_emi, description, is_active, created_at
          FROM employee_advances WHERE user_id=?1 ORDER BY id DESC",
@@ -1087,18 +1101,15 @@ pub async fn advances_list(
     let items: Vec<serde_json::Value> = stmt
         .query_map([user_id], |row| {
             Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "amount": row.get::<_, f64>(1)?,
-                "balance": row.get::<_, f64>(2)?,
-                "monthly_emi": row.get::<_, f64>(3)?,
-                "description": row.get::<_, Option<String>>(4)?,
-                "is_active": row.get::<_, i64>(5).unwrap_or(0) != 0,
-                "created_at": row.get::<_, Option<String>>(6)?,
+                "id": row.get_idx::<i64>(0)?,
+                "amount": row.get_idx::<f64>(1)?,
+                "balance": row.get_idx::<f64>(2)?,
+                "monthly_emi": row.get_idx::<f64>(3)?,
+                "description": row.get_idx::<Option<String>>(4)?,
+                "is_active": row.get_idx::<i64>(5).unwrap_or(0) != 0,
+                "created_at": row.get_idx::<Option<String>>(6)?,
             }))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -1108,20 +1119,24 @@ pub async fn advances_store(
     path: web::Path<i64>,
     body: web::Json<StoreAdvanceRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    if !user_in_organization(&conn, user_id, org_id) {
+        return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     match conn.execute(
         "INSERT INTO employee_advances (user_id, amount, balance, monthly_emi, description, is_active, created_at, updated_at)
          VALUES (?1,?2,?2,?3,?4,1,?5,?5)",
-        rusqlite::params![user_id, body.amount, body.monthly_emi, body.description, &now],
+        crate::params![user_id, body.amount, body.monthly_emi, body.description, &now],
     ) {
         Ok(_) => advances_list(pool, req, web::Path::from(user_id)).await,
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),

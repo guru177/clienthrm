@@ -1,4 +1,5 @@
 import axios from '@/lib/axios';
+import { usePermissions } from '@/hooks/use-permissions';
 import { RefreshCw, Check, X, Search, MoreVertical, Eye } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -49,12 +50,19 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { fetchLeaveTypeOptions, labelForLeaveType, type LeaveTypeOption } from '@/lib/leave-types';
 
 interface AdminLeaveRequestTableProps {
     onRefresh?: () => void;
 }
 
 export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestTableProps) {
+    const { hasPermission } = usePermissions();
+    const canApprove =
+        hasPermission('approve-leave-requests') || hasPermission('manage-leave-requests');
+    const canReject =
+        hasPermission('reject-leave-requests') || hasPermission('manage-leave-requests');
+    const canManageRemarks = hasPermission('manage-leave-requests');
     const [requests, setRequests] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState('all');
@@ -75,6 +83,11 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
     const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
     const [remarks, setRemarks] = useState('');
     const [updatingRemarks, setUpdatingRemarks] = useState(false);
+    const [leaveTypeOptions, setLeaveTypeOptions] = useState<LeaveTypeOption[]>([]);
+
+    useEffect(() => {
+        void fetchLeaveTypeOptions().then(setLeaveTypeOptions).catch(() => setLeaveTypeOptions([]));
+    }, []);
 
     useEffect(() => {
         fetchRequests();
@@ -189,16 +202,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
         );
     };
 
-    const getLeaveTypeLabel = (type: string) => {
-        const labels: Record<string, string> = {
-            sick: 'Sick Leave',
-            annual: 'Annual Leave',
-            personal: 'Personal Leave',
-            unpaid: 'Unpaid Leave',
-            emergency: 'Emergency Leave',
-        };
-        return labels[type] || type;
-    };
+    const getLeaveTypeLabel = (type: string) => labelForLeaveType(leaveTypeOptions, type);
 
     return (
         <>
@@ -248,11 +252,11 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">All Types</SelectItem>
-                                    <SelectItem value="sick">Sick</SelectItem>
-                                    <SelectItem value="annual">Annual</SelectItem>
-                                    <SelectItem value="personal">Personal</SelectItem>
-                                    <SelectItem value="unpaid">Unpaid</SelectItem>
-                                    <SelectItem value="emergency">Emergency</SelectItem>
+                                    {leaveTypeOptions.map((opt) => (
+                                        <SelectItem key={opt.value} value={opt.value}>
+                                            {opt.label}
+                                        </SelectItem>
+                                    ))}
                                 </SelectContent>
                             </Select>
                             <Select
@@ -414,28 +418,32 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                                             <Eye className="mr-2 h-4 w-4" />
                                                             View
                                                         </DropdownMenuItem>
-                                                        <DropdownMenuItem
-                                                            onClick={() => {
-                                                                if (processingId === request.id) return;
-                                                                setRemarks('');
-                                                                approveRequest(request.id);
-                                                            }}
-                                                        >
-                                                            <Check className="mr-2 h-4 w-4" />
-                                                            Approve
-                                                        </DropdownMenuItem>
-                                                        <DropdownMenuItem
-                                                            className="text-red-600 focus:text-red-700"
-                                                            onClick={() => {
-                                                                setRejectId(request.id);
-                                                                setRejectionReason('');
-                                                                setSelectedRequest(request);
-                                                                setRemarks(request.remarks || '');
-                                                            }}
-                                                        >
-                                                            <X className="mr-2 h-4 w-4" />
-                                                            Reject
-                                                        </DropdownMenuItem>
+                                                        {canApprove && request.status === 'pending' && (
+                                                            <DropdownMenuItem
+                                                                onClick={() => {
+                                                                    if (processingId === request.id) return;
+                                                                    setRemarks('');
+                                                                    approveRequest(request.id);
+                                                                }}
+                                                            >
+                                                                <Check className="mr-2 h-4 w-4" />
+                                                                Approve
+                                                            </DropdownMenuItem>
+                                                        )}
+                                                        {canReject && request.status === 'pending' && (
+                                                            <DropdownMenuItem
+                                                                className="text-red-600 focus:text-red-700"
+                                                                onClick={() => {
+                                                                    setRejectId(request.id);
+                                                                    setRejectionReason('');
+                                                                    setSelectedRequest(request);
+                                                                    setRemarks(request.remarks || '');
+                                                                }}
+                                                            >
+                                                                <X className="mr-2 h-4 w-4" />
+                                                                Reject
+                                                            </DropdownMenuItem>
+                                                        )}
                                                     </DropdownMenuContent>
                                                 </DropdownMenu>
                                             </TableCell>
@@ -617,34 +625,40 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                         </Button>
                         {selectedRequest?.status === 'pending' ? (
                             <>
-                                <Button
-                                    variant="destructive"
-                                    onClick={() => {
-                                        if (!selectedRequest) return;
-                                        setRejectId(selectedRequest.id);
-                                        setRejectionReason('');
-                                        setRemarks(selectedRequest.remarks || '');
-                                    }}
-                                >
-                                    Reject
-                                </Button>
-                                <Button
-                                    onClick={() => {
-                                        if (!selectedRequest) return;
-                                        setRemarks(selectedRequest.remarks || '');
-                                        approveRequest(selectedRequest.id);
-                                    }}
-                                >
-                                    Approve
-                                </Button>
+                                {canReject && (
+                                    <Button
+                                        variant="destructive"
+                                        onClick={() => {
+                                            if (!selectedRequest) return;
+                                            setRejectId(selectedRequest.id);
+                                            setRejectionReason('');
+                                            setRemarks(selectedRequest.remarks || '');
+                                        }}
+                                    >
+                                        Reject
+                                    </Button>
+                                )}
+                                {canApprove && (
+                                    <Button
+                                        onClick={() => {
+                                            if (!selectedRequest) return;
+                                            setRemarks(selectedRequest.remarks || '');
+                                            approveRequest(selectedRequest.id);
+                                        }}
+                                    >
+                                        Approve
+                                    </Button>
+                                )}
                             </>
                         ) : (
-                            <Button
-                                onClick={updateRemarks}
-                                disabled={updatingRemarks || remarks === (selectedRequest?.remarks || '')}
-                            >
-                                {updatingRemarks ? 'Updating...' : 'Update Remarks'}
-                            </Button>
+                            canManageRemarks && (
+                                <Button
+                                    onClick={updateRemarks}
+                                    disabled={updatingRemarks || remarks === (selectedRequest?.remarks || '')}
+                                >
+                                    {updatingRemarks ? 'Updating...' : 'Update Remarks'}
+                                </Button>
+                            )
                         )}
                     </DialogFooter>
                 </DialogContent>

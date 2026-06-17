@@ -1,6 +1,7 @@
 //! CTC → monthly earnings split (Basic / HRA / Conveyance / Special).
+#![allow(dead_code)]
 
-use rusqlite::Connection;
+use crate::db::Connection;
 use serde::Serialize;
 
 use crate::statutory_logic::StatutoryConfig;
@@ -340,20 +341,21 @@ fn bucket_pct(name: &str, slug: &str, pct: f64) -> (f64, f64, f64, f64) {
 }
 
 /// Load active salary component definitions — single source of truth for CTC split.
-pub fn load_component_split_config(conn: &Connection) -> ComponentSplitConfig {
+pub fn load_component_split_config(conn: &Connection, org_id: i64) -> ComponentSplitConfig {
     let mut earnings = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
         "SELECT id, name, COALESCE(slug,'') AS slug, COALESCE(calculation_type,'flat_amount') AS calc_type,
                 COALESCE(default_value, amount) AS val, is_active
          FROM salary_components
-         WHERE COALESCE(component_type, type)='earning'
+         WHERE organization_id = ?1
+           AND COALESCE(component_type, type)='earning'
            AND COALESCE(is_active, 1) != 0
          ORDER BY id",
     ) {
         let rows = stmt
-            .query_map([], |row| {
-                let calc: String = row.get(3)?;
-                let val: Option<f64> = row.get(4)?;
+            .query_map([org_id], |row| {
+                let calc: String = row.get_idx::<String>(3)?;
+                let val: Option<f64> = row.get_idx::<Option<f64>>(4)?;
                 let pct = if calc.contains("percentage") {
                     val.unwrap_or(0.0)
                 } else {
@@ -365,18 +367,15 @@ pub fn load_component_split_config(conn: &Connection) -> ComponentSplitConfig {
                     0.0
                 };
                 Ok(LoadedEarning {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    slug: row.get(2)?,
+                    id: row.get_idx::<i64>(0)?,
+                    name: row.get_idx::<String>(1)?,
+                    slug: row.get_idx::<String>(2)?,
                     calc_type: calc,
                     pct,
                     flat,
                 })
-            })
-            .ok();
-        if let Some(rows) = rows {
-            earnings = rows.filter_map(|r| r.ok()).collect();
-        }
+            });
+        earnings = rows;
     }
 
     let mut deductions = Vec::new();
@@ -386,25 +385,23 @@ pub fn load_component_split_config(conn: &Connection) -> ComponentSplitConfig {
                 COALESCE(default_value, amount, 0) AS val,
                 COALESCE(is_pre_tax, 0) AS is_pre_tax
          FROM salary_components
-         WHERE COALESCE(component_type, type)='deduction'
+         WHERE organization_id = ?1
+           AND COALESCE(component_type, type)='deduction'
            AND COALESCE(is_active, 1) != 0
          ORDER BY id",
     ) {
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([org_id], |row| {
                 Ok(LoadedDeduction {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    slug: row.get(2)?,
-                    calc_type: row.get(3)?,
-                    amount: row.get(4)?,
-                    is_pre_tax: row.get::<_, i64>(5).unwrap_or(0) != 0,
+                    id: row.get_idx::<i64>(0)?,
+                    name: row.get_idx::<String>(1)?,
+                    slug: row.get_idx::<String>(2)?,
+                    calc_type: row.get_idx::<String>(3)?,
+                    amount: row.get_idx::<f64>(4)?,
+                    is_pre_tax: row.get_idx::<i64>(5).unwrap_or(0) != 0,
                 })
-            })
-            .ok();
-        if let Some(rows) = rows {
-            deductions = rows.filter_map(|r| r.ok()).collect();
-        }
+            });
+        deductions = rows;
     }
 
     let mut basic_pct = 0.0;
@@ -736,12 +733,12 @@ pub fn load_template(conn: &Connection, template_id: i64) -> Option<SplitTemplat
         [template_id],
         |row| {
             Ok(SplitTemplate {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                basic_pct: row.get(2)?,
-                hra_pct: row.get(3)?,
-                conv_pct: row.get(4)?,
-                special_pct: row.get(5)?,
+                id: row.get_idx::<i64>(0)?,
+                name: row.get_idx::<String>(1)?,
+                basic_pct: row.get_idx::<f64>(2)?,
+                hra_pct: row.get_idx::<f64>(3)?,
+                conv_pct: row.get_idx::<f64>(4)?,
+                special_pct: row.get_idx::<f64>(5)?,
             })
         },
     )
@@ -754,7 +751,7 @@ pub fn load_default_template(conn: &Connection) -> SplitTemplate {
         conn.query_row(
             "SELECT id FROM salary_templates WHERE is_default=1 ORDER BY id LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(1),
     )
@@ -781,15 +778,15 @@ pub fn load_employee_profile(
          FROM employee_salary_profiles
          WHERE user_id=?1 AND effective_from <= ?2
          ORDER BY effective_from DESC LIMIT 1",
-        rusqlite::params![user_id, as_of],
+        crate::params![user_id, as_of],
         |row| {
             Ok(EmployeeSalaryProfile {
-                user_id: row.get(0)?,
-                yearly_ctc: row.get(1)?,
-                template_id: row.get(2)?,
-                pf_applicable: row.get::<_, i64>(3).unwrap_or(1) != 0,
-                esi_applicable: row.get::<_, i64>(4).unwrap_or(1) != 0,
-                effective_from: row.get(5)?,
+                user_id: row.get_idx::<i64>(0)?,
+                yearly_ctc: row.get_idx::<f64>(1)?,
+                template_id: row.get_idx::<Option<i64>>(2)?,
+                pf_applicable: row.get_idx::<i64>(3).unwrap_or(1) != 0,
+                esi_applicable: row.get_idx::<i64>(4).unwrap_or(1) != 0,
+                effective_from: row.get_idx::<String>(5)?,
             })
         },
     )
@@ -797,15 +794,15 @@ pub fn load_employee_profile(
     .filter(|p| p.yearly_ctc > 0.0)
 }
 
-pub fn preview_from_inputs(conn: &Connection, yearly_ctc: f64) -> CtcStatutoryPreview {
-    let comp = load_component_split_config(conn);
-    let cfg = crate::statutory_logic::load_statutory_config(conn);
+pub fn preview_from_inputs(conn: &Connection, org_id: i64, yearly_ctc: f64) -> CtcStatutoryPreview {
+    let comp = load_component_split_config(conn, org_id);
+    let cfg = crate::statutory_logic::load_statutory_config(conn, org_id);
     split_with_statutory_from_components(&comp, yearly_ctc, &cfg, comp.has_pf, comp.has_esi)
 }
 
-pub fn preview_for_profile(conn: &Connection, profile: &EmployeeSalaryProfile) -> CtcStatutoryPreview {
-    let comp = load_component_split_config(conn);
-    let cfg = crate::statutory_logic::load_statutory_config(conn);
+pub fn preview_for_profile(conn: &Connection, org_id: i64, profile: &EmployeeSalaryProfile) -> CtcStatutoryPreview {
+    let comp = load_component_split_config(conn, org_id);
+    let cfg = crate::statutory_logic::load_statutory_config(conn, org_id);
     split_with_statutory_from_components(
         &comp,
         profile.yearly_ctc,
@@ -817,7 +814,8 @@ pub fn preview_for_profile(conn: &Connection, profile: &EmployeeSalaryProfile) -
 
 pub fn split_for_user(conn: &Connection, user_id: i64, as_of: &str) -> Option<(EmployeeSalaryProfile, CtcSplit)> {
     let profile = load_employee_profile(conn, user_id, as_of)?;
-    let preview = preview_for_profile(conn, &profile);
+    let org_id = crate::tenant::org_id_for_user(conn, user_id);
+    let preview = preview_for_profile(conn, org_id, &profile);
     Some((profile, preview.to_ctc_split()))
 }
 
@@ -827,7 +825,7 @@ pub fn sync_structure_from_preview(
     user_id: i64,
     effective_from: &str,
     preview: &CtcStatutoryPreview,
-) -> Result<(), rusqlite::Error> {
+) -> crate::db::Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
         "DELETE FROM salary_structure_items WHERE user_id=?1",
@@ -840,7 +838,7 @@ pub fn sync_structure_from_preview(
         conn.execute(
             "INSERT INTO salary_structure_items (user_id, salary_component_id, amount, effective_from, created_at, updated_at)
              VALUES (?1,?2,?3,?4,?5,?5)",
-            rusqlite::params![user_id, line.component_id, line.amount, effective_from, &now],
+            crate::params![user_id, line.component_id, line.amount, effective_from, &now],
         )?;
     }
     Ok(())
@@ -852,7 +850,7 @@ pub fn sync_structure_from_ctc(
     user_id: i64,
     effective_from: &str,
     split: &CtcSplit,
-) -> Result<(), rusqlite::Error> {
+) -> crate::db::Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mappings: [(&str, &[&str], f64); 4] = [
         ("basic", &["basic"], split.basic),
@@ -863,7 +861,7 @@ pub fn sync_structure_from_ctc(
 
     conn.execute(
         "DELETE FROM salary_structure_items WHERE user_id=?1 AND effective_from=?2",
-        rusqlite::params![user_id, effective_from],
+        crate::params![user_id, effective_from],
     )?;
 
     for (_key, patterns, amount) in mappings {
@@ -875,7 +873,7 @@ pub fn sync_structure_from_ctc(
             conn.execute(
                 "INSERT INTO salary_structure_items (user_id, salary_component_id, amount, effective_from, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?5)",
-                rusqlite::params![user_id, cid, amount, effective_from, &now],
+                crate::params![user_id, cid, amount, effective_from, &now],
             )?;
         }
     }
@@ -891,7 +889,7 @@ fn find_earning_component(conn: &Connection, patterns: &[&str]) -> Option<i64> {
                AND (LOWER(COALESCE(slug,'')) LIKE ?1 OR LOWER(name) LIKE ?1)
              ORDER BY id LIMIT 1",
             [&like],
-            |r| r.get(0),
+            |r| r.get_idx::<i64>(0),
         ) {
             return Some(id);
         }
@@ -900,7 +898,7 @@ fn find_earning_component(conn: &Connection, patterns: &[&str]) -> Option<i64> {
 }
 
 /// Force-update standard earning rows to match a CTC template (idempotent, runs every startup).
-pub fn sync_component_definitions_from_template(conn: &Connection, tpl: &SplitTemplate) -> Result<(), rusqlite::Error> {
+pub fn sync_component_definitions_from_template(conn: &Connection, tpl: &SplitTemplate) -> crate::db::Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let defs: [(&[&str], f64); 4] = [
         (&["basic pay", "basic"], tpl.basic_pct),
@@ -917,7 +915,7 @@ pub fn sync_component_definitions_from_template(conn: &Connection, tpl: &SplitTe
                     amount=?1, default_value=?1,
                     updated_at=?2
                  WHERE id=?3",
-                rusqlite::params![pct, &now, id],
+                crate::params![pct, &now, id],
             )?;
             if n > 0 {
                 updated += 1;

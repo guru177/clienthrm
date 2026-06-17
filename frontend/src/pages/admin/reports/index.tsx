@@ -186,7 +186,9 @@ export default function ReportsPage() {
                                     <TableHeader>
                                         <TableRow>
                                             <TableHead>Employee</TableHead>
-                                            <TableHead>Quota</TableHead>
+                                            <TableHead>Base</TableHead>
+                                            <TableHead>Bonus</TableHead>
+                                            <TableHead>Total</TableHead>
                                             <TableHead>Used</TableHead>
                                             <TableHead>Pending</TableHead>
                                             <TableHead>Available</TableHead>
@@ -197,6 +199,8 @@ export default function ReportsPage() {
                                             <TableRow key={r.user_id}>
                                                 <TableCell>{r.name}</TableCell>
                                                 <TableCell>{r.annual_quota}</TableCell>
+                                                <TableCell>{r.bonus_days ?? 0}</TableCell>
+                                                <TableCell>{r.total_allowance ?? r.annual_quota}</TableCell>
                                                 <TableCell>{r.used_days}</TableCell>
                                                 <TableCell>{r.pending_days ?? 0}</TableCell>
                                                 <TableCell>{r.available_days ?? r.balance}</TableCell>

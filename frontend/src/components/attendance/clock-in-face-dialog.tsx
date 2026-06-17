@@ -294,87 +294,114 @@ export default function ClockInFaceDialog({
         }
     };
 
+    const fetchIpLocation = async (): Promise<IpLocationPayload> => {
+        const fallback: IpLocationPayload = {
+            ip: 'unknown',
+            city: undefined,
+            region: undefined,
+            country: undefined,
+            lat: null,
+            lng: null,
+        };
+
+        try {
+            const ipResponse = await fetch('https://ipapi.co/json/', {
+                signal: AbortSignal.timeout(10000),
+                headers: { Accept: 'application/json' },
+            });
+            if (!ipResponse.ok) {
+                return fallback;
+            }
+
+            const ipData = (await ipResponse.json()) as {
+                ip?: string;
+                city?: string;
+                region?: string;
+                country_name?: string;
+                latitude?: number;
+                longitude?: number;
+                error?: boolean;
+            };
+            if (ipData.error || !ipData.ip) {
+                return fallback;
+            }
+
+            return {
+                ip: ipData.ip,
+                city: ipData.city,
+                region: ipData.region,
+                country: ipData.country_name,
+                lat: ipData.latitude ?? null,
+                lng: ipData.longitude ?? null,
+            };
+        } catch {
+            return fallback;
+        }
+    };
+
+    const getGeoPosition = (options: PositionOptions): Promise<GeolocationPosition> =>
+        new Promise((resolve, reject) => {
+            if (!navigator.geolocation) {
+                reject(new Error('Geolocation is not supported'));
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(resolve, reject, options);
+        });
+
     const loadLocation = async () => {
         if (locationLoading) {
             return;
         }
 
+        if (!navigator.geolocation) {
+            setError('Geolocation is not supported by this browser.');
+            setLocationStatus('denied');
+            return;
+        }
+
         setLocationLoading(true);
+        setError(null);
+
+        // Desktop browsers often time out with high-accuracy GPS; retry with relaxed options.
+        const attempts: PositionOptions[] = [
+            { enableHighAccuracy: false, timeout: 20000, maximumAge: 120_000 },
+            { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 },
+            { enableHighAccuracy: false, timeout: 30000, maximumAge: 300_000 },
+        ];
+
+        let lastError: GeolocationPositionError | Error | null = null;
+
         try {
-            // Step 1: Request geolocation permission (this triggers the browser prompt)
-            const geo = await new Promise<GeoLocationPayload>((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        resolve({
-                            lat: position.coords.latitude,
-                            lng: position.coords.longitude,
-                            accuracy: position.coords.accuracy,
-                        });
-                    },
-                    (geoError) => {
-                        reject(geoError);
-                    },
-                    { enableHighAccuracy: true, timeout: 15000 },
-                );
-            });
-
-            // Geolocation succeeded — mark permission as granted immediately
-            setLocationStatus('granted');
-
-            // Step 2: IP lookup is optional — don't fail if it errors
-            let ipInfo: IpLocationPayload = {
-                ip: 'unknown',
-                city: undefined,
-                region: undefined,
-                country: undefined,
-                lat: null,
-                lng: null,
-            };
-
-            try {
-                const ipResponse = await fetch('https://ipapi.co/json/', {
-                    signal: AbortSignal.timeout(10000),
-                    headers: { 'Accept': 'application/json' }
-                });
-                if (ipResponse.ok) {
-                    const ipData = (await ipResponse.json()) as {
-                        ip?: string;
-                        city?: string;
-                        region?: string;
-                        country_name?: string;
-                        latitude?: number;
-                        longitude?: number;
-                        error?: boolean;
+            for (const options of attempts) {
+                try {
+                    const position = await getGeoPosition(options);
+                    const geo: GeoLocationPayload = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                        accuracy: position.coords.accuracy,
                     };
-                    if (!ipData.error && ipData.ip) {
-                        ipInfo = {
-                            ip: ipData.ip,
-                            city: ipData.city,
-                            region: ipData.region,
-                            country: ipData.country_name,
-                            lat: ipData.latitude ?? null,
-                            lng: ipData.longitude ?? null,
-                        };
+                    const ipInfo = await fetchIpLocation();
+                    setLocationStatus('granted');
+                    setLocationData({ geo, ip: ipInfo });
+                    return;
+                } catch (err) {
+                    lastError = err as GeolocationPositionError | Error;
+                    const geoErr = err as GeolocationPositionError;
+                    if (geoErr?.code === 1) {
+                        break;
                     }
                 }
-            } catch {
-                // IP lookup failed — use default 'unknown'
             }
 
-            setLocationData({ geo, ip: ipInfo });
-        } catch (err) {
-            // Only the geolocation call can reach here
-            const geoErr = err as GeolocationPositionError | undefined;
+            const geoErr = lastError as GeolocationPositionError | undefined;
             if (geoErr && 'code' in geoErr && geoErr.code === 1) {
-                // PERMISSION_DENIED
                 setLocationStatus('denied');
                 setError('Location permission was denied. Please allow location access in your browser settings and try again.');
             } else if (geoErr && 'code' in geoErr && geoErr.code === 3) {
-                // TIMEOUT
-                setLocationStatus('denied');
-                setError('Location request timed out. Please check your device location settings and try again.');
+                setLocationStatus('granted');
+                setError('Location request timed out. Enable Windows location services or click Retry Location below.');
             } else {
-                setLocationStatus('denied');
+                setLocationStatus('granted');
                 setError('Unable to determine your location. Please ensure location services are enabled and try again.');
             }
         } finally {
@@ -689,8 +716,24 @@ export default function ClockInFaceDialog({
                 )}
 
                 {error && (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                        {error}
+                    <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:flex-row sm:items-center sm:justify-between">
+                        <span>{error}</span>
+                        {permissionsGranted && !locationData && (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="shrink-0 border-destructive/40"
+                                onClick={requestLocationPermission}
+                                disabled={locationLoading}
+                            >
+                                {locationLoading ? (
+                                    <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Retrying...</>
+                                ) : (
+                                    <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry Location</>
+                                )}
+                            </Button>
+                        )}
                     </div>
                 )}
 

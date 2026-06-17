@@ -12,6 +12,7 @@ pub struct Permission {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct CreatePermissionRequest {
     pub name: String,
     pub slug: String,
@@ -20,7 +21,7 @@ pub struct CreatePermissionRequest {
 }
 
 impl Permission {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             name: row.get("name")?,

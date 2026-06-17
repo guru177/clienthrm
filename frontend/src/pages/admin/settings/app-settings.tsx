@@ -1,7 +1,7 @@
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
 import * as Icons from 'lucide-react';
-import { LucideIcon, Settings } from 'lucide-react';
+import { ChevronRight, CalendarDays, LucideIcon, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
+import { useAuth } from '@/contexts/AuthContext';
+import type { OrgPlanInfo } from '@/lib/plan-modules';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
 
 interface AppSetting {
@@ -28,7 +30,7 @@ interface AppSetting {
 }
 
 const breadcrumbs = [
-    { label: 'General Settings' },
+    { label: 'App Settings' },
 ];
 
 // Popular Lucide icons for selection
@@ -65,8 +67,59 @@ const iconOptions = [
     'ShoppingCart',
 ];
 
+function planRemainingLabel(plan: OrgPlanInfo) {
+    if (plan.subscription_expired) return 'Expired';
+    if (!plan.plan_expires_at) {
+        return plan.billing_period === 'custom' ? 'No expiry' : 'Active';
+    }
+    const days = plan.days_remaining;
+    if (days == null) return '—';
+    if (days === 0) return 'Expires today';
+    return `${days} day${days === 1 ? '' : 's'} left`;
+}
+
+function SubscriptionPlanBadge({ plan }: { plan: OrgPlanInfo | null }) {
+    if (!plan) return null;
+
+    const remaining = planRemainingLabel(plan);
+    const isWarning =
+        !plan.subscription_expired &&
+        plan.days_remaining != null &&
+        plan.days_remaining <= 7;
+    const isExpired = !!plan.subscription_expired;
+
+    return (
+        <div
+            className={`shrink-0 rounded-xl border px-4 py-3 text-right shadow-sm ${
+                isExpired
+                    ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
+                    : isWarning
+                      ? 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40'
+                      : 'border-[#071b3a]/10 bg-white/70 dark:border-white/10 dark:bg-white/5'
+            }`}
+        >
+            <p className="text-xs font-medium uppercase tracking-wide text-[#1e3a5f]/60 dark:text-blue-200/60">
+                Subscription plan
+            </p>
+            <p className="mt-1 text-base font-semibold text-[#001f3f] dark:text-white">{plan.name}</p>
+            <p
+                className={`mt-0.5 text-sm font-medium ${
+                    isExpired
+                        ? 'text-red-600'
+                        : isWarning
+                          ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-emerald-700 dark:text-emerald-400'
+                }`}
+            >
+                {remaining}
+            </p>
+        </div>
+    );
+}
+
 export default function AppSettings() {
     const navigate = useNavigate();
+    const { plan } = useAuth();
     const [settings, setSettings] = useState<AppSetting[]>([]);
     const [loading, setLoading] = useState(false);
     const [pageLoading, setPageLoading] = useState(true);
@@ -349,7 +402,7 @@ export default function AppSettings() {
     const logoSetting = settings.find((s) => s.key === 'app_logo');
 
     const contactSettings = settings.filter((s) =>
-        ['company_email', 'company_phone', 'whatsapp_number', 'company_address', 'support_email'].includes(s.key),
+        ['contact_person', 'company_email', 'company_phone', 'whatsapp_number', 'company_address', 'support_email'].includes(s.key),
     );
 
     const themeSettings = settings.filter((s) =>
@@ -399,14 +452,17 @@ export default function AppSettings() {
             <AppLayout breadcrumbs={breadcrumbs}>
                 <div className="space-y-6">
                     <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#e8f2fd] via-[#d0e4f8] to-[#c4d8f0] dark:from-[#0d1e33] dark:via-[#0a1828] dark:to-[#071220] px-6 py-5 shadow-sm border border-white/60 dark:border-white/10">
-                        <div className="flex items-center gap-4">
-                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#071b3a]/15 dark:bg-white/10 border border-[#071b3a]/20 dark:border-white/10 shadow-inner">
-                                <Settings className="h-6 w-6 text-[#071b3a] dark:text-blue-300" />
+                        <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#071b3a]/15 dark:bg-white/10 border border-[#071b3a]/20 dark:border-white/10 shadow-inner">
+                                    <Settings className="h-6 w-6 text-[#071b3a] dark:text-blue-300" />
+                                </div>
+                                <div>
+                                    <h1 className="text-xl font-bold tracking-tight text-[#001f3f] dark:text-white">App Settings</h1>
+                                    <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60 mt-1">Loading settings...</p>
+                                </div>
                             </div>
-                            <div>
-                                <h1 className="text-xl font-bold tracking-tight text-[#001f3f] dark:text-white">General Settings</h1>
-                                <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60 mt-1">Loading settings...</p>
-                            </div>
+                            <SubscriptionPlanBadge plan={plan} />
                         </div>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -452,15 +508,44 @@ export default function AppSettings() {
                             </div>
                             <div>
                                 <h1 className="text-xl font-bold tracking-tight text-[#001f3f] dark:text-white">
-                                    General Settings
+                                    App Settings
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60 mt-1">
-                                    Configure your application branding and global settings
+                                    Organization configuration — branding, compliance, leave policy, and integrations
                                 </p>
                             </div>
                         </div>
+                        <SubscriptionPlanBadge plan={plan} />
                     </div>
                 </div>
+
+                <Card className="bg-white/60 dark:bg-slate-900/60 backdrop-blur-xl border border-white/40 dark:border-slate-800 shadow-xl rounded-2xl">
+                    <CardHeader>
+                        <CardTitle>Leave & attendance</CardTitle>
+                        <CardDescription>
+                            Annual leave quota, bonus comp-off credits, and leave type configuration
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Link
+                            to="/admin/settings/leave-types"
+                            className="flex items-center justify-between rounded-xl border border-border bg-muted/30 px-4 py-3 transition-colors hover:bg-muted/60"
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                                    <CalendarDays className="h-5 w-5 text-primary" />
+                                </div>
+                                <div>
+                                    <p className="font-medium">Leave Policy</p>
+                                    <p className="text-sm text-muted-foreground">
+                                        Quota, bonus days, and leave types
+                                    </p>
+                                </div>
+                            </div>
+                            <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                        </Link>
+                    </CardContent>
+                </Card>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     {/* Branding & Theme */}

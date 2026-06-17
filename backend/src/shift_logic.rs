@@ -1,5 +1,7 @@
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike, Weekday};
-use rusqlite::Connection;
+use crate::db::Connection;
+
+use crate::tenant::org_id_for_user;
 
 pub const DEFAULT_WORK_START: &str = "09:00:00";
 pub const DEFAULT_WORK_END: &str = "18:00:00";
@@ -87,10 +89,6 @@ pub fn format_working_days_label(mask: u8) -> String {
     }
 }
 
-pub fn working_days_mask_for_user(conn: &Connection, user_id: i64, as_of: &str) -> u8 {
-    resolve_shift_for_user(conn, user_id, as_of).working_days_mask
-}
-
 #[derive(Debug, Clone)]
 pub struct ShiftConfig {
     pub template_id: Option<i64>,
@@ -124,20 +122,20 @@ impl ShiftConfig {
     }
 }
 
-fn shift_config_from_template_row(row: &rusqlite::Row<'_>, source: &str, is_day_off: bool) -> rusqlite::Result<ShiftConfig> {
+fn shift_config_from_template_row(row: &crate::db::Row<'_>, source: &str, is_day_off: bool) -> crate::db::Result<ShiftConfig> {
     Ok(ShiftConfig {
-        template_id: row.get::<_, i64>(0).ok(),
-        template_name: row.get::<_, String>(1).ok(),
+        template_id: row.get_idx::<i64>(0).ok(),
+        template_name: row.get_idx::<String>(1).ok(),
         start_time: row
-            .get::<_, String>(2)
+            .get_idx::<String>(2)
             .unwrap_or_else(|_| DEFAULT_WORK_START.to_string()),
         end_time: row
-            .get::<_, String>(3)
+            .get_idx::<String>(3)
             .unwrap_or_else(|_| DEFAULT_WORK_END.to_string()),
-        grace_in_minutes: row.get::<_, i64>(4).unwrap_or(0).max(0),
-        grace_out_minutes: row.get::<_, i64>(5).unwrap_or(0).max(0),
+        grace_in_minutes: row.get_idx::<i64>(4).unwrap_or(0).max(0),
+        grace_out_minutes: row.get_idx::<i64>(5).unwrap_or(0).max(0),
         working_days_mask: normalize_working_days_mask(
-            row.get::<_, i64>(6).unwrap_or(DEFAULT_WORKING_DAYS_MASK as i64),
+            row.get_idx::<i64>(6).unwrap_or(DEFAULT_WORKING_DAYS_MASK as i64),
         ),
         is_day_off,
         schedule_source: source.to_string(),
@@ -148,7 +146,7 @@ const SHIFT_TEMPLATE_SELECT: &str = "st.id, st.name, st.start_time, st.end_time,
                 COALESCE(st.working_days_mask, 31) AS working_days_mask";
 
 fn query_shift_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     date: &str,
 ) -> Option<ShiftConfig> {
@@ -158,12 +156,13 @@ fn query_shift_for_user(
          FROM user_shift_assignments usa
          JOIN shift_templates st ON st.id = usa.shift_template_id
          WHERE usa.user_id = ?1
+           AND st.organization_id = (SELECT organization_id FROM users WHERE id = ?1)
            AND usa.effective_from <= ?2
            AND (usa.effective_to IS NULL OR usa.effective_to >= ?2)
          ORDER BY usa.effective_from DESC, usa.id DESC
          LIMIT 1"
         ),
-        rusqlite::params![user_id, date],
+        crate::params![user_id, date],
         |row| shift_config_from_template_row(row, "assignment", false),
     )
     .ok()
@@ -180,8 +179,8 @@ pub fn query_daily_roster(
             "SELECT COALESCE(is_day_off, 0), shift_template_id
              FROM shift_daily_roster
              WHERE user_id = ?1 AND roster_date = ?2",
-            rusqlite::params![user_id, date],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1).ok().flatten())),
+            crate::params![user_id, date],
+            |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<Option<i64>>(1).ok().flatten())),
         )
         .ok()?;
 
@@ -196,9 +195,10 @@ pub fn query_daily_roster(
             &format!(
                 "SELECT {SHIFT_TEMPLATE_SELECT}
              FROM shift_templates st
-             WHERE st.id = ?1"
+             WHERE st.id = ?1
+               AND st.organization_id = (SELECT organization_id FROM users WHERE id = ?2)"
             ),
-            [shift_id],
+            crate::params![shift_id, user_id],
             |r| shift_config_from_template_row(r, "daily", false),
         )
         .ok();
@@ -220,17 +220,17 @@ pub fn user_is_scheduled_working_day(conn: &Connection, user_id: i64, date: &str
 }
 
 pub fn upsert_daily_roster(
-    conn: &Connection,
+    conn: &crate::db::Transaction,
     user_id: i64,
     roster_date: &str,
     shift_template_id: Option<i64>,
     is_day_off: bool,
-) -> Result<(), rusqlite::Error> {
+) -> crate::db::Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     if !is_day_off && shift_template_id.is_none() {
         return conn.execute(
             "DELETE FROM shift_daily_roster WHERE user_id=?1 AND roster_date=?2",
-            rusqlite::params![user_id, roster_date],
+            crate::params![user_id, roster_date],
         )
         .map(|_| ());
     }
@@ -241,7 +241,7 @@ pub fn upsert_daily_roster(
            shift_template_id=excluded.shift_template_id,
            is_day_off=excluded.is_day_off,
            updated_at=excluded.updated_at",
-        rusqlite::params![
+        crate::params![
             user_id,
             roster_date,
             shift_template_id,
@@ -253,7 +253,7 @@ pub fn upsert_daily_roster(
 }
 
 pub fn user_has_active_assignment(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     date: &str,
 ) -> bool {
@@ -263,28 +263,31 @@ pub fn user_has_active_assignment(
            AND usa.effective_from <= ?2
            AND (usa.effective_to IS NULL OR usa.effective_to >= ?2)
          LIMIT 1",
-        rusqlite::params![user_id, date],
+        crate::params![user_id, date],
         |_| Ok(()),
     )
     .is_ok()
 }
 
-/// Ensures the default shift template exists (auto-assigned to unassigned employees).
-pub fn ensure_general_shift_template(conn: &rusqlite::Connection) -> i64 {
+/// Ensures the default shift template exists for an organization.
+pub fn ensure_general_shift_template(conn: &crate::db::Connection, org_id: i64) -> i64 {
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM shift_templates WHERE is_default = 1 ORDER BY id ASC LIMIT 1",
-        [],
-        |row| row.get::<_, i64>(0),
+        "SELECT id FROM shift_templates WHERE organization_id = ?1 AND is_default = 1 ORDER BY id ASC LIMIT 1",
+        [org_id],
+        |row| row.get_idx::<i64>(0),
     ) {
         return id;
     }
 
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM shift_templates WHERE LOWER(name) = LOWER(?1) ORDER BY id ASC LIMIT 1",
-        [GENERAL_SHIFT_NAME],
-        |row| row.get::<_, i64>(0),
+        "SELECT id FROM shift_templates WHERE organization_id = ?1 AND LOWER(name) = LOWER(?2) ORDER BY id ASC LIMIT 1",
+        crate::params![org_id, GENERAL_SHIFT_NAME],
+        |row| row.get_idx::<i64>(0),
     ) {
-        let _ = conn.execute("UPDATE shift_templates SET is_default = 0", []);
+        let _ = conn.execute(
+            "UPDATE shift_templates SET is_default = 0 WHERE organization_id = ?1",
+            [org_id],
+        );
         let _ = conn.execute(
             "UPDATE shift_templates SET is_default = 1 WHERE id = ?1",
             [id],
@@ -293,15 +296,19 @@ pub fn ensure_general_shift_template(conn: &rusqlite::Connection) -> i64 {
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let _ = conn.execute("UPDATE shift_templates SET is_default = 0", []);
     let _ = conn.execute(
-        "INSERT INTO shift_templates (name, start_time, end_time, grace_in_minutes, grace_out_minutes, is_active, is_default, working_days_mask, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 0, 0, 1, 1, ?4, ?5, ?5)",
-        rusqlite::params![
+        "UPDATE shift_templates SET is_default = 0 WHERE organization_id = ?1",
+        [org_id],
+    );
+    let _ = conn.execute(
+        "INSERT INTO shift_templates (name, start_time, end_time, grace_in_minutes, grace_out_minutes, is_active, is_default, working_days_mask, organization_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, 0, 1, 1, ?4, ?5, ?6, ?6)",
+        crate::params![
             GENERAL_SHIFT_NAME,
             DEFAULT_WORK_START,
             DEFAULT_WORK_END,
             DEFAULT_WORKING_DAYS_MASK as i64,
+            org_id,
             &now,
         ],
     );
@@ -310,36 +317,46 @@ pub fn ensure_general_shift_template(conn: &rusqlite::Connection) -> i64 {
 
 /// Assigns the General shift when the employee has no active assignment on `effective_from`.
 pub fn assign_general_shift_to_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     effective_from: &str,
-) -> Result<(), rusqlite::Error> {
+) -> crate::db::Result<()> {
     if user_has_active_assignment(conn, user_id, effective_from) {
         return Ok(());
     }
 
-    let shift_id = ensure_general_shift_template(conn);
+    let org_id = org_id_for_user(conn, user_id);
+    let shift_id = ensure_general_shift_template(conn, org_id);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
         "INSERT INTO user_shift_assignments (user_id, shift_template_id, effective_from, effective_to, created_at, updated_at)
          VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
-        rusqlite::params![user_id, shift_id, effective_from, &now],
+        crate::params![user_id, shift_id, effective_from, &now],
     )?;
     Ok(())
 }
 
-/// Merge duplicate "general" templates into the single default shift and remove extras.
-pub fn consolidate_duplicate_general_shifts(conn: &rusqlite::Connection) {
-    let default_id = ensure_general_shift_template(conn);
+/// Merge duplicate "general" templates into the single default shift per organization.
+pub fn consolidate_duplicate_general_shifts(conn: &crate::db::Connection) {
+    let org_ids: Vec<i64> = conn
+        .prepare("SELECT DISTINCT organization_id FROM shift_templates")
+        .ok()
+        .map(|stmt| stmt.query_map([], |row| row.get_idx::<i64>(0)))
+        .unwrap_or_default();
+
+    for org_id in org_ids {
+        consolidate_duplicate_general_shifts_for_org(conn, org_id);
+    }
+}
+
+fn consolidate_duplicate_general_shifts_for_org(conn: &crate::db::Connection, org_id: i64) {
+    let default_id = ensure_general_shift_template(conn, org_id);
 
     let dup_ids: Vec<i64> = match conn.prepare(
-        "SELECT id FROM shift_templates WHERE LOWER(name) = 'general' AND id != ?1",
+        "SELECT id FROM shift_templates WHERE organization_id = ?1 AND LOWER(name) = 'general' AND id != ?2",
     ) {
         Ok(mut stmt) => stmt
-            .query_map([default_id], |row| row.get(0))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect(),
+            .query_map(crate::params![org_id, default_id], |row| row.get_idx::<i64>(0)),
         Err(_) => return,
     };
 
@@ -350,20 +367,19 @@ pub fn consolidate_duplicate_general_shifts(conn: &rusqlite::Connection) {
                AND user_id IN (
                    SELECT user_id FROM user_shift_assignments WHERE shift_template_id = ?2
                )",
-            rusqlite::params![dup_id, default_id],
+            crate::params![dup_id, default_id],
         );
         let _ = conn.execute(
             "UPDATE user_shift_assignments SET shift_template_id = ?1 WHERE shift_template_id = ?2",
-            rusqlite::params![default_id, dup_id],
+            crate::params![default_id, dup_id],
         );
         let _ = conn.execute("DELETE FROM shift_templates WHERE id = ?1", [dup_id]);
     }
 }
 
 /// Backfill General shift for all active employees without a current assignment.
-pub fn backfill_general_shift_assignments(conn: &rusqlite::Connection) {
+pub fn backfill_general_shift_assignments(conn: &crate::db::Connection) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let _ = ensure_general_shift_template(conn);
 
     let mut stmt = match conn.prepare(
         "SELECT u.id, COALESCE(NULLIF(u.date_of_joining, ''), substr(u.created_at, 1, 10), ?1)
@@ -381,18 +397,17 @@ pub fn backfill_general_shift_assignments(conn: &rusqlite::Connection) {
     };
 
     let rows: Vec<(i64, String)> = stmt
-        .query_map([&today], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map([&today], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)));
 
     for (user_id, effective_from) in rows {
+        let org_id = org_id_for_user(conn, user_id);
+        let _ = ensure_general_shift_template(conn, org_id);
         let _ = assign_general_shift_to_user(conn, user_id, &effective_from);
     }
 }
 
 pub fn resolve_shift_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     date: &str,
 ) -> ShiftConfig {
@@ -524,7 +539,7 @@ pub fn is_early_departure(
 
 /// Close open sessions before a new clock-in (manual or biometric).
 pub fn close_open_sessions(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     date: &str,
     clock_out_time: &str,
@@ -538,10 +553,7 @@ pub fn close_open_sessions(
         Err(_) => return,
     };
     let rows: Vec<(i64, String)> = stmt
-        .query_map(rusqlite::params![user_id, date], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map(crate::params![user_id, date], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)));
 
     for (att_id, clock_in) in rows {
         let duration = calc_duration_minutes(&clock_in, clock_out_time);
@@ -553,7 +565,7 @@ pub fn close_open_sessions(
         );
         let _ = conn.execute(
             "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
-            rusqlite::params![
+            crate::params![
                 clock_out_time,
                 duration,
                 if early_exit { 1 } else { 0 },

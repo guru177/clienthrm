@@ -1,45 +1,28 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Career {
-    pub id: i64,
-    pub title: String,
-    pub department: Option<String>,
-    pub location: Option<String>,
-    pub employment_type: Option<String>,
-    pub description: Option<String>,
-    pub requirements: Option<String>,
-    pub salary_range: Option<String>,
-    pub is_active: bool,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
+use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
-pub struct CreateCareerRequest {
+pub struct UpsertCareerRequest {
     pub title: String,
-    pub department: Option<String>,
+    pub slug: Option<String>,
     pub location: Option<String>,
+    pub job_type: Option<String>,
+    #[serde(alias = "employment_type")]
     pub employment_type: Option<String>,
+    pub experience_required: Option<String>,
     pub description: Option<String>,
-    pub requirements: Option<String>,
+    pub requirements: Option<Value>,
+    pub responsibilities: Option<Value>,
     pub salary_range: Option<String>,
+    pub is_active: Option<bool>,
 }
 
-impl Career {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: row.get("id")?,
-            title: row.get("title")?,
-            department: row.get("department")?,
-            location: row.get("location")?,
-            employment_type: row.get("employment_type")?,
-            description: row.get("description")?,
-            requirements: row.get("requirements")?,
-            salary_range: row.get("salary_range")?,
-            is_active: row.get::<_, Option<bool>>("is_active")?.unwrap_or(true),
-            created_at: row.get("created_at")?,
-            updated_at: row.get("updated_at")?,
-        })
+impl UpsertCareerRequest {
+    pub fn resolved_job_type(&self) -> String {
+        self.job_type
+            .clone()
+            .or_else(|| self.employment_type.clone())
+            .unwrap_or_else(|| "full-time".to_string())
     }
 }
+

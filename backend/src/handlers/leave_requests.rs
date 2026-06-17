@@ -4,6 +4,7 @@ use serde::Deserialize;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 #[derive(Debug, Deserialize)]
 pub struct LeaveListQuery {
@@ -21,7 +22,39 @@ pub struct RejectLeaveRequest {
     pub rejection_reason: Option<String>,
 }
 
-fn leave_days_between(conn: &rusqlite::Connection, user_id: i64, start: &str, end: &str) -> i64 {
+fn leave_overlaps_generated_payslip(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    start_date: &str,
+    end_date: &str,
+) -> bool {
+    let Some(ls) = NaiveDate::parse_from_str(start_date, "%Y-%m-%d").ok() else {
+        return false;
+    };
+    let Some(le) = NaiveDate::parse_from_str(end_date, "%Y-%m-%d").ok() else {
+        return false;
+    };
+    let mut month = ls.year() * 100 + ls.month() as i32;
+    let end_key = le.year() * 100 + le.month() as i32;
+    while month <= end_key {
+        let y = month / 100;
+        let m = month % 100;
+        let found: bool = conn
+            .query_row(
+                "SELECT 1 FROM payslips WHERE user_id=?1 AND month=?2 AND year=?3 AND status='generated' LIMIT 1",
+                crate::params![user_id, m, y],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if found {
+            return true;
+        }
+        month = if m == 12 { (y + 1) * 100 + 1 } else { y * 100 + (m + 1) };
+    }
+    false
+}
+
+fn leave_days_between(conn: &crate::db::Connection, user_id: i64, start: &str, end: &str) -> i64 {
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d").ok();
     match (start_date, end_date) {
@@ -31,7 +64,7 @@ fn leave_days_between(conn: &rusqlite::Connection, user_id: i64, start: &str, en
 }
 
 fn has_overlapping_leave(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     start: &str,
     end: &str,
@@ -45,42 +78,43 @@ fn has_overlapping_leave(
          AND status NOT IN ('rejected') AND start_date <= ?3 AND end_date >= ?2 LIMIT 1"
     };
     if let Some(eid) = exclude_id {
-        conn.query_row(sql, rusqlite::params![user_id, start, end, eid], |_| Ok(()))
+        conn.query_row(sql, crate::params![user_id, start, end, eid], |_| Ok(()))
             .is_ok()
     } else {
-        conn.query_row(sql, rusqlite::params![user_id, start, end], |_| Ok(()))
+        conn.query_row(sql, crate::params![user_id, start, end], |_| Ok(()))
             .is_ok()
     }
 }
 
-fn leave_to_json(row: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
+fn leave_to_json(row: &crate::db::Row) -> crate::db::Result<serde_json::Value> {
     let id: i64 = row.get("id")?;
     let user_id: i64 = row.get("user_id")?;
     Ok(serde_json::json!({
         "id": id,
         "user_id": user_id,
-        "leave_type": row.get::<_, String>("leave_type")?,
-        "start_date": row.get::<_, String>("start_date")?,
-        "end_date": row.get::<_, String>("end_date")?,
-        "days_count": row.get::<_, i64>("days_count").unwrap_or(1),
-        "reason": row.get::<_, Option<String>>("reason")?,
-        "status": row.get::<_, String>("status")?,
-        "remarks": row.get::<_, Option<String>>("remarks").ok().flatten(),
-        "rejection_reason": row.get::<_, Option<String>>("rejection_reason").ok().flatten(),
-        "approved_by": row.get::<_, Option<i64>>("approved_by").ok().flatten(),
-        "created_at": row.get::<_, Option<String>>("created_at").ok().flatten(),
-        "updated_at": row.get::<_, Option<String>>("updated_at").ok().flatten(),
+        "leave_type": row.get::<String>("leave_type")?,
+        "start_date": row.get::<String>("start_date")?,
+        "end_date": row.get::<String>("end_date")?,
+        "days_count": row.get::<i64>("days_count").unwrap_or(1),
+        "reason": row.get::<Option<String>>("reason")?,
+        "status": row.get::<String>("status")?,
+        "remarks": row.get::<Option<String>>("remarks").ok().flatten(),
+        "rejection_reason": row.get::<Option<String>>("rejection_reason").ok().flatten(),
+        "approved_by": row.get::<Option<i64>>("approved_by").ok().flatten(),
+        "created_at": row.get::<Option<String>>("created_at").ok().flatten(),
+        "updated_at": row.get::<Option<String>>("updated_at").ok().flatten(),
         "user": {
             "id": user_id,
-            "name": row.get::<_, Option<String>>("user_name").ok().flatten(),
-            "email": row.get::<_, Option<String>>("user_email").ok().flatten(),
+            "name": row.get::<Option<String>>("user_name").ok().flatten(),
+            "email": row.get::<Option<String>>("user_email").ok().flatten(),
         }
     }))
 }
 
 fn fetch_leave_list(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     query: &LeaveListQuery,
+    org_id: i64,
     user_id: Option<i64>,
 ) -> serde_json::Value {
     let per_page = query.per_page.unwrap_or(15).clamp(1, 100);
@@ -88,24 +122,24 @@ fn fetch_leave_list(
     let offset = (page - 1) * per_page;
 
     let mut conditions = vec!["lr.deleted_at IS NULL".to_string()];
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
 
     if let Some(uid) = user_id {
         conditions.push("lr.user_id = ?".to_string());
-        params.push(Box::new(uid));
+        params.push(crate::db::into_param_value(uid));
     }
 
     if let Some(ref status) = query.status {
         if !status.is_empty() && status != "all" {
             conditions.push("lr.status = ?".to_string());
-            params.push(Box::new(status.clone()));
+            params.push(crate::db::into_param_value(status.clone()));
         }
     }
 
     if let Some(ref leave_type) = query.leave_type {
         if !leave_type.is_empty() && leave_type != "all" {
             conditions.push("lr.leave_type = ?".to_string());
-            params.push(Box::new(leave_type.clone()));
+            params.push(crate::db::into_param_value(leave_type.clone()));
         }
     }
 
@@ -113,17 +147,22 @@ fn fetch_leave_list(
         if !search.is_empty() {
             conditions.push("(u.name LIKE ? OR u.email LIKE ? OR lr.reason LIKE ?)".to_string());
             let like = format!("%{}%", search);
-            params.push(Box::new(like.clone()));
-            params.push(Box::new(like.clone()));
-            params.push(Box::new(like));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like));
         }
     }
 
     let where_clause = conditions.join(" AND ");
     let sort_col = match query.sort_by.as_deref() {
         Some("start_date") => "lr.start_date",
+        Some("end_date") => "lr.end_date",
         Some("status") => "lr.status",
         Some("leave_type") => "lr.leave_type",
+        Some("days_count") => "lr.days_count",
+        Some("user_name") => "u.name",
+        Some("id") => "lr.id",
+        Some("created_at") => "lr.created_at",
         _ => "lr.created_at",
     };
     let sort_dir = if query.sort_order.as_deref() == Some("asc") {
@@ -133,21 +172,23 @@ fn fetch_leave_list(
     };
 
     let count_sql = format!(
-        "SELECT COUNT(*) FROM leave_requests lr LEFT JOIN users u ON u.id = lr.user_id WHERE {}",
+        "SELECT COUNT(*) FROM leave_requests lr
+         INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?
+         WHERE {}",
         where_clause
     );
     let total: i64 = conn
         .query_row(
             &count_sql,
-            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            |r| r.get(0),
+            &params,
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
     let sql = format!(
         "SELECT lr.*, u.name as user_name, u.email as user_email
          FROM leave_requests lr
-         LEFT JOIN users u ON u.id = lr.user_id
+         INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?
          WHERE {}
          ORDER BY {} {}
          LIMIT ? OFFSET ?",
@@ -155,18 +196,15 @@ fn fetch_leave_list(
     );
 
     let mut list_params = params;
-    list_params.push(Box::new(per_page));
-    list_params.push(Box::new(offset));
+    list_params.push(crate::db::into_param_value(per_page));
+    list_params.push(crate::db::into_param_value(offset));
 
     let mut stmt = conn.prepare(&sql).unwrap();
     let items: Vec<serde_json::Value> = stmt
         .query_map(
-            rusqlite::params_from_iter(list_params.iter().map(|p| p.as_ref())),
+            &list_params,
             leave_to_json,
-        )
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        );
 
     let last_page = ((total as f64) / (per_page as f64)).ceil().max(1.0) as i64;
     let from = if total > 0 { offset + 1 } else { 0 };
@@ -183,41 +221,46 @@ fn fetch_leave_list(
     })
 }
 
-fn user_leave_stats(conn: &rusqlite::Connection, user_id: i64) -> serde_json::Value {
+fn user_leave_stats(conn: &crate::db::Connection, user_id: i64) -> serde_json::Value {
     let total: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM leave_requests WHERE user_id=?1 AND deleted_at IS NULL",
             [user_id],
-            |r| r.get(0),
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let pending: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM leave_requests WHERE user_id=?1 AND status='pending' AND deleted_at IS NULL",
             [user_id],
-            |r| r.get(0),
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let approved: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM leave_requests WHERE user_id=?1 AND status='approved' AND deleted_at IS NULL",
             [user_id],
-            |r| r.get(0),
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
-    let total_leave_days: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(days_count),0) FROM leave_requests WHERE user_id=?1 AND status='approved' AND deleted_at IS NULL",
-            [user_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    let year = chrono::Utc::now().year();
+    let approved_days =
+        crate::payroll_logic::employee_leave_used_in_year(conn, user_id, year);
+    let pending_days =
+        crate::payroll_logic::employee_pending_leave_days_in_year(conn, user_id, year);
+    let org_id = crate::tenant::org_id_for_user(conn, user_id);
+    let quota_effective =
+        crate::payroll_logic::employee_effective_leave_quota(conn, user_id, year, org_id);
 
     serde_json::json!({
         "total_requests": total,
         "pending": pending,
         "approved": approved,
-        "total_leave_days": total_leave_days,
+        "total_leave_days": approved_days,
+        "quota_used": approved_days + pending_days,
+        "quota_pending": pending_days,
+        "quota_effective": quota_effective,
+        "quota_year": year,
     })
 }
 
@@ -230,11 +273,12 @@ pub async fn index(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let data = fetch_leave_list(&conn, &query, Some(claims.sub));
+    let data = fetch_leave_list(&conn, &query, org_id, Some(claims.sub));
     HttpResponse::Ok().json(ApiResponse::success(data))
 }
 
@@ -255,12 +299,16 @@ pub async fn store(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     if body.end_date < body.start_date {
         return HttpResponse::BadRequest().json(ApiError::new("End date must be on or after start date"));
+    }
+    if !crate::leave_type_logic::is_valid_active_slug(&conn, org_id, &body.leave_type) {
+        return HttpResponse::BadRequest().json(ApiError::new("Invalid or inactive leave type"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let days = leave_days_between(&conn, claims.sub, &body.start_date, &body.end_date);
@@ -272,7 +320,7 @@ pub async fn store(
             "Leave dates overlap with an existing request",
         ));
     }
-    if crate::leave_type_logic::counts_toward_quota(&conn, &body.leave_type)
+    if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &body.leave_type)
         && crate::payroll_logic::would_exceed_annual_quota(
             &conn,
             claims.sub,
@@ -281,17 +329,32 @@ pub async fn store(
             &body.leave_type,
         )
     {
-        let quota = crate::payroll_logic::annual_leave_quota(&conn);
-        return HttpResponse::BadRequest().json(ApiError::new(&format!(
-            "Annual leave balance exceeded (quota: {} business days)",
-            quota
-        )));
+        let year = NaiveDate::parse_from_str(&body.start_date, "%Y-%m-%d")
+            .map(|d| d.year())
+            .unwrap_or_else(|_| chrono::Utc::now().year());
+        let effective = crate::payroll_logic::employee_effective_leave_quota(
+            &conn, claims.sub, year, org_id,
+        );
+        let bonus = crate::payroll_logic::employee_leave_credits_in_year(&conn, claims.sub, year);
+        let base = crate::payroll_logic::annual_leave_quota(&conn, org_id);
+        let msg = if bonus > 0 {
+            format!(
+                "Annual leave balance exceeded (allowance: {} base + {} bonus = {} business days)",
+                base, bonus, effective
+            )
+        } else {
+            format!(
+                "Annual leave balance exceeded (quota: {} business days)",
+                effective
+            )
+        };
+        return HttpResponse::BadRequest().json(ApiError::new(&msg));
     }
 
     match conn.execute(
         "INSERT INTO leave_requests (user_id, leave_type, start_date, end_date, days_count, reason, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
-        rusqlite::params![
+        crate::params![
             claims.sub,
             body.leave_type,
             body.start_date,
@@ -301,9 +364,27 @@ pub async fn store(
             &now,
         ],
     ) {
-        Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
-            "id": conn.last_insert_rowid(),
-        }))),
+        Ok(_) => {
+            let leave_id = conn.last_insert_rowid();
+            crate::workflow_logic::trigger(
+                &conn,
+                org_id,
+                "leave_request_submitted",
+                &serde_json::json!({
+                    "leave_id": leave_id,
+                    "user_id": claims.sub,
+                    "leave_type": body.leave_type,
+                    "start_date": body.start_date,
+                    "end_date": body.end_date,
+                    "days_count": days,
+                    "created_by": claims.sub,
+                    "organization_id": org_id,
+                }),
+            );
+            HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
+                "id": leave_id,
+            })))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
@@ -317,25 +398,30 @@ pub async fn destroy(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let leave_id = path.into_inner();
-    let leave_row: Option<(i64, String)> = conn
+    let leave_row: Option<(i64, String, String, String)> = conn
         .query_row(
-            "SELECT user_id, status FROM leave_requests WHERE id=?1 AND deleted_at IS NULL",
-            [leave_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT lr.user_id, lr.status, lr.start_date, lr.end_date FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
+             WHERE lr.id = ?1 AND lr.deleted_at IS NULL",
+            crate::params![leave_id, org_id],
+            |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<String>(1)?, r.get_idx::<String>(2)?, r.get_idx::<String>(3)?)),
         )
         .ok();
-    let (owner, status) = match leave_row {
+    let (owner, status, start_date, end_date) = match leave_row {
         Some(r) => r,
         None => return HttpResponse::NotFound().json(ApiError::new("Leave request not found")),
     };
     if status != "pending" {
+        let is_super_admin =
+            crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
         let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
-        if !claims.is_super_admin
+        if !is_super_admin
             && !crate::middleware::rbac::has_permission(&perms, "manage-leave-requests")
         {
             return HttpResponse::Conflict().json(ApiError::new(
@@ -343,16 +429,24 @@ pub async fn destroy(
             ));
         }
     }
-    if owner != claims.sub && !claims.is_super_admin {
+    let is_super_admin = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+    if owner != claims.sub && !is_super_admin {
         let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
         if !crate::middleware::rbac::has_permission(&perms, "manage-leave-requests") {
             return HttpResponse::Forbidden().json(ApiError::new("Not allowed to delete this leave request"));
         }
     }
+    if status == "approved" {
+        if leave_overlaps_generated_payslip(&conn, owner, &start_date, &end_date) {
+            return HttpResponse::Conflict().json(ApiError::new(
+                "Cannot delete approved leave covered by a generated payslip — unlock and regenerate payroll first",
+            ));
+        }
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let _ = conn.execute(
         "UPDATE leave_requests SET deleted_at=?1 WHERE id=?2",
-        rusqlite::params![&now, leave_id],
+        crate::params![&now, leave_id],
     );
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
 }
@@ -378,11 +472,12 @@ pub async fn manage(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&_c);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let data = fetch_leave_list(&conn, &query, None);
+    let data = fetch_leave_list(&conn, &query, org_id, None);
     HttpResponse::Ok().json(ApiResponse::success(data))
 }
 
@@ -399,36 +494,45 @@ pub async fn admin_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&_c);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let pending: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM leave_requests WHERE status='pending' AND deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
+             WHERE lr.status='pending' AND lr.deleted_at IS NULL",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let approved: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM leave_requests WHERE status='approved' AND deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
+             WHERE lr.status='approved' AND lr.deleted_at IS NULL",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let rejected: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM leave_requests WHERE status='rejected' AND deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
+             WHERE lr.status='rejected' AND lr.deleted_at IS NULL",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let total: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM leave_requests WHERE deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
+             WHERE lr.deleted_at IS NULL",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
@@ -437,18 +541,26 @@ pub async fn admin_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         "approved": approved,
         "rejected": rejected,
         "total": total,
+        "total_requests": total,
     })))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ApproveLeaveRequest {
+    pub remarks: Option<String>,
 }
 
 pub async fn approve(
     pool: web::Data<DbPool>,
     req: HttpRequest,
     path: web::Path<i64>,
+    body: Option<web::Json<ApproveLeaveRequest>>,
 ) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -457,17 +569,19 @@ pub async fn approve(
     let leave_id = path.into_inner();
     let leave_info: Option<(i64, String, String, String, i64, String)> = conn
         .query_row(
-            "SELECT user_id, leave_type, start_date, end_date, days_count, status
-             FROM leave_requests WHERE id=?1 AND deleted_at IS NULL",
-            [leave_id],
+            "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days_count, lr.status
+             FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
+             WHERE lr.id = ?1 AND lr.deleted_at IS NULL",
+            crate::params![leave_id, org_id],
             |row| {
                 Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
+                    row.get_idx::<i64>(0)?,
+                    row.get_idx::<String>(1)?,
+                    row.get_idx::<String>(2)?,
+                    row.get_idx::<String>(3)?,
+                    row.get_idx::<i64>(4)?,
+                    row.get_idx::<String>(5)?,
                 ))
             },
         )
@@ -486,7 +600,7 @@ pub async fn approve(
             "Leave dates overlap with an existing approved or pending request",
         ));
     }
-    if crate::leave_type_logic::counts_toward_quota(&conn, &leave_type) {
+    if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &leave_type) {
         let year = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
             .map(|d| d.year())
             .unwrap_or_else(|_| chrono::Utc::now().year());
@@ -497,19 +611,24 @@ pub async fn approve(
             &end_date,
             &leave_type,
         ) {
-            let quota = crate::payroll_logic::annual_leave_quota(&conn);
+            let effective = crate::payroll_logic::employee_effective_leave_quota(
+                &conn, user_id, year, org_id,
+            );
             let used = crate::payroll_logic::employee_leave_used_in_year(&conn, user_id, year);
             return HttpResponse::BadRequest().json(ApiError::new(&format!(
-                "Annual leave balance exceeded (used {} + requested > quota {})",
-                used, quota
+                "Annual leave balance exceeded (used {} + requested > allowance {})",
+                used, effective
             )));
         }
     }
 
+    let remarks = body.and_then(|b| b.remarks.clone());
+
     let updated = conn.execute(
-        "UPDATE leave_requests SET status='approved', approved_by=?1, approved_at=?2, updated_at=?2
-         WHERE id=?3 AND status='pending' AND deleted_at IS NULL",
-        rusqlite::params![claims.sub, &now, leave_id],
+        "UPDATE leave_requests SET status='approved', approved_by=?1, approved_at=?2, remarks=COALESCE(?3, remarks), updated_at=?2
+         WHERE id=?4 AND status='pending' AND deleted_at IS NULL
+           AND user_id IN (SELECT id FROM users WHERE organization_id = ?5)",
+        crate::params![claims.sub, &now, remarks, leave_id, org_id],
     );
     if updated.unwrap_or(0) == 0 {
         return HttpResponse::Conflict().json(ApiError::new(
@@ -519,12 +638,14 @@ pub async fn approve(
 
     crate::workflow_logic::trigger(
         &conn,
-        "leave_approved",
+        org_id,
+        "leave_request_approved",
         &serde_json::json!({
             "leave_id": leave_id,
             "user_id": user_id,
             "leave_type": leave_type,
             "approved_by": claims.sub,
+            "organization_id": org_id,
         }),
     );
 
@@ -541,6 +662,7 @@ pub async fn reject(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -548,16 +670,50 @@ pub async fn reject(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let reason = body.rejection_reason.clone().unwrap_or_default();
     let leave_id = path.into_inner();
+
+    let leave_info: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT lr.user_id, lr.leave_type
+             FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
+             WHERE lr.id = ?1 AND lr.status = 'pending' AND lr.deleted_at IS NULL",
+            crate::params![leave_id, org_id],
+            |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
+        )
+        .ok();
+
+    let Some((user_id, leave_type)) = leave_info else {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Leave request not found or already processed",
+        ));
+    };
+
     let updated = conn.execute(
         "UPDATE leave_requests SET status='rejected', approved_by=?1, rejection_reason=?2, updated_at=?3
-         WHERE id=?4 AND status='pending' AND deleted_at IS NULL",
-        rusqlite::params![claims.sub, reason, &now, leave_id],
+         WHERE id=?4 AND status='pending' AND deleted_at IS NULL
+           AND user_id IN (SELECT id FROM users WHERE organization_id = ?5)",
+        crate::params![claims.sub, reason, &now, leave_id, org_id],
     );
     if updated.unwrap_or(0) == 0 {
         return HttpResponse::Conflict().json(ApiError::new(
             "Leave request not found or already processed",
         ));
     }
+
+    crate::workflow_logic::trigger(
+        &conn,
+        org_id,
+        "leave_request_rejected",
+        &serde_json::json!({
+            "leave_id": leave_id,
+            "user_id": user_id,
+            "leave_type": leave_type,
+            "rejected_by": claims.sub,
+            "rejection_reason": reason,
+            "organization_id": org_id,
+        }),
+    );
+
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Rejected"})))
 }
 
@@ -572,10 +728,11 @@ pub async fn update_remarks(
     path: web::Path<i64>,
     body: web::Json<UpdateRemarksRequest>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -583,8 +740,10 @@ pub async fn update_remarks(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let leave_id = path.into_inner();
     let updated = conn.execute(
-        "UPDATE leave_requests SET remarks=?1, updated_at=?2 WHERE id=?3 AND deleted_at IS NULL",
-        rusqlite::params![body.remarks, &now, leave_id],
+        "UPDATE leave_requests SET remarks=?1, updated_at=?2
+         WHERE id=?3 AND deleted_at IS NULL
+           AND user_id IN (SELECT id FROM users WHERE organization_id = ?4)",
+        crate::params![body.remarks, &now, leave_id, org_id],
     );
     if updated.unwrap_or(0) == 0 {
         return HttpResponse::NotFound().json(ApiError::new("Leave request not found"));

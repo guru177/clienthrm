@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
+import { storageUrl } from '@/lib/storage-url';
 import {
     User as UserIcon,
     Mail,
@@ -200,13 +201,7 @@ export default function ViewUser() {
                     photo: null,
                 });
                 
-                setPhotoPreview(
-                    userData.photo
-                        ? userData.photo.startsWith('http')
-                            ? userData.photo
-                            : `/storage/${userData.photo}`
-                        : null
-                );
+                setPhotoPreview(userData.photo ? storageUrl(userData.photo) : null);
                 
                 setAvailableManagers(managersRes.data.data);
                 setDepartments(deptsRes.data.data);
@@ -272,9 +267,7 @@ export default function ViewUser() {
                 setEditForm({ ...editForm, password: '', photo: null });
                 if (response.data.data.photo) {
                     const photo = response.data.data.photo;
-                    setPhotoPreview(
-                        photo.startsWith('http') ? photo : `/storage/${photo}`
-                    );
+                    setPhotoPreview(storageUrl(photo));
                 }
             }
         } catch (error) {
@@ -306,13 +299,7 @@ export default function ViewUser() {
             password: '',
             photo: null,
         });
-        setPhotoPreview(
-            user.photo
-                ? user.photo.startsWith('http')
-                    ? user.photo
-                    : `/storage/${user.photo}`
-                : null
-        );
+        setPhotoPreview(user.photo ? storageUrl(user.photo) : null);
         setIsEditing(false);
     };
 

@@ -1,12 +1,11 @@
 import AppLogoIcon from './app-logo-icon';
 import { useAuth } from '@/contexts/AuthContext';
+import { storageUrl } from '@/lib/storage-url';
 
 export default function AppLogo() {
     const { settings } = useAuth();
     const appName = settings?.app_name || "Raintech HRM";
-    const appLogo = settings?.app_logo 
-        ? (settings.app_logo.startsWith('http') || settings.app_logo.startsWith('data:') ? settings.app_logo : `/storage/${settings.app_logo.replace(/^\/+/, '')}`) 
-        : "/images/logo.webp";
+    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : "/images/logo.webp";
 
     return (
         <>

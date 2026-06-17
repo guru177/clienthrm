@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Eye, FileText, MessageCircle } from 'lucide-react';
+import { Download, Eye, FileText, MessageCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import axios from '@/lib/axios';
 
@@ -22,6 +22,8 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { usePermissions } from '@/hooks/use-permissions';
+import { openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface Employee {
@@ -66,11 +68,14 @@ const YEARS = Array.from({ length: 5 }, (_, i) => currentYear - i);
 
 export default function EmployeePayslipsPage({ employee }: { employee: Employee }) {
     const navigate = useNavigate();
+    const { hasPermission } = usePermissions();
+    const canManagePayroll = hasPermission('manage-payroll');
     const [payslips, setPayslips] = useState<Payslip[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterYear, setFilterYear] = useState<string>('all');
     const [filterMonth, setFilterMonth] = useState<string>('all');
     const [sendingWa, setSendingWa] = useState<number | null>(null);
+    const [openingPdf, setOpeningPdf] = useState<number | null>(null);
 
     const breadcrumbs = [
         { title: 'Salaries', href: '/admin/salaries/components' },
@@ -92,6 +97,17 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
             handleApiError(e);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleOpenPdf = async (payslipId: number) => {
+        setOpeningPdf(payslipId);
+        try {
+            await openPayslipPdf(payslipId);
+        } catch (e) {
+            handleApiError(e);
+        } finally {
+            setOpeningPdf(null);
         }
     };
 
@@ -227,11 +243,23 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
                                                         variant="outline"
                                                         size="sm"
                                                         className="gap-1.5"
-                                                        onClick={() => window.open(`/admin/payslips/${p.id}/pdf`, '_blank')}
+                                                        disabled={openingPdf === p.id}
+                                                        onClick={() => void handleOpenPdf(p.id)}
+                                                    >
+                                                        <Download className="h-3.5 w-3.5" />
+                                                        {openingPdf === p.id ? 'Opening…' : 'PDF'}
+                                                    </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="gap-1.5"
+                                                        disabled={openingPdf === p.id}
+                                                        onClick={() => void handleOpenPdf(p.id)}
                                                     >
                                                         <Eye className="h-3.5 w-3.5" />
                                                         View
                                                     </Button>
+                                                    {canManagePayroll && (
                                                     <Button
                                                         variant="outline"
                                                         size="sm"
@@ -242,6 +270,7 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
                                                         <MessageCircle className="h-3.5 w-3.5" />
                                                         {sendingWa === p.id ? 'Sending…' : 'WhatsApp'}
                                                     </Button>
+                                                    )}
                                                 </div>
                                             </TableCell>
                                         </TableRow>

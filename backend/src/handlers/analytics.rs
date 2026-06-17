@@ -4,15 +4,19 @@ use std::collections::HashMap;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 const ATTENDANCE_PRESENT_SQL: &str =
-    "SELECT COUNT(DISTINCT user_id) FROM attendance WHERE date=?1 AND deleted_at IS NULL AND clock_out IS NOT NULL";
+    "SELECT COUNT(DISTINCT a.user_id) FROM attendance a
+     INNER JOIN users u ON u.id = a.user_id AND u.organization_id = ?2
+     WHERE a.date=?1 AND a.deleted_at IS NULL AND a.clock_out IS NOT NULL";
 
 pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -25,13 +29,13 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
 
     let total_employees: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM users WHERE is_super_admin=0 AND deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM users WHERE is_super_admin=0 AND deleted_at IS NULL AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let today_attendance: i64 = conn
-        .query_row(ATTENDANCE_PRESENT_SQL, [&today], |r| r.get(0))
+        .query_row(ATTENDANCE_PRESENT_SQL, crate::params![&today, org_id], |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
     let att_pct = if total_employees > 0 {
         (today_attendance as f64 / total_employees as f64 * 100.0 * 10.0).round() / 10.0
@@ -40,46 +44,52 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     };
     let pending_requests: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM leave_requests WHERE status='pending' AND deleted_at IS NULL",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
+             WHERE lr.status='pending' AND lr.deleted_at IS NULL",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let active_projects: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM projects WHERE status='in_progress'",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM projects WHERE status='in_progress' AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
     let todo: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tasks WHERE status='todo'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status='todo' AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
+        )
         .unwrap_or(0);
     let in_progress: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status='in_progress'",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM tasks WHERE status='in_progress' AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let completed: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status='completed'",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM tasks WHERE status='completed' AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
     let on_hold: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status='on_hold'",
-            [],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM tasks WHERE status='on_hold' AND organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
     let leave_types: HashMap<String, i64> =
-        crate::payroll_logic::approved_leave_days_by_type_in_month(&conn, month, year);
+        crate::payroll_logic::approved_leave_days_by_type_in_month(&conn, org_id, month, year);
     let leave_types_json: serde_json::Map<String, serde_json::Value> = leave_types
         .into_iter()
         .map(|(k, v)| (k, serde_json::json!(v)))
@@ -90,7 +100,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         let d = now - chrono::Duration::days(i);
         let date_str = d.format("%Y-%m-%d").to_string();
         let count: i64 = conn
-            .query_row(ATTENDANCE_PRESENT_SQL, [&date_str], |r| r.get(0))
+            .query_row(ATTENDANCE_PRESENT_SQL, crate::params![&date_str, org_id], |r| r.get_idx::<i64>(0))
             .unwrap_or(0);
         let pct = if total_employees > 0 {
             (count as f64 / total_employees as f64 * 100.0 * 10.0).round() / 10.0
@@ -105,17 +115,15 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     }
 
     let mut hstmt = conn
-        .prepare("SELECT name, date FROM holidays WHERE date >= ?1 ORDER BY date LIMIT 4")
+        .prepare("SELECT name, date FROM holidays WHERE organization_id = ?1 AND date >= ?2 ORDER BY date LIMIT 4")
         .unwrap();
     let holidays: Vec<serde_json::Value> = hstmt
-        .query_map([&today], |row| {
-            let name: String = row.get(0)?;
-            let date: String = row.get(1)?;
+        .query_map(crate::params![org_id, &today], |row| {
+            let name: String = row.get_idx::<String>(0)?;
+            let date: String = row.get_idx::<String>(1)?;
             let days_away = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                .ok()
                 .and_then(|hd| {
                     NaiveDate::parse_from_str(&today, "%Y-%m-%d")
-                        .ok()
                         .map(|td| (hd - td).num_days())
                 })
                 .unwrap_or(0);
@@ -124,25 +132,26 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
                 "date": date,
                 "daysAway": days_away,
             }))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
 
     let current_month_gross: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(gross_salary),0) FROM payslips WHERE month=?1 AND year=?2 AND status='generated'",
-            rusqlite::params![month, year],
-            |r| r.get(0),
+            "SELECT COALESCE(SUM(p.gross_salary),0) FROM payslips p
+             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
+             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
+            crate::params![month, year, org_id],
+            |r| r.get_idx::<f64>(0),
         )
         .unwrap_or(0.0);
     let prev_month = if month == 1 { 12 } else { month - 1 };
     let prev_year = if month == 1 { year - 1 } else { year };
     let previous_month_gross: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(gross_salary),0) FROM payslips WHERE month=?1 AND year=?2 AND status='generated'",
-            rusqlite::params![prev_month, prev_year],
-            |r| r.get(0),
+            "SELECT COALESCE(SUM(p.gross_salary),0) FROM payslips p
+             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
+             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
+            crate::params![prev_month, prev_year, org_id],
+            |r| r.get_idx::<f64>(0),
         )
         .unwrap_or(0.0);
     let change = if previous_month_gross > 0.0 {
@@ -157,6 +166,8 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
             "SELECT d.id, d.name, u.id AS user_id
              FROM departments d
              INNER JOIN users u ON u.department_id = d.id AND u.deleted_at IS NULL AND u.is_super_admin=0
+               AND u.organization_id = ?1
+             WHERE d.organization_id = ?1
              ORDER BY d.name",
         ) {
         Ok(s) => s,
@@ -167,10 +178,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         }
     };
     let dept_rows: Vec<(i64, String, i64)> = dept_stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        .query_map([org_id], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?, row.get_idx::<i64>(2)?)));
 
     let mut dept_map: std::collections::HashMap<i64, (String, i64, f64)> =
         std::collections::HashMap::new();
@@ -211,32 +219,31 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         let mut result = Vec::new();
         if let Ok(mut stmt) = conn.prepare(
             "SELECT name, date_of_birth FROM users
-             WHERE deleted_at IS NULL AND date_of_birth IS NOT NULL AND date_of_birth != ''
+             WHERE deleted_at IS NULL AND organization_id = ?1
+               AND date_of_birth IS NOT NULL AND date_of_birth != ''
              LIMIT 20",
         ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                let name: String = row.get(0)?;
-                let dob: String = row.get(1)?;
+            let rows = stmt.query_map([org_id], |row| {
+                let name: String = row.get_idx::<String>(0)?;
+                let dob: String = row.get_idx::<String>(1)?;
                 Ok((name, dob))
-            }) {
-                let today_date = NaiveDate::parse_from_str(&today, "%Y-%m-%d").ok();
-                for row in rows.flatten() {
-                    let (name, dob) = row;
-                    let date_part = dob.split('T').next().or_else(|| dob.split(' ').next());
-                    if let (Some(dp), Some(td)) = (date_part, today_date) {
-                        if let Ok(parsed) = NaiveDate::parse_from_str(dp, "%Y-%m-%d") {
-                            if let Some(this_year_bday) =
-                                NaiveDate::from_ymd_opt(year, parsed.month(), parsed.day())
-                            {
-                                let days = (this_year_bday - td).num_days();
-                                if days >= 0 && days <= 30 {
-                                    result.push(serde_json::json!({
-                                        "name": name,
-                                        "type": "birthday",
-                                        "date": this_year_bday.format("%Y-%m-%d").to_string(),
-                                        "isSoon": days <= 7,
-                                    }));
-                                }
+            });
+            let today_date = NaiveDate::parse_from_str(&today, "%Y-%m-%d");
+            for (name, dob) in rows {
+                let date_part = dob.split('T').next().or_else(|| dob.split(' ').next());
+                if let (Some(dp), Some(td)) = (date_part, today_date.ok()) {
+                    if let Ok(parsed) = NaiveDate::parse_from_str(dp, "%Y-%m-%d") {
+                        if let Some(this_year_bday) =
+                            NaiveDate::from_ymd_opt(year, parsed.month(), parsed.day())
+                        {
+                            let days = this_year_bday.signed_duration_since(td).num_days();
+                            if days >= 0 && days <= 30 {
+                                result.push(serde_json::json!({
+                                    "name": name,
+                                    "type": "birthday",
+                                    "date": this_year_bday.format("%Y-%m-%d").to_string(),
+                                    "isSoon": days <= 7,
+                                }));
                             }
                         }
                     }
@@ -252,21 +259,19 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
             "SELECT we.id, w.name, we.status, we.trigger_type, we.updated_at
              FROM workflow_executions we
              JOIN workflows w ON w.id = we.workflow_id
+             WHERE w.organization_id = ?1
              ORDER BY we.updated_at DESC LIMIT 5",
         ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+            let rows = stmt.query_map([org_id], |row| {
                 Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?.to_string(),
-                    "process": row.get::<_, String>(1)?,
-                    "status": row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "pending".to_string()),
-                    "step": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    "timestamp": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    "id": row.get_idx::<i64>(0)?.to_string(),
+                    "process": row.get_idx::<String>(1)?,
+                    "status": row.get_idx::<Option<String>>(2)?.unwrap_or_else(|| "pending".to_string()),
+                    "step": row.get_idx::<Option<String>>(3)?.unwrap_or_default(),
+                    "timestamp": row.get_idx::<Option<String>>(4)?.unwrap_or_default(),
                 }))
-            }) {
-                for row in rows.flatten() {
-                    result.push(row);
-                }
-            }
+            });
+            result.extend(rows);
         }
         result
     };

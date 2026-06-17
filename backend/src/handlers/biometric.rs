@@ -2,7 +2,6 @@ use actix_web::{web, Error, HttpRequest, HttpResponse};
 use actix_web::error::ErrorUnauthorized;
 use actix_ws::Message;
 use futures_util::StreamExt as _;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use std::sync::Arc;
 
 use crate::biometric_events::BiometricEvents;
@@ -10,31 +9,213 @@ use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::user::JwtClaims;
 use crate::models::{ApiError, ApiResponse};
-use crate::models::biometric::{BiometricDevice, BiometricPunch, BiometricUserMap, IClockQuery, UserMapRequest};
+use crate::models::biometric::{BiometricDevice, IClockQuery, UserMapRequest};
+use crate::tenant::org_id_from_claims;
+
+fn peer_ip(req: &HttpRequest) -> String {
+    req.headers()
+        .get("X-Forwarded-For")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| req.peer_addr().map(|a| a.ip().to_string()))
+        .unwrap_or_default()
+}
+
+/// When BIOMETRIC_STRICT_IP=1, reject punches from IPs that differ from registered device IP.
+fn device_ip_allowed(conn: &crate::db::Connection, sn: &str, ip: &str) -> bool {
+    crate::biometric_device_logic::device_ip_allowed(conn, sn, ip)
+}
+
+fn take_pending_command(conn: &crate::db::Connection, sn: &str) -> Option<String> {
+    let (cmd_id, command): (i64, String) = conn
+        .query_row(
+            "SELECT id, command FROM biometric_commands WHERE device_serial=?1 AND status='pending' ORDER BY id LIMIT 1",
+            crate::params![sn],
+            |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
+        )
+        .ok()?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = conn.execute(
+        "UPDATE biometric_commands SET status='sent', executed_at=?1 WHERE id=?2",
+        crate::params![&now, cmd_id],
+    );
+    log::info!("📤 [BIOMETRIC] Sending command to SN={}: {}", sn, command);
+    Some(format!("C:{cmd_id}:{command}"))
+}
 
 /// Update device heartbeat and push a live event to connected admin browsers.
 fn record_device_touch(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     events: &BiometricEvents,
     sn: &str,
     ip: &str,
     event_kind: &str,
 ) {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let _ = conn.execute(
-        "INSERT INTO biometric_devices (serial_number, ip_address, last_heartbeat, is_active, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 1, ?3, ?3)
-         ON CONFLICT(serial_number) DO UPDATE SET ip_address=?2, last_heartbeat=?3, is_active=1, updated_at=?3",
-        rusqlite::params![sn, ip, &now],
-    );
+    let updated = conn
+        .execute(
+            "UPDATE biometric_devices
+             SET ip_address = ?1, last_heartbeat = ?2, is_active = 1, updated_at = ?2
+             WHERE serial_number = ?3",
+            crate::params![ip, &now, sn],
+        )
+        .unwrap_or(0);
+    if updated == 0 {
+        log::warn!(
+            "Biometric device SN={} sent heartbeat but is not registered to an organization",
+            sn
+        );
+        return;
+    }
+
+    let org_id: Option<i64> = conn
+        .query_row(
+            "SELECT organization_id FROM biometric_devices WHERE serial_number = ?1",
+            [sn],
+            |row| row.get_idx::<i64>(0),
+        )
+        .ok();
+
     events.emit(
         event_kind,
         serde_json::json!({
             "serial_number": sn,
             "ip_address": ip,
             "last_heartbeat": now,
+            "organization_id": org_id,
         }),
     );
+}
+
+struct AttlogLine {
+    pin: String,
+    timestamp: String,
+    status: i64,
+    verify: i64,
+}
+
+/// Parse tab-separated ATTLOG body and sort chronologically (devices often upload out of order).
+fn parse_attlog_lines(body: &str) -> Vec<AttlogLine> {
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 2 {
+            continue;
+        }
+        let pin = fields[0].trim().to_string();
+        let timestamp = fields.get(1).map(|s| s.trim()).unwrap_or("").to_string();
+        if pin.is_empty() || timestamp.is_empty() {
+            continue;
+        }
+        let status: i64 = fields
+            .get(2)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        let verify: i64 = fields
+            .get(3)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        lines.push(AttlogLine {
+            pin,
+            timestamp,
+            status,
+            verify,
+        });
+    }
+    lines.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    lines
+}
+
+/// Normalize device timestamps so sorting and duplicate checks are reliable.
+pub(crate) fn normalize_punch_timestamp(timestamp: &str) -> String {
+    let trimmed = timestamp.trim();
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(trimmed, fmt) {
+            return dt.format("%Y-%m-%d %H:%M:%S").to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Insert a punch row. Unmapped PINs are stored (user_id NULL) for the Punch Log.
+/// Returns true when a new row was inserted.
+pub(crate) fn store_incoming_punch(
+    conn: &crate::db::Connection,
+    sn: &str,
+    pin: &str,
+    timestamp: &str,
+    status: i64,
+    verify: i64,
+    now: &str,
+) -> bool {
+    let timestamp = normalize_punch_timestamp(timestamp);
+    let user_id: Option<i64> = conn
+        .query_row(
+            "SELECT bm.user_id
+             FROM biometric_user_map bm
+             INNER JOIN users u ON u.id = bm.user_id AND u.deleted_at IS NULL
+             INNER JOIN biometric_devices bd
+                ON bd.serial_number = bm.device_serial
+               AND bd.organization_id = u.organization_id
+             WHERE bm.device_serial = ?1 AND bm.device_pin = ?2",
+            crate::params![sn, pin],
+            |row| row.get_idx::<i64>(0),
+        )
+        .ok();
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM biometric_punches WHERE device_serial=?1 AND device_pin=?2 AND punch_time=?3",
+            crate::params![sn, pin, &timestamp],
+            |row| row.get_idx::<i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if exists {
+        log::info!("  ⏭️  Duplicate punch skipped: PIN={} Time={}", pin, &timestamp);
+        return false;
+    }
+
+    let punch_type = resolve_effective_punch_type(conn, user_id, sn, pin, status, &timestamp);
+    if punch_type != status {
+        log::info!(
+            "  🔄 Resolved punch type {} → {} for PIN={} (device sent status={})",
+            status,
+            punch_type,
+            pin,
+            status
+        );
+    }
+
+    if conn
+        .execute(
+            "INSERT INTO biometric_punches (device_serial, device_pin, punch_time, punch_type, verify_method, user_id, is_processed, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+            crate::params![sn, pin, &timestamp, punch_type, verify, user_id, now],
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    let punch_id = conn.last_insert_rowid();
+    if let Some(uid) = user_id {
+        process_punch_to_attendance(conn, punch_id, uid, &timestamp, punch_type);
+    } else {
+        log::info!(
+            "  📋 Stored unmapped punch PIN={} on SN={} — map PIN in Admin → Biometric",
+            pin,
+            sn
+        );
+    }
+    true
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -54,13 +235,18 @@ pub async fn iclock_handshake(
         None => return HttpResponse::BadRequest().body("ERR: Missing SN"),
     };
 
-    let peer_ip = req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let peer_ip = peer_ip(&req);
     log::info!("🔗 [BIOMETRIC] Handshake from device SN={} IP={}", sn, peer_ip);
 
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().body("ERR: DB"),
     };
+
+    if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+        log::warn!("⛔ [BIOMETRIC] Handshake ignored — unregistered SN={}", sn);
+        return HttpResponse::Ok().content_type("text/plain").body("OK");
+    }
 
     record_device_touch(&conn, &events, &sn, &peer_ip, "device_online");
 
@@ -76,11 +262,11 @@ pub async fn iclock_handshake(
 }
 
 /// POST /iclock/cdata — Receive attendance logs (ATTLOG) and operation logs (OPERLOG)
-/// This is the core endpoint where the device pushes punch data.
 pub async fn iclock_receive(
     pool: web::Data<DbPool>,
     events: web::Data<BiometricEvents>,
     query: web::Query<IClockQuery>,
+    req: HttpRequest,
     body: String,
 ) -> HttpResponse {
     let sn = match &query.sn {
@@ -89,6 +275,7 @@ pub async fn iclock_receive(
     };
 
     let table = query.table.as_deref().unwrap_or("ATTLOG");
+    let ip = peer_ip(&req);
 
     log::info!("📥 [BIOMETRIC] Received data from SN={} table={} body_len={}", sn, table, body.len());
 
@@ -98,75 +285,67 @@ pub async fn iclock_receive(
             Err(_) => return HttpResponse::InternalServerError().body("ERR: DB"),
         };
 
+        if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+            log::warn!("⛔ [BIOMETRIC] Ignoring ATTLOG from unregistered SN={}", sn);
+            return HttpResponse::Ok().body("OK");
+        }
+
+        if !device_ip_allowed(&conn, &sn, &ip) {
+            log::warn!(
+                "⛔ [BIOMETRIC] ATTLOG rejected — IP {} does not match registered device SN={}",
+                ip,
+                sn
+            );
+            return HttpResponse::Ok().body("OK");
+        }
+
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut processed = 0;
 
-        // Parse tab-separated attendance records, one per line
         // Format: PIN\tTimestamp\tStatus\tVerify\tWorkCode\tReserved1\tReserved2
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() { continue; }
+        for punch in parse_attlog_lines(&body) {
+            log::info!(
+                "  📋 Punch: PIN={} Time={} Status={} Verify={}",
+                punch.pin,
+                punch.timestamp,
+                punch.status,
+                punch.verify
+            );
 
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 2 { continue; }
-
-            let pin = fields[0].trim();
-            let timestamp = fields.get(1).map(|s| s.trim()).unwrap_or("");
-            let status: i64 = fields.get(2).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-            let verify: i64 = fields.get(3).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-
-            if pin.is_empty() || timestamp.is_empty() { continue; }
-
-            log::info!("  📋 Punch: PIN={} Time={} Status={} Verify={}", pin, timestamp, status, verify);
-
-            let user_id: Option<i64> = conn.query_row(
-                "SELECT user_id FROM biometric_user_map WHERE device_serial=?1 AND device_pin=?2",
-                rusqlite::params![&sn, pin],
-                |row| row.get(0),
-            ).ok();
-
-            let Some(uid) = user_id else {
-                log::info!("  ⏭️  Unmapped PIN={} on SN={} — punch ignored", pin, sn);
-                continue;
-            };
-
-            // Check for duplicate (same device, pin, timestamp)
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM biometric_punches WHERE device_serial=?1 AND device_pin=?2 AND punch_time=?3",
-                rusqlite::params![&sn, pin, timestamp],
-                |row| row.get::<_, i64>(0),
-            ).unwrap_or(0) > 0;
-
-            if exists {
-                log::info!("  ⏭️  Duplicate punch skipped: PIN={} Time={}", pin, timestamp);
-                continue;
+            if store_incoming_punch(
+                &conn,
+                &sn,
+                &punch.pin,
+                &punch.timestamp,
+                punch.status,
+                punch.verify,
+                &now,
+            ) {
+                processed += 1;
             }
-
-            if conn.execute(
-                "INSERT INTO biometric_punches (device_serial, device_pin, punch_time, punch_type, verify_method, user_id, is_processed, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
-                rusqlite::params![&sn, pin, timestamp, status, verify, uid, &now],
-            ).is_ok() {
-                let punch_id = conn.last_insert_rowid();
-                process_punch_to_attendance(&conn, punch_id, uid, timestamp, status);
-            }
-
-            processed += 1;
         }
 
         // Update device heartbeat
         let _ = conn.execute(
             "UPDATE biometric_devices SET last_heartbeat=?1, updated_at=?1 WHERE serial_number=?2",
-            rusqlite::params![&now, &sn],
+            crate::params![&now, &sn],
         );
 
         log::info!("✅ [BIOMETRIC] Processed {} punches from SN={}", processed, sn);
         if processed > 0 {
+            let org_id: Option<i64> = conn
+                .query_row(
+                    "SELECT organization_id FROM biometric_devices WHERE serial_number = ?1",
+                    [&sn],
+                    |row| row.get_idx::<i64>(0),
+                )
+                .ok();
             events.emit(
                 "punches_received",
                 serde_json::json!({
                     "serial_number": sn,
                     "count": processed,
+                    "organization_id": org_id,
                 }),
             );
         }
@@ -194,28 +373,18 @@ pub async fn iclock_getrequest(
         Err(_) => return HttpResponse::InternalServerError().body("ERR: DB"),
     };
 
-    let peer_ip = req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+        return HttpResponse::Ok().content_type("text/plain").body("OK");
+    }
+
+    let peer_ip = peer_ip(&req);
     record_device_touch(&conn, &events, &sn, &peer_ip, "device_heartbeat");
 
-    // Check for pending commands
-    let cmd: Option<(i64, String)> = conn.query_row(
-        "SELECT id, command FROM biometric_commands WHERE device_serial=?1 AND status='pending' ORDER BY id LIMIT 1",
-        rusqlite::params![&sn],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).ok();
-
-    if let Some((cmd_id, command)) = cmd {
-        // Mark as sent
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let _ = conn.execute(
-            "UPDATE biometric_commands SET status='sent', executed_at=?1 WHERE id=?2",
-            rusqlite::params![&now, cmd_id],
-        );
-        log::info!("📤 [BIOMETRIC] Sending command to SN={}: {}", sn, command);
-        HttpResponse::Ok().content_type("text/plain").body(format!("C:{}:{}", cmd_id, command))
-    } else {
-        HttpResponse::Ok().content_type("text/plain").body("OK")
+    if let Some(body) = take_pending_command(&conn, &sn) {
+        return HttpResponse::Ok().content_type("text/plain").body(body);
     }
+
+    HttpResponse::Ok().content_type("text/plain").body("OK")
 }
 
 /// POST /iclock/devicecmd — Device reports command execution result
@@ -236,7 +405,7 @@ pub async fn iclock_devicecmd(pool: web::Data<DbPool>, query: web::Query<IClockQ
             if let Ok(cmd_id) = part[3..].parse::<i64>() {
                 let _ = conn.execute(
                     "UPDATE biometric_commands SET status='executed', result=?1 WHERE id=?2",
-                    rusqlite::params![&body, cmd_id],
+                    crate::params![&body, cmd_id],
                 );
             }
         }
@@ -249,15 +418,58 @@ pub async fn iclock_devicecmd(pool: web::Data<DbPool>, query: web::Query<IClockQ
 //  Punch → Attendance Resolution Logic
 // ═══════════════════════════════════════════════════════════════════
 
+/// BIO-PARK / iClock devices often send unreliable in/out flags (status=0 on every
+/// scan, or inout=1 on every face scan after the first checkout). Infer from open
+/// attendance first, then alternate from the last stored punch.
+pub fn resolve_effective_punch_type(
+    conn: &crate::db::Connection,
+    user_id: Option<i64>,
+    device_serial: &str,
+    device_pin: &str,
+    device_status: i64,
+    timestamp: &str,
+) -> i64 {
+    let date = if timestamp.len() >= 10 {
+        &timestamp[..10]
+    } else {
+        return next_punch_type(conn, device_serial, device_pin);
+    };
+
+    if let Some(uid) = user_id {
+        use crate::attendance_logic::find_open_attendance_session;
+        if find_open_attendance_session(conn, uid, date).is_some() {
+            return 1;
+        }
+        // No open session — next punch must be check-in even if device says checkout.
+        if device_status == 1 {
+            log::info!(
+                "  🔄 Device sent checkout (status=1) but no open session for user_id={} — treating as check-in",
+                uid
+            );
+        }
+        return 0;
+    }
+
+    // Unmapped: alternate from last punch; ignore sticky device checkout when last was out.
+    let inferred = next_punch_type(conn, device_serial, device_pin);
+    if device_status == 1 && inferred == 0 {
+        log::info!(
+            "  🔄 Device sent checkout (status=1) for unmapped PIN={} but last punch was out — treating as check-in",
+            device_pin
+        );
+    }
+    inferred
+}
+
 /// Toggle check-in/out from the last stored punch when device status is unreliable.
-pub fn next_punch_type(conn: &rusqlite::Connection, device_serial: &str, device_pin: &str) -> i64 {
+pub fn next_punch_type(conn: &crate::db::Connection, device_serial: &str, device_pin: &str) -> i64 {
     let last: Option<i64> = conn
         .query_row(
             "SELECT punch_type FROM biometric_punches
              WHERE device_serial=?1 AND device_pin=?2
              ORDER BY punch_time DESC, id DESC LIMIT 1",
-            rusqlite::params![device_serial, device_pin],
-            |row| row.get(0),
+            crate::params![device_serial, device_pin],
+            |row| row.get_idx::<i64>(0),
         )
         .ok();
     match last {
@@ -268,7 +480,7 @@ pub fn next_punch_type(conn: &rusqlite::Connection, device_serial: &str, device_
 
 /// Resolve a stored punch into attendance and mark it processed.
 pub fn process_punch_to_attendance(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     punch_id: i64,
     user_id: i64,
     timestamp: &str,
@@ -281,7 +493,7 @@ pub fn process_punch_to_attendance(
     );
 }
 
-fn resolve_punch_to_attendance(conn: &rusqlite::Connection, user_id: i64, timestamp: &str, status: i64) {
+fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, timestamp: &str, status: i64) {
     use crate::attendance_logic::{close_open_session_before_clock_in, find_open_attendance_session};
     use crate::shift_logic::{
         calc_duration_minutes, is_early_departure, is_late_arrival, resolve_shift_for_user,
@@ -300,7 +512,7 @@ fn resolve_punch_to_attendance(conn: &rusqlite::Connection, user_id: i64, timest
         let _ = conn.execute(
             "INSERT INTO attendance (user_id, date, clock_in, status, is_late, source, created_at, updated_at)
              VALUES (?1, ?2, ?3, 'present', ?4, 'biometric', ?5, ?5)",
-            rusqlite::params![user_id, date, time, if is_late { 1 } else { 0 }, &now],
+            crate::params![user_id, date, time, if is_late { 1 } else { 0 }, &now],
         );
     };
 
@@ -310,7 +522,7 @@ fn resolve_punch_to_attendance(conn: &rusqlite::Connection, user_id: i64, timest
             .query_row(
                 "SELECT clock_in FROM attendance WHERE id=?1",
                 [att_id],
-                |row| row.get(0),
+                |row| row.get_idx::<String>(0),
             )
             .unwrap_or_default();
         let duration = calc_duration_minutes(&clock_in, time);
@@ -322,12 +534,21 @@ fn resolve_punch_to_attendance(conn: &rusqlite::Connection, user_id: i64, timest
         );
         let _ = conn.execute(
             "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
-            rusqlite::params![time, duration, if early { 1 } else { 0 }, &now, att_id],
+            crate::params![time, duration, if early { 1 } else { 0 }, &now, att_id],
         );
     };
 
     match (status, active_session) {
-        // Check-in: close any open session first (shift-aware), then start a new one
+        // Check-in while session already open on same day — ignore duplicate punch
+        (0, Some((att_id, session_date, _))) if session_date == date => {
+            log::warn!(
+                "  ⚠️ Duplicate check-in ignored for user_id={} at {} (open session id={})",
+                user_id,
+                timestamp,
+                att_id
+            );
+        }
+        // Check-in with open session from prior day — close it, then start new session
         (0, Some((att_id, _, _))) => {
             close_open_session_before_clock_in(conn, user_id, date, time, &now, &shift);
             let is_late = is_late_arrival(time, &shift.start_time, &shift.end_time, shift.grace_in_minutes);
@@ -391,21 +612,22 @@ fn resolve_punch_to_attendance(conn: &rusqlite::Connection, user_id: i64, timest
 
 /// GET /api/admin/biometric/devices — List all registered devices
 pub async fn devices_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let mut stmt = conn.prepare(
-        "SELECT * FROM biometric_devices ORDER BY created_at DESC"
+        "SELECT * FROM biometric_devices WHERE organization_id = ?1 ORDER BY created_at DESC"
     ).unwrap();
-    let items: Vec<BiometricDevice> = stmt.query_map([], BiometricDevice::from_row)
-        .unwrap().filter_map(|r| r.ok()).collect();
+    let items: Vec<BiometricDevice> = stmt.query_map([org_id], BiometricDevice::from_row);
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
 /// POST /api/admin/biometric/devices — Register a device manually
 pub async fn devices_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let sn = body.get("serial_number").and_then(|v| v.as_str()).unwrap_or("");
@@ -417,9 +639,26 @@ pub async fn devices_store(pool: web::Data<DbPool>, req: HttpRequest, body: web:
         return HttpResponse::BadRequest().json(ApiError::new("serial_number is required"));
     }
 
+    if let Ok(existing_org) = conn.query_row(
+        "SELECT organization_id FROM biometric_devices WHERE serial_number = ?1",
+        [sn],
+        |r| r.get_idx::<i64>(0),
+    ) {
+        if existing_org != org_id {
+            return HttpResponse::Conflict().json(ApiError::new(
+                "Device serial number is already registered to another organization",
+            ));
+        }
+    }
+
     match conn.execute(
-        "INSERT INTO biometric_devices (serial_number, name, location, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        rusqlite::params![sn, name, location, &now],
+        "INSERT INTO biometric_devices (serial_number, name, location, organization_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT(serial_number) DO UPDATE SET
+            name = excluded.name,
+            location = excluded.location,
+            updated_at = excluded.updated_at",
+        crate::params![sn, name, location, org_id, &now],
     ) {
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Device registered"}))),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {}", e))),
@@ -428,71 +667,107 @@ pub async fn devices_store(pool: web::Data<DbPool>, req: HttpRequest, body: web:
 
 /// DELETE /api/admin/biometric/devices/{id}
 pub async fn devices_destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let id = path.into_inner();
-    let _ = conn.execute("DELETE FROM biometric_devices WHERE id=?1", [id]);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Device deleted"})))
+    match conn.execute(
+        "DELETE FROM biometric_devices WHERE id = ?1 AND organization_id = ?2",
+        crate::params![id, org_id],
+    ) {
+        Ok(0) => HttpResponse::NotFound().json(ApiError::new("Device not found")),
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Device deleted"}))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {}", e))),
+    }
 }
 
 /// GET /api/admin/biometric/punches — List raw punch logs
 pub async fn punches_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let mut stmt = conn.prepare(
         "SELECT bp.*, u.name as user_name FROM biometric_punches bp
-         LEFT JOIN users u ON bp.user_id = u.id
-         ORDER BY bp.punch_time DESC LIMIT 200"
+         LEFT JOIN users u ON bp.user_id = u.id AND u.organization_id = ?1
+         WHERE bp.device_serial IN (
+            SELECT serial_number FROM biometric_devices WHERE organization_id = ?1
+         )
+         ORDER BY datetime(bp.punch_time) DESC, bp.id DESC LIMIT 500"
     ).unwrap();
 
-    let items: Vec<serde_json::Value> = stmt.query_map([], |row| {
+    let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
         Ok(serde_json::json!({
-            "id": row.get::<_, i64>("id")?,
-            "device_serial": row.get::<_, String>("device_serial")?,
-            "device_pin": row.get::<_, String>("device_pin")?,
-            "punch_time": row.get::<_, String>("punch_time")?,
-            "punch_type": row.get::<_, i64>("punch_type")?,
-            "verify_method": row.get::<_, i64>("verify_method")?,
-            "user_id": row.get::<_, Option<i64>>("user_id")?,
-            "user_name": row.get::<_, Option<String>>("user_name").unwrap_or(None),
-            "is_processed": row.get::<_, i64>("is_processed")?,
-            "created_at": row.get::<_, Option<String>>("created_at")?,
+            "id": row.get::<i64>("id")?,
+            "device_serial": row.get::<String>("device_serial")?,
+            "device_pin": row.get::<String>("device_pin")?,
+            "punch_time": row.get::<String>("punch_time")?,
+            "punch_type": row.get::<i64>("punch_type")?,
+            "verify_method": row.get::<i64>("verify_method")?,
+            "user_id": row.get::<Option<i64>>("user_id")?,
+            "user_name": row.get::<Option<String>>("user_name").unwrap_or(None),
+            "is_processed": row.get::<i64>("is_processed")?,
+            "created_at": row.get::<Option<String>>("created_at")?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    });
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
 /// GET /api/admin/biometric/mapping — List user-device mappings
 pub async fn mapping_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let mut stmt = conn.prepare(
         "SELECT bm.*, u.name as user_name FROM biometric_user_map bm
-         LEFT JOIN users u ON bm.user_id = u.id
+         INNER JOIN users u ON bm.user_id = u.id AND u.organization_id = ?1
+         INNER JOIN biometric_devices bd ON bd.serial_number = bm.device_serial AND bd.organization_id = ?1
          ORDER BY bm.device_serial, bm.device_pin"
     ).unwrap();
 
-    let items: Vec<serde_json::Value> = stmt.query_map([], |row| {
+    let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
         Ok(serde_json::json!({
-            "id": row.get::<_, i64>("id")?,
-            "device_serial": row.get::<_, String>("device_serial")?,
-            "device_pin": row.get::<_, String>("device_pin")?,
-            "user_id": row.get::<_, i64>("user_id")?,
-            "user_name": row.get::<_, Option<String>>("user_name").unwrap_or(None),
-            "created_at": row.get::<_, Option<String>>("created_at")?,
+            "id": row.get::<i64>("id")?,
+            "device_serial": row.get::<String>("device_serial")?,
+            "device_pin": row.get::<String>("device_pin")?,
+            "user_id": row.get::<i64>("user_id")?,
+            "user_name": row.get::<Option<String>>("user_name").unwrap_or(None),
+            "created_at": row.get::<Option<String>>("created_at")?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    });
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
 /// POST /api/admin/biometric/mapping — Create a user-device PIN mapping
 pub async fn mapping_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<UserMapRequest>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+
+    let user_ok = conn
+        .query_row(
+            "SELECT 1 FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+            crate::params![body.user_id, org_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !user_ok {
+        return HttpResponse::BadRequest().json(ApiError::new("User not found in your organization"));
+    }
+
+    let device_ok = conn
+        .query_row(
+            "SELECT 1 FROM biometric_devices WHERE serial_number = ?1 AND organization_id = ?2",
+            crate::params![&body.device_serial, org_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !device_ok {
+        return HttpResponse::BadRequest().json(ApiError::new("Device not registered to your organization"));
+    }
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -500,7 +775,7 @@ pub async fn mapping_store(pool: web::Data<DbPool>, req: HttpRequest, body: web:
         "INSERT INTO biometric_user_map (device_serial, device_pin, user_id, created_at)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(device_serial, device_pin) DO UPDATE SET user_id=?3",
-        rusqlite::params![&body.device_serial, &body.device_pin, body.user_id, &now],
+        crate::params![&body.device_serial, &body.device_pin, body.user_id, &now],
     ) {
         Ok(_) => {
             // Retroactively resolve any unprocessed punches for this PIN
@@ -516,43 +791,75 @@ pub async fn mapping_store(pool: web::Data<DbPool>, req: HttpRequest, body: web:
 
 /// DELETE /api/admin/biometric/mapping/{id}
 pub async fn mapping_destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
     let id = path.into_inner();
-    let _ = conn.execute("DELETE FROM biometric_user_map WHERE id=?1", [id]);
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Mapping deleted"})))
+    match conn.execute(
+        "DELETE FROM biometric_user_map
+         WHERE id = ?1
+           AND user_id IN (SELECT id FROM users WHERE organization_id = ?2)",
+        crate::params![id, org_id],
+    ) {
+        Ok(0) => HttpResponse::NotFound().json(ApiError::new("Mapping not found")),
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Mapping deleted"}))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {}", e))),
+    }
 }
 
 /// GET /api/admin/biometric/stats — Dashboard statistics
 pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-    let total_devices: i64 = conn.query_row("SELECT COUNT(*) FROM biometric_devices", [], |r| r.get(0)).unwrap_or(0);
+    let total_devices: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM biometric_devices WHERE organization_id = ?1",
+        [org_id],
+        |r| r.get_idx::<i64>(0),
+    ).unwrap_or(0);
     let active_devices: i64 = conn.query_row(
         "SELECT COUNT(*) FROM biometric_devices
-         WHERE last_heartbeat IS NOT NULL
-         AND last_heartbeat >= datetime('now', '-10 minutes')",
-        [],
-        |r| r.get(0),
+         WHERE organization_id = ?1
+           AND last_heartbeat IS NOT NULL
+           AND last_heartbeat >= datetime('now', '-10 minutes')",
+        [org_id],
+        |r| r.get_idx::<i64>(0),
     ).unwrap_or(0);
     let today_punches: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM biometric_punches WHERE punch_time LIKE ?1 || '%'",
-        [&today], |r| r.get(0)
+        "SELECT COUNT(*) FROM biometric_punches bp
+         WHERE bp.punch_time LIKE ?1 || '%'
+           AND bp.device_serial IN (
+               SELECT serial_number FROM biometric_devices WHERE organization_id = ?2
+           )",
+        crate::params![&today, org_id],
+        |r| r.get_idx::<i64>(0),
     ).unwrap_or(0);
-    let total_mappings: i64 = conn.query_row("SELECT COUNT(*) FROM biometric_user_map", [], |r| r.get(0)).unwrap_or(0);
+    let total_mappings: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM biometric_user_map bm
+         INNER JOIN users u ON bm.user_id = u.id AND u.organization_id = ?1",
+        [org_id],
+        |r| r.get_idx::<i64>(0),
+    ).unwrap_or(0);
     let unmapped_punches: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM biometric_punches WHERE user_id IS NULL",
-        [], |r| r.get(0)
+        "SELECT COUNT(*) FROM biometric_punches bp
+         WHERE bp.user_id IS NULL
+           AND bp.device_serial IN (
+               SELECT serial_number FROM biometric_devices WHERE organization_id = ?1
+           )",
+        [org_id],
+        |r| r.get_idx::<i64>(0),
     ).unwrap_or(0);
 
-    // Last heartbeat info
     let last_heartbeat: Option<String> = conn.query_row(
-        "SELECT last_heartbeat FROM biometric_devices ORDER BY last_heartbeat DESC LIMIT 1",
-        [], |r| r.get(0)
-    ).ok();
+        "SELECT last_heartbeat FROM biometric_devices
+         WHERE organization_id = ?1
+         ORDER BY last_heartbeat DESC LIMIT 1",
+        [org_id],
+        |r| r.get_idx::<Option<String>>(0),
+    ).ok().flatten();
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "total_devices": total_devices,
@@ -564,7 +871,7 @@ pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
     })))
 }
 
-fn ws_token_from_query(req: &HttpRequest, jwt_secret: &str) -> Result<(), Error> {
+fn ws_token_from_query(req: &HttpRequest, jwt_secret: &str) -> Result<JwtClaims, Error> {
     let token = req
         .uri()
         .query()
@@ -573,14 +880,8 @@ fn ws_token_from_query(req: &HttpRequest, jwt_secret: &str) -> Result<(), Error>
         })
         .ok_or_else(|| ErrorUnauthorized("Missing token query parameter"))?;
 
-    let validation = Validation::new(Algorithm::HS256);
-    decode::<JwtClaims>(
-        token,
-        &DecodingKey::from_secret(jwt_secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|_| ErrorUnauthorized("Invalid or expired token"))?;
-    Ok(())
+    crate::middleware::auth::decode_tenant_token(token, jwt_secret)
+        .map_err(|e| ErrorUnauthorized(e.to_string()))
 }
 
 fn url_query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
@@ -598,10 +899,18 @@ fn url_query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 pub async fn biometric_live_ws(
     req: HttpRequest,
     stream: web::Payload,
+    pool: web::Data<DbPool>,
     events: web::Data<BiometricEvents>,
     jwt: web::Data<Arc<String>>,
 ) -> Result<HttpResponse, Error> {
-    ws_token_from_query(&req, jwt.as_str())?;
+    let claims = ws_token_from_query(&req, jwt.as_str())?;
+    let conn = pool
+        .get()
+        .map_err(|_| ErrorUnauthorized("Database unavailable"))?;
+    if let Err(msg) = crate::middleware::rbac::ensure_ws_access(&conn, &claims, req.path()) {
+        return Err(ErrorUnauthorized(msg));
+    }
+    let org_id = claims.organization_id;
 
     let (response, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
 
@@ -637,6 +946,12 @@ pub async fn biometric_live_ws(
                 evt = rx.recv() => {
                     match evt {
                         Ok(payload) => {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+                                let event_org = value.get("organization_id").and_then(|v| v.as_i64());
+                                if event_org != Some(org_id) {
+                                    continue;
+                                }
+                            }
                             if session.text(payload).await.is_err() {
                                 break;
                             }
@@ -657,11 +972,11 @@ pub async fn biometric_live_ws(
 //  Helper: Retroactive resolution for newly-mapped PINs
 // ═══════════════════════════════════════════════════════════════════
 
-fn retroactive_resolve(conn: &rusqlite::Connection, device_serial: &str, device_pin: &str, user_id: i64) -> i64 {
+fn retroactive_resolve(conn: &crate::db::Connection, device_serial: &str, device_pin: &str, user_id: i64) -> i64 {
     // Update all unprocessed punches for this PIN with the user_id
     let _ = conn.execute(
         "UPDATE biometric_punches SET user_id=?1 WHERE device_serial=?2 AND device_pin=?3 AND user_id IS NULL",
-        rusqlite::params![user_id, device_serial, device_pin],
+        crate::params![user_id, device_serial, device_pin],
     );
 
     // Get all unprocessed punches for this user, ordered by time
@@ -675,9 +990,9 @@ fn retroactive_resolve(conn: &rusqlite::Connection, device_serial: &str, device_
     };
 
     let punches: Vec<(i64, String, i64)> = stmt.query_map(
-        rusqlite::params![device_serial, device_pin],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).unwrap().filter_map(|r| r.ok()).collect();
+        crate::params![device_serial, device_pin],
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?, row.get_idx::<i64>(2)?)),
+    );
 
     let mut count: i64 = 0;
     for (punch_id, timestamp, status) in &punches {
@@ -700,14 +1015,8 @@ fn retroactive_resolve(conn: &rusqlite::Connection, device_serial: &str, device_
 pub struct AdmsQuery {
     #[serde(rename = "SN", alias = "sn")]
     pub sn: Option<String>,
-    #[serde(rename = "INFO", alias = "info")]
-    pub info: Option<String>,
     #[serde(rename = "TABLE", alias = "table")]
     pub table: Option<String>,
-    #[serde(rename = "STAMP", alias = "stamp")]
-    pub stamp: Option<String>,
-    #[serde(rename = "Ession", alias = "ession", alias = "session")]
-    pub session: Option<String>,
 }
 
 /// GET /pub/chat — WebSocket endpoint for BIO-PARK device communication.
@@ -816,30 +1125,47 @@ fn handle_adms_ws_message(
             let mac = devinfo.and_then(|d| d.get("mac")).and_then(|v| v.as_str()).unwrap_or("");
             let new_logs = devinfo.and_then(|d| d.get("usednewlog")).and_then(|v| v.as_i64()).unwrap_or(0);
 
-            // Upsert device
-            let _ = conn.execute(
-                "INSERT INTO biometric_devices (serial_number, name, ip_address, last_heartbeat, is_active, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, ?4, ?4)
-                 ON CONFLICT(serial_number) DO UPDATE SET name=?2, ip_address=?3, last_heartbeat=?4, is_active=1, updated_at=?4",
-                rusqlite::params![sn, format!("{} ({})", model, firmware), ip, &now],
-            );
+            let name = format!("{} ({})", model, firmware);
 
-            events.emit(
-                "device_online",
-                serde_json::json!({
-                    "serial_number": sn,
-                    "ip_address": ip,
-                    "model": model,
-                    "firmware": firmware,
-                    "mac": mac,
-                    "new_logs": new_logs,
-                    "last_heartbeat": now,
-                }),
-            );
+            if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+                log::warn!(
+                    "⛔ [ADMS-WS] Device SN={} not pre-registered — register in Admin → Biometric first",
+                    sn
+                );
+                return vec![serde_json::json!({
+                    "ret": "reg",
+                    "result": false,
+                    "reason": "not_registered",
+                })
+                .to_string()];
+            }
+
+            if let Some(org_id) = crate::biometric_device_logic::touch_registered_device(
+                &conn,
+                sn,
+                Some(&name),
+                Some(ip),
+                &now,
+            ) {
+                events.emit(
+                    "device_online",
+                    serde_json::json!({
+                        "organization_id": org_id,
+                        "serial_number": sn,
+                        "ip_address": ip,
+                        "model": model,
+                        "firmware": firmware,
+                        "mac": mac,
+                        "new_logs": new_logs,
+                        "last_heartbeat": now,
+                    }),
+                );
+            }
 
             // Build response: ACK the registration with options.
             // cloudtime must match device timezone (UTC+5:30 IST)
-            let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
+            let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)
+                .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
             let cloudtime = chrono::Utc::now().with_timezone(&ist_offset)
                 .format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -858,6 +1184,8 @@ fn handle_adms_ws_message(
                     "realtime": 1,
                     "encrypt": 0
                 }).to_string(),
+                // Ask device to upload pending attendance logs immediately after reg
+                serde_json::json!({"cmd": "getalllog", "stn": true}).to_string(),
             ];
 
             responses
@@ -865,6 +1193,14 @@ fn handle_adms_ws_message(
 
         // ── Attendance Log Push ──────────────────────────────────
         "sendlog" => {
+            if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+                log::warn!(
+                    "⛔ [ADMS-WS] Ignoring sendlog from unregistered SN={}",
+                    sn
+                );
+                return vec![serde_json::json!({"ret": "sendlog", "result": false}).to_string()];
+            }
+
             // record can be a single object OR an array of objects
             let records: Vec<&serde_json::Value> = match msg.get("record") {
                 Some(serde_json::Value::Array(arr)) => arr.iter().collect(),
@@ -875,9 +1211,10 @@ fn handle_adms_ws_message(
             let total = records.len();
             let mut stored = 0;
 
+            let mut ws_punches: Vec<(String, String, i64, i64)> = Vec::new();
             for rec in &records {
-                // enrollid can be a number or string
-                let pin = rec.get("enrollid")
+                let pin = rec
+                    .get("enrollid")
                     .map(|v| match v {
                         serde_json::Value::String(s) => s.clone(),
                         serde_json::Value::Number(n) => n.to_string(),
@@ -885,47 +1222,36 @@ fn handle_adms_ws_message(
                     })
                     .or_else(|| rec.get("pin").and_then(|v| v.as_str()).map(String::from))
                     .unwrap_or_default();
-                let timestamp = rec.get("time").and_then(|v| v.as_str()).unwrap_or("");
-                let status: i64 = rec.get("mode").and_then(|v| v.as_i64())
-                    .or_else(|| rec.get("status").and_then(|v| v.as_i64()))
-                    .unwrap_or(0);
-                let verify: i64 = rec.get("type").and_then(|v| v.as_i64())
+                let timestamp = rec
+                    .get("time")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let verify: i64 = rec
+                    .get("type")
+                    .and_then(|v| v.as_i64())
                     .or_else(|| rec.get("verify").and_then(|v| v.as_i64()))
                     .unwrap_or(0);
                 let inout: i64 = rec.get("inout").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                if pin.is_empty() || timestamp.is_empty() { continue; }
-
-                log::info!("📋 [ADMS-WS] Punch: SN={} PIN={} Time={} Mode={} InOut={}",
-                    sn, pin, timestamp, status, inout);
-
-                let user_id: Option<i64> = conn.query_row(
-                    "SELECT user_id FROM biometric_user_map WHERE device_serial=?1 AND device_pin=?2",
-                    rusqlite::params![sn, &pin],
-                    |row| row.get(0),
-                ).ok();
-
-                let Some(uid) = user_id else {
-                    log::info!("  ⏭️ [ADMS-WS] Unmapped PIN={} on SN={} — punch ignored", pin, sn);
+                if pin.is_empty() || timestamp.is_empty() {
                     continue;
-                };
+                }
+                ws_punches.push((pin, timestamp, inout, verify));
+            }
+            ws_punches.sort_by(|a, b| a.1.cmp(&b.1));
 
-                let exists: bool = conn.query_row(
-                    "SELECT COUNT(*) FROM biometric_punches WHERE device_serial=?1 AND device_pin=?2 AND punch_time=?3",
-                    rusqlite::params![sn, &pin, timestamp],
-                    |row| row.get::<_, i64>(0),
-                ).unwrap_or(0) > 0;
+            for (pin, timestamp, inout, verify) in ws_punches {
+                log::info!(
+                    "📋 [ADMS-WS] Punch: SN={} PIN={} Time={} InOut={}",
+                    sn,
+                    pin,
+                    timestamp,
+                    inout
+                );
 
-                if !exists {
-                    if conn.execute(
-                        "INSERT INTO biometric_punches (device_serial, device_pin, punch_time, punch_type, verify_method, user_id, is_processed, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
-                        rusqlite::params![sn, &pin, timestamp, inout, verify, uid, &now],
-                    ).is_ok() {
-                        let punch_id = conn.last_insert_rowid();
-                        process_punch_to_attendance(&conn, punch_id, uid, timestamp, inout);
-                        stored += 1;
-                    }
+                if store_incoming_punch(&conn, sn, &pin, &timestamp, inout, verify, &now) {
+                    stored += 1;
                 }
             }
 
@@ -977,7 +1303,7 @@ pub async fn adms_chat_post(
 ) -> HttpResponse {
     let sn = query.sn.clone().unwrap_or_else(|| "unknown".into());
     let table = query.table.as_deref().unwrap_or("ATTLOG");
-    let peer_ip = req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let peer_ip = peer_ip(&req);
 
     log::info!(
         "📥 [ADMS] POST /pub/chat — SN={} table={} body_len={} IP={}",
@@ -991,55 +1317,41 @@ pub async fn adms_chat_post(
             Err(_) => return HttpResponse::InternalServerError().body("ERR: DB"),
         };
 
+        if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+            log::warn!("⛔ [ADMS] Ignoring ATTLOG from unregistered SN={}", sn);
+            return HttpResponse::Ok().content_type("text/plain").body("OK");
+        }
+
+        if !device_ip_allowed(&conn, &sn, &peer_ip) {
+            log::warn!(
+                "⛔ [ADMS] ATTLOG rejected — IP {} does not match registered device SN={}",
+                peer_ip,
+                sn
+            );
+            return HttpResponse::Ok().content_type("text/plain").body("OK");
+        }
+
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut processed = 0;
 
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() { continue; }
+        for punch in parse_attlog_lines(&body) {
+            log::info!(
+                "  📋 [ADMS] Punch: PIN={} Time={} Status={} Verify={}",
+                punch.pin,
+                punch.timestamp,
+                punch.status,
+                punch.verify
+            );
 
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 2 { continue; }
-
-            let pin = fields[0].trim();
-            let timestamp = fields.get(1).map(|s| s.trim()).unwrap_or("");
-            let status: i64 = fields.get(2).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-            let verify: i64 = fields.get(3).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-
-            if pin.is_empty() || timestamp.is_empty() { continue; }
-
-            log::info!("  📋 [ADMS] Punch: PIN={} Time={} Status={} Verify={}", pin, timestamp, status, verify);
-
-            let user_id: Option<i64> = conn.query_row(
-                "SELECT user_id FROM biometric_user_map WHERE device_serial=?1 AND device_pin=?2",
-                rusqlite::params![&sn, pin],
-                |row| row.get(0),
-            ).ok();
-
-            let Some(uid) = user_id else {
-                log::info!("  ⏭️  [ADMS] Unmapped PIN={} on SN={} — punch ignored", pin, sn);
-                continue;
-            };
-
-            // Duplicate check
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM biometric_punches WHERE device_serial=?1 AND device_pin=?2 AND punch_time=?3",
-                rusqlite::params![&sn, pin, timestamp],
-                |row| row.get::<_, i64>(0),
-            ).unwrap_or(0) > 0;
-
-            if exists {
-                log::info!("  ⏭️  Duplicate punch skipped: PIN={} Time={}", pin, timestamp);
-                continue;
-            }
-
-            if conn.execute(
-                "INSERT INTO biometric_punches (device_serial, device_pin, punch_time, punch_type, verify_method, user_id, is_processed, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
-                rusqlite::params![&sn, pin, timestamp, status, verify, uid, &now],
-            ).is_ok() {
-                let punch_id = conn.last_insert_rowid();
-                process_punch_to_attendance(&conn, punch_id, uid, timestamp, status);
+            if store_incoming_punch(
+                &conn,
+                &sn,
+                &punch.pin,
+                &punch.timestamp,
+                punch.status,
+                punch.verify,
+                &now,
+            ) {
                 processed += 1;
             }
         }
@@ -1047,7 +1359,7 @@ pub async fn adms_chat_post(
         // Update heartbeat
         let _ = conn.execute(
             "UPDATE biometric_devices SET last_heartbeat=?1, updated_at=?1 WHERE serial_number=?2",
-            rusqlite::params![&now, &sn],
+            crate::params![&now, &sn],
         );
 
         log::info!("✅ [ADMS] Processed {} punches from SN={}", processed, sn);
@@ -1076,24 +1388,17 @@ pub async fn adms_getrequest(
 ) -> HttpResponse {
     // Reuse the iClock getrequest logic
     let sn = query.sn.clone().unwrap_or_else(|| "unknown".into());
-    let peer_ip = req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let peer_ip = peer_ip(&req);
 
     if let Ok(conn) = pool.get() {
+        if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+            return HttpResponse::Ok().content_type("text/plain").body("OK");
+        }
+
         record_device_touch(&conn, &events, &sn, &peer_ip, "device_heartbeat");
 
-        let cmd: Option<(i64, String)> = conn.query_row(
-            "SELECT id, command FROM biometric_commands WHERE device_serial=?1 AND status='pending' ORDER BY id LIMIT 1",
-            rusqlite::params![&sn],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).ok();
-
-        if let Some((cmd_id, command)) = cmd {
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            let _ = conn.execute(
-                "UPDATE biometric_commands SET status='sent', executed_at=?1 WHERE id=?2",
-                rusqlite::params![&now, cmd_id],
-            );
-            return HttpResponse::Ok().content_type("text/plain").body(format!("C:{}:{}", cmd_id, command));
+        if let Some(body) = take_pending_command(&conn, &sn) {
+            return HttpResponse::Ok().content_type("text/plain").body(body);
         }
     }
 

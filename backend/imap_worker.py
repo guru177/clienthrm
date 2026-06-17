@@ -21,11 +21,14 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 IMAP_SERVER = os.getenv("SMTP_HOST", "mail.crafteluxe.in")
-EMAIL_ACCOUNT = os.getenv("SMTP_USER", "test@crafteluxe.in")
-PASSWORD = os.getenv("SMTP_PASS", "Guru@1234")
+EMAIL_ACCOUNT = os.getenv("SMTP_USER")
+PASSWORD = os.getenv("SMTP_PASS")
 
-# Storage path for resumes
-STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", "storage", "resumes")
+if not EMAIL_ACCOUNT or not PASSWORD:
+    raise SystemExit("SMTP_USER and SMTP_PASS environment variables are required")
+
+# Storage path for resumes (outside web-served public/)
+STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "storage", "resumes")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 # Database path

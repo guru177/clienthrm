@@ -123,10 +123,9 @@ export default function OnboardingIndex() {
             const response = await axios.post('/onboarding/complete', formData);
             handleApiResponse(response);
 
-            // Redirect to dashboard
-            if (response.data.redirect) {
-                window.location.href = response.data.redirect;
-            }
+            // Redirect after onboarding (backend nests payload under `data`)
+            const redirect = response.data?.data?.redirect ?? response.data?.redirect;
+            window.location.href = redirect || '/admin/attendance';
         } catch (error: any) {
             if (error.response?.data?.errors) {
                 setErrors(error.response.data.errors);

@@ -1,5 +1,6 @@
 import { Navigate, type ReactNode } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { isModuleAllowed } from '@/lib/plan-modules';
 
 function PageLoader() {
     return (
@@ -9,18 +10,30 @@ function PageLoader() {
     );
 }
 
-/** Redirects to /unauthorized when the user lacks the required permission slug. */
+/** Redirects to /unauthorized when the user lacks permission or plan module access. */
 export function PermissionRoute({
     permission,
+    permissions,
+    module,
     children,
 }: {
     permission?: string;
+    permissions?: string[];
+    module?: string;
     children: ReactNode;
 }) {
-    const { user, loading, hasPermission } = useAuth();
+    const { user, loading, hasPermission, planModules } = useAuth();
     if (loading) return <PageLoader />;
     if (!user) return <Navigate to="/login" replace />;
-    if (permission && !hasPermission(permission)) {
+    if (module && !isModuleAllowed(planModules, module)) {
+        return <Navigate to="/unauthorized" replace />;
+    }
+    const allowed = permission
+        ? hasPermission(permission)
+        : permissions && permissions.length > 0
+          ? permissions.some((p) => hasPermission(p))
+          : true;
+    if (!allowed) {
         return <Navigate to="/unauthorized" replace />;
     }
     return <>{children}</>;

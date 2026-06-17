@@ -1,3 +1,6 @@
+pub mod organization;
+pub mod platform;
+pub mod subscription_plan;
 pub mod user;
 pub mod department;
 pub mod designation;
@@ -14,6 +17,8 @@ pub mod salary;
 pub mod career;
 pub mod job_application;
 pub mod biometric;
+
+pub mod chat;
 
 // Re-export common response types
 use serde::Serialize;
@@ -32,17 +37,6 @@ pub struct ApiError {
     #[serde(rename = "type")]
     pub response_type: String,
     pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PaginatedResponse<T: Serialize> {
-    pub success: bool,
-    #[serde(rename = "type")]
-    pub response_type: String,
-    pub data: Vec<T>,
-    pub total: i64,
-    pub page: i64,
-    pub per_page: i64,
 }
 
 impl<T: Serialize> ApiResponse<T> {

@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 #[derive(Debug, Deserialize)]
 pub struct ReportMonthQuery {
@@ -28,10 +29,11 @@ pub async fn attendance_summary(
     req: HttpRequest,
     query: web::Query<ReportMonthQuery>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -50,7 +52,9 @@ pub async fn attendance_summary(
          FROM users u
          LEFT JOIN attendance a ON a.user_id = u.id AND a.date >= ?1 AND a.date <= ?2 AND a.deleted_at IS NULL
            AND a.clock_out IS NOT NULL
-         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0
+           AND a.date >= COALESCE(NULLIF(substr(u.date_of_joining, 1, 10), ''), '1900-01-01')
+           AND (u.date_of_exit IS NULL OR u.date_of_exit = '' OR a.date <= substr(u.date_of_exit, 1, 10))
+         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?3
          GROUP BY u.id
          ORDER BY u.name",
     ) {
@@ -59,19 +63,16 @@ pub async fn attendance_summary(
     };
 
     let rows: Vec<serde_json::Value> = stmt
-        .query_map(rusqlite::params![start, end], |row| {
+        .query_map(crate::params![start, end, org_id], |row| {
             Ok(serde_json::json!({
-                "user_id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "employee_id": row.get::<_, Option<String>>(2)?,
-                "present_days": row.get::<_, i64>(3).unwrap_or(0),
-                "late_marks": row.get::<_, i64>(4).unwrap_or(0),
-                "early_exits": row.get::<_, i64>(5).unwrap_or(0),
+                "user_id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "employee_id": row.get_idx::<Option<String>>(2)?,
+                "present_days": row.get_idx::<i64>(3).unwrap_or(0),
+                "late_marks": row.get_idx::<i64>(4).unwrap_or(0),
+                "early_exits": row.get_idx::<i64>(5).unwrap_or(0),
             }))
-        })
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        });
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "month": month,
@@ -87,10 +88,11 @@ pub async fn payroll_register(
     req: HttpRequest,
     query: web::Query<ReportMonthQuery>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -104,7 +106,7 @@ pub async fn payroll_register(
         "SELECT p.id, u.name, u.employee_id, p.gross_salary, p.total_deductions, p.net_salary, p.status,
                 p.present_days, p.working_days, p.lop_deduction, COALESCE(p.shift_penalty, 0)
          FROM payslips p
-         JOIN users u ON u.id = p.user_id
+         JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
          WHERE p.month = ?1 AND p.year = ?2 AND p.status = 'generated'
          ORDER BY u.name",
     ) {
@@ -113,24 +115,21 @@ pub async fn payroll_register(
     };
 
     let rows: Vec<serde_json::Value> = stmt
-        .query_map(rusqlite::params![month, year], |row| {
+        .query_map(crate::params![month, year, org_id], |row| {
             Ok(serde_json::json!({
-                "payslip_id": row.get::<_, i64>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "employee_id": row.get::<_, Option<String>>(2)?,
-                "gross_salary": row.get::<_, f64>(3)?,
-                "total_deductions": row.get::<_, f64>(4)?,
-                "net_salary": row.get::<_, f64>(5)?,
-                "status": row.get::<_, String>(6)?,
-                "present_days": row.get::<_, i64>(7).unwrap_or(0),
-                "working_days": row.get::<_, i64>(8).unwrap_or(0),
-                "lop_deduction": row.get::<_, f64>(9).unwrap_or(0.0),
-                "shift_penalty": row.get::<_, f64>(10).unwrap_or(0.0),
+                "payslip_id": row.get_idx::<i64>(0)?,
+                "name": row.get_idx::<String>(1)?,
+                "employee_id": row.get_idx::<Option<String>>(2)?,
+                "gross_salary": row.get_idx::<f64>(3)?,
+                "total_deductions": row.get_idx::<f64>(4)?,
+                "net_salary": row.get_idx::<f64>(5)?,
+                "status": row.get_idx::<String>(6)?,
+                "present_days": row.get_idx::<i64>(7).unwrap_or(0),
+                "working_days": row.get_idx::<i64>(8).unwrap_or(0),
+                "lop_deduction": row.get_idx::<f64>(9).unwrap_or(0.0),
+                "shift_penalty": row.get_idx::<f64>(10).unwrap_or(0.0),
             }))
-        })
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        });
 
     let total_gross: f64 = rows.iter().filter_map(|r| r.get("gross_salary").and_then(|v| v.as_f64())).sum();
     let total_net: f64 = rows.iter().filter_map(|r| r.get("net_salary").and_then(|v| v.as_f64())).sum();
@@ -150,10 +149,11 @@ pub async fn payroll_split(
     req: HttpRequest,
     query: web::Query<ReportMonthQuery>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
@@ -166,19 +166,14 @@ pub async fn payroll_split(
     let month_end = format!("{}-{:02}-{}", year, month, cal_days);
 
     let user_ids: Vec<i64> = conn
-        .prepare("SELECT id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 ORDER BY name")
-        .ok()
-        .and_then(|mut s| {
-            s.query_map([], |r| r.get(0))
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        })
+        .prepare("SELECT id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name")
+        .map(|s| s.query_map([org_id], |r| r.get_idx::<i64>(0)))
         .unwrap_or_default();
 
     let rows: Vec<serde_json::Value> = user_ids
         .into_iter()
         .filter_map(|uid| {
-            let emp = crate::handlers::payroll::build_employee_payroll(&conn, uid, month, year)?;
+            let emp = crate::handlers::payroll::build_employee_payroll(&conn, uid, org_id, month, year)?;
             let name = emp.get("name")?.as_str()?.to_string();
             let ss = emp.get("salary_structure")?;
             let profile = crate::salary_split::load_employee_profile(&conn, uid, &month_end);
@@ -226,47 +221,49 @@ pub async fn leave_balance(
     pool: web::Data<DbPool>,
     req: HttpRequest,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
     let year = chrono::Utc::now().year();
-    let quota: i64 = conn
-        .query_row(
-            "SELECT CAST(value AS INTEGER) FROM app_settings WHERE key='annual_leave_quota'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(12);
+    let base_quota = crate::payroll_logic::annual_leave_quota(&conn, org_id);
 
     let mut users_stmt = match conn.prepare(
-        "SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin = 0 ORDER BY name",
+        "SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin = 0 AND organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
     let users: Vec<(i64, String, Option<String>)> = users_stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .ok()
-        .map(|i| i.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        .query_map([org_id], |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<Option<String>>(2)?,
+            ))
+        });
 
     let rows: Vec<serde_json::Value> = users
         .into_iter()
         .map(|(uid, name, employee_id)| {
             let used = crate::payroll_logic::employee_leave_used_in_year(&conn, uid, year);
             let pending = crate::payroll_logic::employee_pending_leave_days_in_year(&conn, uid, year);
-            let available = (quota - used - pending).max(0);
+            let bonus = crate::payroll_logic::employee_leave_credits_in_year(&conn, uid, year);
+            let effective = base_quota + bonus;
+            let available = (effective - used - pending).max(0);
             serde_json::json!({
                 "user_id": uid,
                 "name": name,
                 "employee_id": employee_id,
-                "annual_quota": quota,
+                "annual_quota": base_quota,
+                "bonus_days": bonus,
+                "total_allowance": effective,
                 "used_days": used,
                 "pending_days": pending,
                 "balance": available,

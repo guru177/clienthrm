@@ -31,6 +31,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { fetchLeaveTypeOptions, labelForLeaveType, type LeaveTypeOption } from '@/lib/leave-types';
 
 interface LeaveRequestTableProps {
     onRefresh?: () => void;
@@ -46,6 +47,11 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
     const [total, setTotal] = useState(0);
     const [deleteId, setDeleteId] = useState<number | null>(null);
     const [deleting, setDeleting] = useState(false);
+    const [leaveTypeOptions, setLeaveTypeOptions] = useState<LeaveTypeOption[]>([]);
+
+    useEffect(() => {
+        void fetchLeaveTypeOptions().then(setLeaveTypeOptions).catch(() => setLeaveTypeOptions([]));
+    }, []);
 
     useEffect(() => {
         fetchRequests();
@@ -102,16 +108,7 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
         return <Badge variant={config.variant}>{config.label}</Badge>;
     };
 
-    const getLeaveTypeLabel = (type: string) => {
-        const labels: Record<string, string> = {
-            sick: 'Sick Leave',
-            annual: 'Annual Leave',
-            personal: 'Personal Leave',
-            unpaid: 'Unpaid Leave',
-            emergency: 'Emergency Leave',
-        };
-        return labels[type] || type;
-    };
+    const getLeaveTypeLabel = (type: string) => labelForLeaveType(leaveTypeOptions, type);
 
     return (
         <>

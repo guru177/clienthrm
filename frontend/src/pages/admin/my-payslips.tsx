@@ -1,10 +1,12 @@
 import axios from '@/lib/axios';
-import { Wallet } from 'lucide-react';
+import { Wallet, FileDown } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError } from '@/lib/toast';
 
 interface PayslipRow {
@@ -20,6 +22,7 @@ interface PayslipRow {
 export default function MyPayslipsPage() {
     const [payslips, setPayslips] = useState<PayslipRow[]>([]);
     const [loading, setLoading] = useState(true);
+    const [openingId, setOpeningId] = useState<number | null>(null);
 
     useEffect(() => {
         void loadPayslips();
@@ -40,6 +43,17 @@ export default function MyPayslipsPage() {
 
     const monthName = (m: number) =>
         new Date(2000, m - 1, 1).toLocaleString('en-US', { month: 'long' });
+
+    const handleOpenPdf = async (id: number) => {
+        setOpeningId(id);
+        try {
+            await openPayslipPdf(id);
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setOpeningId(null);
+        }
+    };
 
     return (
         <AppLayout breadcrumbs={[{ title: 'My Payslips', href: '/admin/my-payslips' }]}>
@@ -66,12 +80,13 @@ export default function MyPayslipsPage() {
                                     <TableHead>Deductions</TableHead>
                                     <TableHead>Net</TableHead>
                                     <TableHead>Status</TableHead>
+                                    <TableHead className="text-right">Actions</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {loading ? (
                                     <TableRow>
-                                        <TableCell colSpan={5} className="text-center py-8">
+                                        <TableCell colSpan={6} className="text-center py-8">
                                             Loading...
                                         </TableCell>
                                     </TableRow>
@@ -91,6 +106,19 @@ export default function MyPayslipsPage() {
                                             <TableCell>₹{p.total_deductions}</TableCell>
                                             <TableCell className="font-medium">₹{p.net_salary}</TableCell>
                                             <TableCell>{p.status}</TableCell>
+                                            <TableCell className="text-right">
+                                                {p.status === 'generated' && (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        disabled={openingId === p.id}
+                                                        onClick={() => void handleOpenPdf(p.id)}
+                                                    >
+                                                        <FileDown className="h-4 w-4 mr-1" />
+                                                        PDF
+                                                    </Button>
+                                                )}
+                                            </TableCell>
                                         </TableRow>
                                     ))
                                 )}

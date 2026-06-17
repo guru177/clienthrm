@@ -1,13 +1,24 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
+use std::io::Write;
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::payslip::Payslip;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::{org_id_from_claims, user_in_organization};
 
 #[derive(Debug, Deserialize)]
 pub struct PayslipListQuery {
+    pub month: Option<i32>,
+    pub year: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkPayslipDownloadRequest {
+    pub payslip_ids: Option<Vec<i64>>,
     pub month: Option<i32>,
     pub year: Option<i32>,
 }
@@ -27,12 +38,14 @@ pub async fn my_payslips_list(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
-    employee_payslips_list_inner(pool, claims.sub, query).await
+    let org_id = org_id_from_claims(&claims);
+    employee_payslips_list_inner(pool, claims.sub, org_id, query).await
 }
 
 async fn employee_payslips_list_inner(
     pool: web::Data<DbPool>,
     user_id: i64,
+    org_id: i64,
     query: web::Query<PayslipListQuery>,
 ) -> HttpResponse {
     let conn = match pool.get() {
@@ -40,30 +53,28 @@ async fn employee_payslips_list_inner(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    let exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM users WHERE id=?1 AND deleted_at IS NULL",
-            [user_id],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if !exists {
+    if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("Employee not found"));
     }
 
-    let mut sql =
-        String::from("SELECT * FROM payslips WHERE user_id=?1 AND status != 'draft'");
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(user_id)];
+    let mut sql = String::from(
+        "SELECT p.* FROM payslips p
+         JOIN users u ON u.id = p.user_id
+         WHERE p.user_id=?1 AND u.organization_id=?2 AND p.status != 'draft'",
+    );
+    let mut params: Vec<crate::db::ParamValue> =
+        vec![crate::db::into_param_value(user_id), crate::db::into_param_value(org_id)];
+        vec![crate::db::into_param_value(user_id), crate::db::into_param_value(org_id)];
 
     if let Some(year) = query.year {
-        sql.push_str(" AND year=?");
-        params.push(Box::new(year));
+        sql.push_str(" AND p.year=?");
+        params.push(crate::db::into_param_value(year));
     }
     if let Some(month) = query.month {
-        sql.push_str(" AND month=?");
-        params.push(Box::new(month));
+        sql.push_str(" AND p.month=?");
+        params.push(crate::db::into_param_value(month));
     }
-    sql.push_str(" ORDER BY year DESC, month DESC");
+    sql.push_str(" ORDER BY p.year DESC, p.month DESC");
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -71,7 +82,7 @@ async fn employee_payslips_list_inner(
     };
 
     let items: Vec<serde_json::Value> = stmt
-        .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+        .query_map(&params, |row| {
             let p = Payslip::from_row(row)?;
             Ok(serde_json::json!({
                 "id": p.id,
@@ -84,10 +95,7 @@ async fn employee_payslips_list_inner(
                 "generated_at": p.generated_at.or(p.updated_at),
                 "created_at": p.created_at,
             }))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        });
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
@@ -99,11 +107,12 @@ pub async fn employee_payslips_list(
     path: web::Path<i64>,
     query: web::Query<PayslipListQuery>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
-    employee_payslips_list_inner(pool, path.into_inner(), query).await
+    let org_id = org_id_from_claims(&claims);
+    employee_payslips_list_inner(pool, path.into_inner(), org_id, query).await
 }
 
 /// POST /api/admin/payslips/{id}/send-whatsapp
@@ -112,10 +121,11 @@ pub async fn send_whatsapp(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let payslip_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
@@ -125,17 +135,18 @@ pub async fn send_whatsapp(
     let row: Option<(String, Option<String>, i32, i32, f64, f64, String)> = conn
         .query_row(
             "SELECT u.name, u.phone, p.month, p.year, p.net_salary, p.gross_salary, p.status
-             FROM payslips p JOIN users u ON u.id = p.user_id WHERE p.id=?1",
-            [payslip_id],
+             FROM payslips p JOIN users u ON u.id = p.user_id
+             WHERE p.id=?1 AND u.organization_id=?2",
+            crate::params![payslip_id, org_id],
             |r| {
                 Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
+                    r.get_idx::<String>(0)?,
+                    r.get_idx::<Option<String>>(1)?,
+                    r.get_idx::<i32>(2)?,
+                    r.get_idx::<i32>(3)?,
+                    r.get_idx::<f64>(4)?,
+                    r.get_idx::<f64>(5)?,
+                    r.get_idx::<String>(6)?,
                 ))
             },
         )
@@ -155,9 +166,9 @@ pub async fn send_whatsapp(
 
     let msg91_key: Option<String> = conn
         .query_row(
-            "SELECT value FROM app_settings WHERE key='msg91_auth_key'",
-            [],
-            |r| r.get(0),
+            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = 'msg91_auth_key'",
+            [org_id],
+            |r| r.get_idx::<Option<String>>(0),
         )
         .ok()
         .flatten()
@@ -171,9 +182,9 @@ pub async fn send_whatsapp(
 
     let sender: String = conn
         .query_row(
-            "SELECT value FROM app_settings WHERE key='msg91_whatsapp_sender'",
-            [],
-            |r| r.get(0),
+            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = 'msg91_whatsapp_sender'",
+            [org_id],
+            |r| r.get_idx::<Option<String>>(0),
         )
         .ok()
         .flatten()
@@ -233,213 +244,142 @@ pub async fn send_whatsapp(
     }
 }
 
-fn fmt_inr(n: f64) -> String {
-    format!("{:.2}", n)
+fn collect_payslip_ids(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    body: &BulkPayslipDownloadRequest,
+) -> Vec<i64> {
+    if let Some(ids) = &body.payslip_ids {
+        return ids.clone();
+    }
+    if let (Some(month), Some(year)) = (body.month, body.year) {
+        let mut stmt = match conn.prepare(
+            "SELECT p.id FROM payslips p
+             JOIN users u ON u.id = p.user_id AND u.organization_id = ?1
+             WHERE p.month = ?2 AND p.year = ?3 AND p.status = 'generated'
+             ORDER BY u.name",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        return stmt
+            .query_map(crate::params![org_id, month, year], |row| row.get_idx::<i64>(0));
+    }
+    Vec::new()
 }
 
-/// GET /api/admin/payslips/{id}/pdf — printable payslip HTML
+/// GET /api/admin/payslips/{id}/pdf — printable payslip HTML (Save as PDF)
 pub async fn payslip_pdf(
     pool: web::Data<DbPool>,
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let payslip_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    let row = conn.query_row(
-        "SELECT p.id, p.month, p.year, p.gross_salary, p.total_deductions, p.net_salary, p.status,
-                p.working_days, p.present_days, p.leave_days, p.holiday_days,
-                p.basic_salary, p.hra, p.transport_allowance, p.other_allowances,
-                COALESCE(p.lop_deduction, 0), COALESCE(p.shift_penalty, 0),
-                COALESCE(p.lop_basic, 0), COALESCE(p.lop_hra, 0), COALESCE(p.lop_transport, 0),
-                COALESCE(p.pf_deduction, 0), COALESCE(p.esi_deduction, 0), COALESCE(p.tds, 0),
-                COALESCE(p.prof_tax, 0), COALESCE(p.advance_deduction, 0), COALESCE(p.lw_employee, 0),
-                COALESCE(p.adjustments, '[]'), u.name, u.employee_id, d.name
-         FROM payslips p
-         JOIN users u ON u.id = p.user_id
-         LEFT JOIN departments d ON d.id = u.department_id
-         WHERE p.id=?1",
-        [payslip_id],
-        |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i32>(1)?,
-                r.get::<_, i32>(2)?,
-                r.get::<_, f64>(3)?,
-                r.get::<_, f64>(4)?,
-                r.get::<_, f64>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, i64>(7).unwrap_or(0),
-                r.get::<_, i64>(8).unwrap_or(0),
-                r.get::<_, i64>(9).unwrap_or(0),
-                r.get::<_, i64>(10).unwrap_or(0),
-                r.get::<_, f64>(11).unwrap_or(0.0),
-                r.get::<_, f64>(12).unwrap_or(0.0),
-                r.get::<_, f64>(13).unwrap_or(0.0),
-                r.get::<_, f64>(14).unwrap_or(0.0),
-                r.get::<_, f64>(15).unwrap_or(0.0),
-                r.get::<_, f64>(16).unwrap_or(0.0),
-                r.get::<_, f64>(17).unwrap_or(0.0),
-                r.get::<_, f64>(18).unwrap_or(0.0),
-                r.get::<_, f64>(19).unwrap_or(0.0),
-                r.get::<_, f64>(20).unwrap_or(0.0),
-                r.get::<_, f64>(21).unwrap_or(0.0),
-                r.get::<_, f64>(22).unwrap_or(0.0),
-                r.get::<_, f64>(23).unwrap_or(0.0),
-                r.get::<_, f64>(24).unwrap_or(0.0),
-                r.get::<_, f64>(25).unwrap_or(0.0),
-                r.get::<_, String>(26)?,
-                r.get::<_, String>(27)?,
-                r.get::<_, Option<String>>(28)?,
-                r.get::<_, Option<String>>(29)?,
-            ))
-        },
-    );
-
-    let Ok((
-        id, month, year, gross, total_ded, net, status,
-        working, present, leave, holidays,
-        basic, hra, transport, other,
-        lop, shift_penalty, lop_basic, lop_hra, lop_transport,
-        pf, esi, tds, prof_tax, advance, lw_employee,
-        adjustments_json, emp_name, emp_id, dept,
-    )) = row else {
+    let Some(data) = crate::payslip_render::load_payslip(&conn, payslip_id, org_id) else {
         return HttpResponse::NotFound().json(ApiError::new("Payslip not found"));
     };
 
-    let month_label = MONTH_NAMES
-        .get((month as usize).saturating_sub(1))
-        .copied()
-        .unwrap_or("Month");
+    let (owner_id, payslip_status): (i64, String) = conn
+        .query_row(
+            "SELECT p.user_id, p.status FROM payslips p
+             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?2
+             WHERE p.id = ?1",
+            crate::params![payslip_id, org_id],
+            |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<String>(1)?)),
+        )
+        .unwrap_or((0, String::new()));
 
-    let adjustments: Vec<serde_json::Value> =
-        serde_json::from_str(&adjustments_json).unwrap_or_default();
-    let mut adj_rows = String::new();
-    for adj in &adjustments {
-        let label = adj.get("label").and_then(|v| v.as_str()).unwrap_or("Adjustment");
-        let amount = adj.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let kind = adj.get("type").and_then(|v| v.as_str()).unwrap_or("deduction");
-        let sign = if kind == "addition" { "+" } else { "-" };
-        adj_rows.push_str(&format!(
-            "<tr><td>{label}</td><td class=\"num\">{sign} {amt}</td></tr>",
-            label = label,
-            sign = sign,
-            amt = fmt_inr(amount)
-        ));
+    let owns_payslip = owner_id == claims.sub;
+    let is_super_admin =
+        crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+    let perms =
+        crate::middleware::rbac::load_user_permissions(&conn, claims.sub, is_super_admin);
+    let can_manage_payroll = crate::middleware::rbac::has_permission(&perms, "manage-payroll");
+    let can_view_payroll = crate::middleware::rbac::has_permission(&perms, "view-payroll");
+
+    if payslip_status != "generated" {
+        if owns_payslip || !can_manage_payroll {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "Payslip is not yet finalized — only generated payslips can be downloaded",
+            ));
+        }
+    }
+    if !owns_payslip && !can_view_payroll {
+        return HttpResponse::Forbidden().json(ApiError::new("Not allowed to view this payslip"));
     }
 
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>Payslip {month_label} {year} — {emp}</title>
-<style>
-  body {{ font-family: Arial, sans-serif; margin: 32px; color: #111; }}
-  h1 {{ margin: 0 0 4px; font-size: 22px; }}
-  .meta {{ color: #555; margin-bottom: 24px; }}
-  table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-  th, td {{ border: 1px solid #ddd; padding: 8px 10px; text-align: left; }}
-  th {{ background: #f5f5f5; }}
-  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .summary td {{ font-weight: bold; }}
-  @media print {{
-    .no-print {{ display: none; }}
-    body {{ margin: 12px; }}
-  }}
-</style>
-</head>
-<body>
-  <div class="no-print" style="margin-bottom:16px;">
-    <button onclick="window.print()" style="padding:8px 16px;cursor:pointer;">Print / Save as PDF</button>
-  </div>
-  <h1>Payslip</h1>
-  <div class="meta">
-    <div><strong>{emp}</strong>{emp_id}{dept}</div>
-    <div>Period: {month_label} {year} &nbsp;|&nbsp; Status: {status} &nbsp;|&nbsp; Payslip #{id}</div>
-    <div>Working days: {working} &nbsp; Present: {present} &nbsp; Leave: {leave} &nbsp; Holidays: {holidays}</div>
-  </div>
-
-  <h2>Earnings</h2>
-  <table>
-    <tr><th>Component</th><th class="num">Amount (INR)</th></tr>
-    <tr><td>Basic</td><td class="num">{basic}</td></tr>
-    <tr><td>HRA</td><td class="num">{hra}</td></tr>
-    <tr><td>Transport</td><td class="num">{transport}</td></tr>
-    <tr><td>Other Allowances</td><td class="num">{other}</td></tr>
-    <tr class="summary"><td>Gross Salary</td><td class="num">{gross}</td></tr>
-  </table>
-
-  <h2>Deductions</h2>
-  <table>
-    <tr><th>Component</th><th class="num">Amount (INR)</th></tr>
-    <tr><td>LOP — Basic</td><td class="num">{lop_basic}</td></tr>
-    <tr><td>LOP — HRA</td><td class="num">{lop_hra}</td></tr>
-    <tr><td>LOP — Conveyance</td><td class="num">{lop_transport}</td></tr>
-    <tr><td>LOP Total</td><td class="num">{lop}</td></tr>
-    <tr><td>Late/Early Penalty</td><td class="num">{shift_penalty}</td></tr>
-    <tr><td>EPF (Employee)</td><td class="num">{pf}</td></tr>
-    <tr><td>ESI (Employee)</td><td class="num">{esi}</td></tr>
-    <tr><td>Professional Tax</td><td class="num">{prof_tax}</td></tr>
-    <tr><td>Labour Welfare</td><td class="num">{lw_employee}</td></tr>
-    <tr><td>Advance Recovery</td><td class="num">{advance}</td></tr>
-    <tr><td>TDS</td><td class="num">{tds}</td></tr>
-    {adj_rows}
-    <tr class="summary"><td>Total Deductions</td><td class="num">{total_ded}</td></tr>
-  </table>
-
-  <table>
-    <tr class="summary"><td>Net Salary</td><td class="num">{net}</td></tr>
-  </table>
-</body>
-</html>"#,
-        emp = emp_name,
-        emp_id = emp_id
-            .as_ref()
-            .map(|e| format!(" &nbsp;|&nbsp; ID: {}", e))
-            .unwrap_or_default(),
-        dept = dept
-            .as_ref()
-            .map(|d| format!(" &nbsp;|&nbsp; {}", d))
-            .unwrap_or_default(),
-        month_label = month_label,
-        year = year,
-        status = status,
-        id = id,
-        working = working,
-        present = present,
-        leave = leave,
-        holidays = holidays,
-        basic = fmt_inr(basic),
-        hra = fmt_inr(hra),
-        transport = fmt_inr(transport),
-        other = fmt_inr(other),
-        gross = fmt_inr(gross),
-        lop = fmt_inr(lop),
-        lop_basic = fmt_inr(lop_basic),
-        lop_hra = fmt_inr(lop_hra),
-        lop_transport = fmt_inr(lop_transport),
-        shift_penalty = fmt_inr(shift_penalty),
-        pf = fmt_inr(pf),
-        esi = fmt_inr(esi),
-        prof_tax = fmt_inr(prof_tax),
-        lw_employee = fmt_inr(lw_employee),
-        advance = fmt_inr(advance),
-        tds = fmt_inr(tds),
-        adj_rows = adj_rows,
-        total_ded = fmt_inr(total_ded),
-        net = fmt_inr(net),
-    );
+    let filename = crate::payslip_render::payslip_filename(&data);
+    let html = crate::payslip_render::render_payslip_html(&data, true);
 
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .insert_header(("Content-Disposition", format!("inline; filename=\"payslip-{}-{:02}-{}.html\"", year, month, id)))
+        .insert_header(("Content-Disposition", format!("inline; filename=\"{filename}\"")))
         .body(html)
+}
+
+/// POST /api/admin/payslips/bulk-download — ZIP of printable payslip HTML files
+pub async fn bulk_download(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<BulkPayslipDownloadRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let ids = collect_payslip_ids(&conn, org_id, &body);
+    if ids.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "No generated payslips found for download",
+        ));
+    }
+
+    let mut buffer = Vec::new();
+    {
+        let mut zip = ZipWriter::new(std::io::Cursor::new(&mut buffer));
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for payslip_id in ids {
+            let Some(data) = crate::payslip_render::load_payslip(&conn, payslip_id, org_id) else {
+                continue;
+            };
+            let filename = crate::payslip_render::payslip_filename(&data);
+            let html = crate::payslip_render::render_payslip_html(&data, true);
+            if zip.start_file(filename, options).is_err() {
+                continue;
+            }
+            let _ = zip.write_all(html.as_bytes());
+        }
+
+        if zip.finish().is_err() {
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to build ZIP"));
+        }
+    }
+
+    let zip_name = if let (Some(month), Some(year)) = (body.month, body.year) {
+        format!("payslips-{year}-{month:02}.zip")
+    } else {
+        "payslips.zip".to_string()
+    };
+
+    HttpResponse::Ok()
+        .content_type("application/zip")
+        .insert_header(("Content-Disposition", format!("attachment; filename=\"{zip_name}\"")))
+        .body(buffer)
 }

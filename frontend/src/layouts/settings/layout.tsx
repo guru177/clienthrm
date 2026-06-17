@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useActiveUrl } from '@/hooks/use-active-url';
 import { cn } from '@/lib/utils';
-import { useAuth } from '@/contexts/AuthContext';
 import { type NavItem } from '@/types';
 
 const sidebarNavItems: NavItem[] = [
@@ -16,19 +15,10 @@ const sidebarNavItems: NavItem[] = [
     { title: 'Appearance', href: '/admin/settings/appearance', icon: null },
 ];
 
-const adminNavItems: NavItem[] = [
-    { title: 'General Settings', href: '/admin/settings/app', icon: null },
-    { title: 'Leave Types', href: '/admin/settings/leave-types', icon: null },
-];
-
 export default function SettingsLayout({ children }: PropsWithChildren) {
     const { urlIsActive } = useActiveUrl();
-    const { user, permissions } = useAuth();
 
     if (typeof window === 'undefined') return null;
-
-    const isAdmin = user?.roles?.some((role) => role.slug === 'admin') ?? permissions.includes('*');
-    const allNavItems = [...sidebarNavItems, ...(isAdmin ? adminNavItems : [])];
 
     return (
         <div className="px-4 py-6">
@@ -55,7 +45,7 @@ export default function SettingsLayout({ children }: PropsWithChildren) {
             <div className="flex flex-col lg:flex-row lg:space-x-8 items-start">
                 <aside className="w-full lg:w-64 shrink-0">
                     <nav className="flex flex-col space-y-1.5 rounded-2xl bg-white/40 dark:bg-slate-900/40 backdrop-blur-md border border-white/60 dark:border-white/10 p-3 shadow-sm" aria-label="Settings">
-                        {allNavItems.map((item, index) => {
+                        {sidebarNavItems.map((item, index) => {
                             const isActive = urlIsActive(item.href);
                             return (
                                 <Button

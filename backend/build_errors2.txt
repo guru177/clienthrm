@@ -1,0 +1,1433 @@
+﻿cargo :    Compiling hrm-backend v0.1.0 (C:\Users\ASUS\Pictures\HRM\backend)
+At C:\Users\ASUS\AppData\Local\Temp\ps-script-6dcd21d0-e2e6-462c-a384-7ca6dd2b0685.ps1:90 char:40
++ cd c:\Users\ASUS\Pictures\HRM\backend; cargo build 2>&1 | Out-File bu ...
++                                        ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling hr...es\HRM\backend):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: unused import: `OptionalExt`
+ --> src\biometric_device_logic.rs:1:29
+  |
+1 | use crate::db::{Connection, OptionalExt};
+  |                             ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Statement`
+  --> src\db\mod.rs:11:47
+   |
+11 | pub use connection::{Connection, OptionalExt, Statement, Transaction};
+   |                                               ^^^^^^^^^
+
+warning: unused imports: `ToParams`, `from_one`, and `from_two`
+  --> src\db\mod.rs:14:18
+   |
+14 | pub use params::{from_one, from_two, into_param_value, Params, ParamValue, ToParams};
+   |                  ^^^^^^^^  ^^^^^^^^                                        ^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:261:9
+    |
+261 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:305:9
+    |
+305 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\platform.rs:374:9
+    |
+374 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\subscription_plans.rs:119:9
+    |
+119 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:194:13
+    |
+194 |         let mut stmt = conn.prepare(&sql).unwrap();
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:202:13
+    |
+202 |         let mut stmt = conn
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\users.rs:903:9
+    |
+903 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\departments.rs:13:9
+   |
+13 |     let mut stmt = conn.prepare("SELECT * FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\departments.rs:120:9
+    |
+120 |     let mut stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\designations.rs:12:9
+   |
+12 |     let mut stmt = conn.prepare("SELECT * FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\designations.rs:88:9
+   |
+88 |     let mut stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\attendance.rs:271:9
+    |
+271 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\attendance.rs:338:9
+    |
+338 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\leave_credits.rs:141:9
+    |
+141 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\holidays.rs:12:9
+   |
+12 |     let mut stmt = conn.prepare("SELECT * FROM holidays WHERE organization_id = ?1 ORDER BY date").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\projects.rs:10:9
+   |
+10 |     let mut stmt = conn.prepare("SELECT * FROM projects WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\tasks.rs:30:9
+   |
+30 |     let mut stmt = conn.prepare("SELECT * FROM tasks WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\workflows.rs:10:9
+   |
+10 |     let mut stmt = conn.prepare("SELECT * FROM workflows WHERE organization_id = ?1 ORDER BY created_at 
+DESC").unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:117:9
+    |
+117 |     let mut hstmt = conn
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:165:9
+    |
+165 |     let mut dept_stmt = match conn.prepare(
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:220:19
+    |
+220 |         if let Ok(mut stmt) = conn.prepare(
+    |                   ----^^^^
+    |                   |
+    |                   help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\analytics.rs:258:19
+    |
+258 |         if let Ok(mut stmt) = conn.prepare(
+    |                   ----^^^^
+    |                   |
+    |                   help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\reports.rs:47:9
+   |
+47 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\reports.rs:105:9
+    |
+105 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\reports.rs:237:9
+    |
+237 |     let mut users_stmt = match conn.prepare(
+    |         ----^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\settings.rs:99:15
+   |
+99 |     if let Ok(mut stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings WHERE 
+organization_id = ?1 ORDER ...
+   |               ----^^^^
+   |               |
+   |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\careers.rs:279:9
+    |
+279 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\job_applications.rs:60:9
+   |
+60 |     let mut stmt = conn.prepare(&sql).unwrap();
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\payroll.rs:268:9
+    |
+268 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\payroll.rs:342:21
+    |
+342 |         ).unwrap_or(0.0),
+    |           --------- ^^^ expected `i64`, found floating-point number
+    |           |
+    |           arguments to this method are incorrect
+    |
+help: the return type of this call is `{float}` due to the type of the argument passed
+   --> src\handlers\payroll.rs:337:24
+    |
+337 |           "total_gross": conn.query_row(
+    |  ________________________^
+338 | |             "SELECT COALESCE(SUM(p.gross_salary),0) FROM payslips p
+339 | |              INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
+340 | |              WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
+341 | |             crate::params![month, year, org_id], |r| r.get_idx::<i64>(0)
+342 | |         ).unwrap_or(0.0),
+    | |_____________________---^
+    |                       |
+    |                       this argument influences the return type of `unwrap_or`
+note: method defined here
+   --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\result.rs:1590:17
+
+error[E0308]: mismatched types
+   --> src\handlers\payroll.rs:388:41
+    |
+388 |       let items: Vec<serde_json::Value> = user_ids
+    |  ________________----------------------___^
+    | |                |
+    | |                expected due to this
+389 | |         .into_iter()
+390 | |         .filter_map(|uid| build_employee_payroll(&conn, uid, org_id, month, year));
+    | |__________________________________________________________________________________^ expected `Vec<Value>`, 
+found `FilterMap<IntoIter<i64>, {closure@...}>`
+    |
+    = note: expected struct `Vec<serde_json::Value>`
+               found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\payroll.rs:390:21: 
+390:26}>`
+
+error[E0308]: mismatched types
+   --> src\handlers\payroll.rs:724:62
+    |
+724 |   ...   let row: Option<(f64, f64, f64, String, i64, f64)> = conn
+    |  ________________-----------------------------------------___^
+    | |                |
+    | |                expected due to this
+725 | | ...       .query_row(
+726 | | ...           "SELECT p.gross_salary, p.net_salary, p.total_deductions, COALESCE(p.adjustments,'[]'),
+727 | | ...                   p.user_id, COALESCE(p.advance_deduction, 0)
+...   |
+732 | | ...           |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<i64>(1)?, r.get_idx::<i64>(2)?, r.get_idx::<i64>(3)?, 
+r.get_idx::<i64>(4)...
+733 | | ...       ).ok();
+    | |________________^ expected `Option<(f64, f64, f64, ..., i64, f64)>`, found `Option<(i64, i64, i64, i64, i64, 
+i64)>`
+    |
+    = note: expected enum `std::option::Option<(f64, f64, f64, std::string::String, _, f64)>`
+               found enum `std::option::Option<(i64, i64, i64, i64, _, i64)>`
+
+error[E0308]: mismatched types
+   --> src\handlers\payroll.rs:824:61
+    |
+824 |       let payslip_row: Option<(i64, f64, i32, i32, String)> = conn
+    |  ______________________------------------------------------___^
+    | |                      |
+    | |                      expected due to this
+825 | |         .query_row(
+826 | |             "SELECT p.user_id, COALESCE(p.advance_deduction, 0), p.month, p.year, COALESCE(p.adjustments, '[]')
+827 | |              FROM payslips p
+...   |
+831 | |             |r| Ok((r.get_idx::<i64>(0)?, r.get_idx::<i64>(1)?, r.get_idx::<i64>(2)?, r.get_idx::<i64>(3)?, 
+r.get_idx::<i64>(4)?)),
+832 | |         ).ok();
+    | |______________^ expected `Option<(i64, f64, i32, i32, String)>`, found `Option<(i64, i64, i64, i64, i64)>`
+    |
+    = note: expected enum `std::option::Option<(_, f64, i32, i32, std::string::String)>`
+               found enum `std::option::Option<(_, i64, i64, i64, i64)>`
+
+warning: variable does not need to be mutable
+  --> src\handlers\salaries.rs:87:9
+   |
+87 |     let mut stmt = match conn.prepare(sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\salaries.rs:446:190
+    |
+446 |       let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, 
+Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>, Option<String>)> = stmt
+    |  _______________-------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------___^
+    | |               |
+    | |               expected due to this
+447 | |         .query_map(&params, |row| {
+448 | |             Ok((
+449 | |                 row.get_idx::<i64>(0)?,
+...   |
+461 | |             ))
+462 | |         });
+    | |__________^ expected `std::string::String`, found `i64`
+    |
+    = note: expected struct `Vec<(i64, String, ..., ..., ..., ..., ..., ..., ..., ..., ..., ...)>`
+               found struct `Vec<(_, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>`
+    = note: the full name for the type has been written to 
+'C:\Users\ASUS\Pictures\HRM\backend\target\debug\deps\hrm_backend.long-type-7798821974415369633.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> src\handlers\salaries.rs:464:41
+    |
+464 |       let items: Vec<serde_json::Value> = rows
+    |  ________________----------------------___^
+    | |                |
+    | |                expected due to this
+465 | |         .into_iter()
+466 | |         .map(|(user_id, name, email, employee_id, status, avatar, photo, dept_id, dept_name, desig_id, 
+desig_name, last_payslip)| {
+467 | |             let salary = crate::salary_logic::load_user_salary(&conn, user_id, &today);
+...   |
+489 | |             })
+490 | |         });
+    | |__________^ expected `Vec<Value>`, found `Map<IntoIter<...>, ...>`
+    |
+    = note: expected struct `Vec<serde_json::Value>`
+               found struct `Map<IntoIter<...>, ...>`
+    = note: the full name for the type has been written to 
+'C:\Users\ASUS\Pictures\HRM\backend\target\debug\deps\hrm_backend.long-type-5984445167143266909.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:518:9
+    |
+518 |     let mut dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:523:9
+    |
+523 |     let mut desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY 
+name").unwrap();
+    |         ----^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\salaries.rs:844:9
+    |
+844 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src\handlers\salaries.rs:1093:9
+     |
+1093 |     let mut stmt = match conn.prepare(
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\centers.rs:82:9
+   |
+82 |     let mut stmt = match conn.prepare("SELECT * FROM centers WHERE organization_id = ?1 ORDER BY name") {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:619:9
+    |
+619 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:690:9
+    |
+690 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:723:9
+    |
+723 |     let mut stmt = conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\biometric.rs:856:42
+    |
+856 |       let last_heartbeat: Option<String> = conn.query_row(
+    |  _________________________--------------___^
+    | |                         |
+    | |                         expected due to this
+857 | |         "SELECT last_heartbeat FROM biometric_devices
+858 | |          WHERE organization_id = ?1
+859 | |          ORDER BY last_heartbeat DESC LIMIT 1",
+860 | |         [org_id],
+861 | |         |r| r.get_idx::<i64>(0),
+862 | |     ).ok();
+    | |__________^ expected `Option<String>`, found `Option<i64>`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+               found enum `std::option::Option<i64>`
+
+warning: variable does not need to be mutable
+  --> src\handlers\payslips.rs:79:9
+   |
+79 |     let mut stmt = match conn.prepare(&sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\handlers\payslips.rs:135:77
+    |
+135 |       let row: Option<(String, Option<String>, i32, i32, f64, f64, String)> = conn
+    |  ______________------------------------------------------------------------___^
+    | |              |
+    | |              expected due to this
+136 | |         .query_row(
+137 | |             "SELECT u.name, u.phone, p.month, p.year, p.net_salary, p.gross_salary, p.status
+138 | |              FROM payslips p JOIN users u ON u.id = p.user_id
+...   |
+151 | |             },
+152 | |         );
+    | |_________^ expected `Option<...>`, found `Result<..., ...>`
+    |
+    = note: expected enum `std::option::Option<(std::string::String, std::option::Option<std::string::String>, i32, 
+i32, f64, f64, std::string::String)>`
+               found enum `std::result::Result<(i64, i64, i64, i64, i64, i64, i64), db::error::DbError>`
+
+warning: variable does not need to be mutable
+   --> src\handlers\shifts.rs:105:9
+    |
+105 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+error[E0277]: the trait bound `db::error::DbError: serde::Serialize` is not satisfied
+   --> src\handlers\shifts.rs:421:20
+    |
+421 |                   Ok(serde_json::json!({
+    |  ____________________^
+422 | |                     "id": row.get_idx::<i64>(0)?,
+423 | |                     "user_id": row.get_idx::<i64>(1)?,
+424 | |                     "shift_template_id": row.get_idx::<i64>(2)?,
+...   |
+436 | |                 }))
+    | |                  ^
+    | |                  |
+    | |__________________unsatisfied trait bound
+    |                    required by a bound introduced by this call
+    |
+help: the trait `models::_::_serde::Serialize` is not implemented for `db::error::DbError`
+   --> src\db\error.rs:4:1
+    |
+  4 | pub enum DbError {
+    | ^^^^^^^^^^^^^^^^
+    = note: for local types consider adding `#[derive(serde::Serialize)]` to your `db::error::DbError` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `models::_::_serde::Serialize`:
+              &'a T
+              &'a mut T
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+              (T0, T1, T2, T3, T4)
+            and 195 others
+    = note: required for `std::result::Result<std::option::Option<std::string::String>, db::error::DbError>` to 
+implement `models::_::_serde::Serialize`
+    = note: 1 redundant requirement hidden
+    = note: required for `&std::result::Result<std::option::Option<std::string::String>, db::error::DbError>` to 
+implement `models::_::_serde::Serialize`
+note: required by a bound in `to_value`
+   --> C:\Users\ASUS\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde_json-1.0.150\src\value\mod.rs:997:8
+    |
+995 | pub fn to_value<T>(value: T) -> Result<Value, Error>
+    |        -------- required by a bound in this function
+996 | where
+997 |     T: Serialize,
+    |        ^^^^^^^^^ required by this bound in `to_value`
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro 
+`serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:405:43
+    |
+405 |       let data: Option<serde_json::Value> = conn
+    |  _______________-------------------------___^
+    | |               |
+    | |               expected due to this
+406 | |         .query_row(
+407 | |             "SELECT usa.id, usa.user_id, usa.shift_template_id, usa.effective_from, usa.effective_to,
+408 | |                     st.name, st.start_time, st.end_time, st.grace_in_minutes, st.grace_out_minutes,
+...   |
+437 | |             },
+438 | |         );
+    | |_________^ expected `Option<Value>`, found `Result<Value, DbError>`
+    |
+    = note: expected enum `std::option::Option<serde_json::Value>`
+               found enum `std::result::Result<serde_json::Value, db::error::DbError>`
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:499:9
+    |
+499 | /         all_users
+500 | |             .drain(..)
+501 | |             .filter(|(uid, _, _, _)| {
+502 | |                 !crate::shift_logic::user_has_active_assignment(&conn, *uid, &as_of)
+...   |
+520 | |                 })
+521 | |             })
+    | |______________^ expected `Vec<Value>`, found `Map<Filter<Drain<'_, ...>, ...>, ...>`
+    |
+    = note: expected struct `Vec<serde_json::Value>`
+               found struct `Map<Filter<Drain<'_, (i64, String, Option<String>, ...)>, ...>, ...>`
+    = note: the full name for the type has been written to 
+'C:\Users\ASUS\Pictures\HRM\backend\target\debug\deps\hrm_backend.long-type-7595589975751559766.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:523:9
+    |
+523 | /         all_users
+524 | |             .into_iter()
+525 | |             .filter_map(|(user_id, name, email, employee_id)| {
+526 | |                 let shift = crate::shift_logic::resolve_shift_for_user(&conn, user_id, &as_of);
+...   |
+544 | |                 }))
+545 | |             })
+    | |______________^ expected `Vec<Value>`, found `FilterMap<IntoIter<...>, ...>`
+    |
+    = note: expected struct `Vec<serde_json::Value>`
+               found struct `FilterMap<IntoIter<(i64, String, Option<String>, Option<...>)>, ...>`
+    = note: the full name for the type has been written to 
+'C:\Users\ASUS\Pictures\HRM\backend\target\debug\deps\hrm_backend.long-type-8665175401719088417.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:628:16
+    |
+628 |           if let Ok(rows) = stmt.query_map(crate::params![&from_s, &to_s, org_id], |row| {
+    |  ________________^^^^^^^^___-
+    | |                |
+    | |                expected `Vec<(i64, String, ..., bool, ...)>`, found `Result<_, _>`
+629 | |             Ok((
+630 | |                 row.get_idx::<i64>(0)?,
+631 | |                 row.get_idx::<String>(1)?,
+...   |
+635 | |             ))
+636 | |         }) {
+    | |__________- this expression has type `Vec<(i64, String, Option<i64>, bool, Option<String>)>`
+    |
+    = note: expected struct `Vec<(i64, std::string::String, std::option::Option<i64>, bool, 
+std::option::Option<std::string::String>)>`
+                 found enum `std::result::Result<_, _>`
+    = note: the full name for the type has been written to 
+'C:\Users\ASUS\Pictures\HRM\backend\target\debug\deps\hrm_backend.long-type-13352119116451734469.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:646:13
+    |
+646 |             stmt.query_map([org_id], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?, 
+row.get_idx::<i64>(2))))
+    |             
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 
+`Result<_, DbError>`, found `Vec<(i64, i64, Result<i64, DbError>)>`
+    |
+    = note: expected enum `std::result::Result<_, db::error::DbError>`
+             found struct `Vec<(i64, i64, std::result::Result<i64, db::error::DbError>)>`
+help: try wrapping the expression in `Ok`
+    |
+646 |             Ok(stmt.query_map([org_id], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?, 
+row.get_idx::<i64>(2)))))
+    |             +++                                                                                                  
+         +
+
+error[E0308]: mismatched types
+   --> src\handlers\shifts.rs:643:53
+    |
+643 |       let users: Vec<(i64, String, Option<String>)> = conn
+    |  ________________----------------------------------___^
+    | |                |
+    | |                expected due to this
+644 | |         .prepare("SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND 
+organization_id = ?1 ...
+645 | |         .and_then(|mut stmt| {
+646 | |             stmt.query_map([org_id], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?, 
+row.get_idx::<i64>(2))))
+647 | |                 
+648 | |         });
+    | |__________^ expected `Vec<(i64, String, Option<String>)>`, found `Result<_, DbError>`
+    |
+    = note: expected struct `Vec<(i64, std::string::String, std::option::Option<std::string::String>)>`
+                 found enum `std::result::Result<_, db::error::DbError>`
+help: consider using `Result::expect` to unwrap the `std::result::Result<_, db::error::DbError>` value, panicking if 
+the value is a `Result::Err`
+    |
+648 |         }).expect("REASON");
+    |           +++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:349:34
+    |
+349 |       let spaces: Vec<ChatSpace> = space_ids
+    |  _________________--------------___^
+    | |                 |
+    | |                 expected due to this
+350 | |         .into_iter()
+351 | |         .filter_map(|id| {
+352 | |             let mut space = load_space_row(&conn, id, org_id, user_id)?;
+...   |
+369 | |             Some(space)
+370 | |         });
+    | |__________^ expected `Vec<ChatSpace>`, found `FilterMap<IntoIter<i64>, {closure@...}>`
+    |
+    = note: expected struct `Vec<ChatSpace>`
+               found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:351:21: 
+351:25}>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:481:46
+    |
+481 |       let existing: Option<(String, String)> = conn
+    |  ___________________------------------------___^
+    | |                   |
+    | |                   expected due to this
+482 | |         .query_row(
+483 | |             "SELECT kind, COALESCE(name,'') FROM chat_spaces WHERE id = ?1 AND organization_id = ?2",
+484 | |             crate::params![space_id, org_id],
+...   |
+487 | |         .optional().ok().flatten();
+    | |__________________________________^ expected `Option<(String, String)>`, found `Option<(i64, i64)>`
+    |
+    = note: expected enum `std::option::Option<(std::string::String, std::string::String)>`
+               found enum `std::option::Option<(i64, i64)>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:564:32
+    |
+564 |       let slug: Option<String> = conn
+    |  _______________--------------___^
+    | |               |
+    | |               expected due to this
+565 | |         .query_row(
+566 | |             "SELECT slug FROM chat_spaces WHERE id = ?1 AND organization_id = ?2",
+567 | |             crate::params![space_id, org_id],
+...   |
+570 | |         .optional().ok().flatten();
+    | |__________________________________^ expected `Option<String>`, found `Option<i64>`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+               found enum `std::option::Option<i64>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:760:31
+    |
+760 |                 .and_then(|s| serde_json::from_str(s))
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<_>`, found `Result<_, Error>`
+    |
+    = note: expected enum `std::option::Option<_>`
+               found enum `std::result::Result<_, serde_json::Error>`
+help: consider using `Result::expect` to unwrap the `std::result::Result<_, serde_json::Error>` value, panicking if 
+the value is a `Result::Err`
+    |
+760 |                 .and_then(|s| serde_json::from_str(s).expect("REASON"))
+    |                                                      +++++++++++++++++
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1245:38
+     |
+1245 |       let messages: Vec<ChatMessage> = ids
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1246 | |         .into_iter()
+1247 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1247:21: 
+1247:25}>`
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1275:38
+     |
+1275 |       let messages: Vec<ChatMessage> = stmt
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1276 | |         .query_map([space_id], |r| r.get_idx::<i64>(0))
+1277 | |         .into_iter()
+1278 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1278:21: 
+1278:25}>`
+
+error[E0308]: mismatched types
+    --> src\handlers\chat.rs:1302:38
+     |
+1302 |       let messages: Vec<ChatMessage> = stmt
+     |  ___________________----------------___^
+     | |                   |
+     | |                   expected due to this
+1303 | |         .query_map([user_id], |r| r.get_idx::<i64>(0))
+1304 | |         .into_iter()
+1305 | |         .filter_map(|id| fetch_message(&conn, id, org_id, user_id));
+     | |___________________________________________________________________^ expected `Vec<ChatMessage>`, found 
+`FilterMap<IntoIter<i64>, {closure@...}>`
+     |
+     = note: expected struct `Vec<ChatMessage>`
+                found struct `std::iter::FilterMap<std::vec::IntoIter<i64>, {closure@src\handlers\chat.rs:1305:21: 
+1305:25}>`
+
+warning: variable does not need to be mutable
+    --> src\handlers\chat.rs:1324:9
+     |
+1324 |     let mut stmt = match conn.prepare(
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+
+error[E0308]: mismatched types
+   --> src\role_defaults.rs:193:43
+    |
+193 |           let plan_perms: HashSet<String> = permissions_from_modules(&plan_modules)
+    |  _________________________---------------___^
+    | |                         |
+    | |                         expected due to this
+194 | |             .into_iter();
+    | |________________________^ expected `HashSet<String>`, found `IntoIter<String>`
+    |
+    = note: expected struct `HashSet<std::string::String>`
+               found struct `std::vec::IntoIter<std::string::String>`
+
+error[E0308]: mismatched types
+   --> src\handlers\salaries.rs:583:16
+    |
+549 | fn build_user_salary_structure(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> serde_json::Value {
+    |                                                                                            ----------------- 
+expected `serde_json::Value` because of return type
+...
+583 |         return HttpResponse::InternalServerError().json(ApiError::new("DB error"));
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Value`, found 
+`HttpResponse`
+    |
+    = note: expected enum `serde_json::Value`
+             found struct `HttpResponse`
+
+error[E0308]: mismatched types
+   --> src\handlers\biometric.rs:521:32
+    |
+521 |           let clock_in: String = conn
+    |  _______________________------___^
+    | |                       |
+    | |                       expected due to this
+522 | |             .query_row(
+523 | |                 "SELECT clock_in FROM attendance WHERE id=?1",
+524 | |                 [att_id],
+...   |
+527 | |             .unwrap_or_default();
+    | |________________________________^ expected `String`, found `i64`
+    |
+help: try using a conversion method
+    |
+527 |             .unwrap_or_default().to_string();
+    |                                 ++++++++++++
+
+error[E0277]: the trait bound `std::option::Option<FixedOffset>: TimeZone` is not satisfied
+    --> src\handlers\biometric.rs:1168:62
+     |
+1168 |             let cloudtime = chrono::Utc::now().with_timezone(&ist_offset)
+     |                                                ------------- ^^^^^^^^^^^ the trait `TimeZone` is not 
+implemented for `std::option::Option<FixedOffset>`
+     |                                                |
+     |                                                required by a bound introduced by this call
+     |
+help: the following other types implement trait `TimeZone`
+    --> C:\Users\ASUS\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\chrono-0.4.44\src\offset\utc.rs:114:1
+     |
+ 114 | impl TimeZone for Utc {
+     | ^^^^^^^^^^^^^^^^^^^^^ `Utc`
+     |
+    ::: C:\Users\ASUS\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\chrono-0.4.44\src\offset\local\mod.rs:169:1
+     |
+ 169 | impl TimeZone for Local {
+     | ^^^^^^^^^^^^^^^^^^^^^^^ `Local`
+     |
+    ::: C:\Users\ASUS\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\chrono-0.4.44\src\offset\fixed.rs:127:1
+     |
+ 127 | impl TimeZone for FixedOffset {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `FixedOffset`
+note: required by a bound in `chrono::DateTime::<Tz>::with_timezone`
+    --> C:\Users\ASUS\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\chrono-0.4.44\src\datetime\mod.rs:412:31
+     |
+ 412 |     pub fn with_timezone<Tz2: TimeZone>(&self, tz: &Tz2) -> DateTime<Tz2> {
+     |                               ^^^^^^^^ required by this bound in `DateTime::<Tz>::with_timezone`
+
+error[E0599]: the method `format` exists for struct `chrono::DateTime<std::option::Option<FixedOffset>>`, but its 
+trait bounds were not satisfied
+    --> src\handlers\biometric.rs:1169:18
+     |
+1168 |               let cloudtime = chrono::Utc::now().with_timezone(&ist_offset)
+     |  _____________________________-
+1169 | |                 .format("%Y-%m-%d %H:%M:%S").to_string();
+     | |                 -^^^^^^ method cannot be called on `chrono::DateTime<std::option::Option<FixedOffset>>` due 
+to unsatisfied trait bounds
+     | |_________________|
+     |
+     |
+     = note: the following trait bounds were not satisfied:
+             `std::option::Option<FixedOffset>: TimeZone`
+
+error[E0308]: mismatched types
+    --> src\handlers\biometric.rs:1205:56
+     |
+1205 |                 Some(serde_json::Value::Array(arr)) => arr.iter(),
+     |                                                        ^^^^^^^^^^ expected `Vec<&Value>`, found `Iter<'_, 
+Value>`
+     |
+     = note: expected struct `Vec<&serde_json::Value>`
+                found struct `std::slice::Iter<'_, serde_json::Value>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:210:33
+    |
+210 |                 .filter_map(|s| s.parse());
+    |                                 ^^^^^^^^^ expected `Option<_>`, found `Result<_, _>`
+    |
+    = note: expected enum `std::option::Option<_>`
+               found enum `std::result::Result<_, _>`
+help: consider using `Result::expect` to unwrap the `std::result::Result<_, _>` value, panicking if the value is a 
+`Result::Err`
+    |
+210 |                 .filter_map(|s| s.parse().expect("REASON"));
+    |                                          +++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:207:38
+    |
+207 |               let user_ids: Vec<i64> = ids_raw
+    |  ___________________________--------___^
+    | |                           |
+    | |                           expected due to this
+208 | |                 .unwrap_or_default()
+209 | |                 .split(',')
+210 | |                 .filter_map(|s| s.parse());
+    | |__________________________________________^ expected `Vec<i64>`, found `FilterMap<Split<'_, char>, ...>`
+    |
+    = note: expected struct `Vec<i64>`
+               found struct `std::iter::FilterMap<std::str::Split<'_, char>, {closure@src\handlers\chat.rs:210:29: 
+210:32}>`
+
+error[E0308]: mismatched types
+   --> src\handlers\chat.rs:268:31
+    |
+268 |                 .and_then(|s| serde_json::from_str(s))
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<_>`, found `Result<_, Error>`
+    |
+    = note: expected enum `std::option::Option<_>`
+               found enum `std::result::Result<_, serde_json::Error>`
+help: consider using `Result::expect` to unwrap the `std::result::Result<_, serde_json::Error>` value, panicking if 
+the value is a `Result::Err`
+    |
+268 |                 .and_then(|s| serde_json::from_str(s).expect("REASON"))
+    |                                                      +++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src\shift_logic.rs:456:5
+    |
+450 |   pub fn parse_time(value: &str) -> Option<NaiveTime> {
+    |                                     ----------------- expected `std::option::Option<NaiveTime>` because of 
+return type
+...
+456 | /     NaiveTime::parse_from_str(trimmed, "%H:%M:%S")
+457 | |         .or_else(|_| NaiveTime::parse_from_str(trimmed, "%H:%M"))
+    | |_________________________________________________________________^ expected `Option<NaiveTime>`, found 
+`Result<NaiveTime, ParseError>`
+    |
+    = note: expected enum `std::option::Option<NaiveTime>`
+               found enum `std::result::Result<NaiveTime, chrono::ParseError>`
+
+error[E0308]: mismatched types
+   --> src\shift_logic.rs:554:36
+    |
+554 |       let rows: Vec<(i64, String)> = stmt
+    |  _______________------------------___^
+    | |               |
+    | |               expected due to this
+555 | |         .query_map(crate::params![user_id, date], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1))));
+    | |____________________________________________________________________________________________________________^ 
+expected `Vec<(i64, String)>`, found `Vec<(i64, Result<i64, DbError>)>`
+    |
+    = note: expected struct `Vec<(_, std::string::String)>`
+               found struct `Vec<(_, std::result::Result<i64, db::error::DbError>)>`
+
+error[E0308]: mismatched types
+  --> src\leave_type_logic.rs:61:5
+   |
+60 |   pub fn load_active(conn: &Connection, org_id: i64) -> Vec<LeaveTypeConfig> {
+   |                                                         -------------------- expected `Vec<LeaveTypeConfig>` 
+because of return type
+61 | /     load_all(conn, org_id)
+62 | |         .into_iter()
+63 | |         .filter(|t| t.is_active)
+   | |________________________________^ expected `Vec<LeaveTypeConfig>`, found `Filter<IntoIter<LeaveTypeConfig>, ...>`
+   |
+   = note: expected struct `Vec<LeaveTypeConfig>`
+              found struct `std::iter::Filter<std::vec::IntoIter<LeaveTypeConfig>, 
+{closure@src\leave_type_logic.rs:63:17: 63:20}>`
+
+error[E0308]: mismatched types
+  --> src\leave_type_logic.rs:67:5
+   |
+66 |   pub fn load_map(conn: &Connection, org_id: i64) -> HashMap<String, LeaveTypeConfig> {
+   |                                                      -------------------------------- expected 
+`HashMap<std::string::String, LeaveTypeConfig>` because of return type
+67 | /     load_all(conn, org_id)
+68 | |         .into_iter()
+69 | |         .map(|t| (t.slug.clone(), t))
+   | |_____________________________________^ expected `HashMap<String, LeaveTypeConfig>`, found 
+`Map<IntoIter<LeaveTypeConfig>, ...>`
+   |
+   = note: expected struct `HashMap<std::string::String, LeaveTypeConfig>`
+              found struct `std::iter::Map<std::vec::IntoIter<LeaveTypeConfig>, 
+{closure@src\leave_type_logic.rs:69:14: 69:17}>`
+
+error[E0308]: mismatched types
+   --> src\leave_type_logic.rs:112:5
+    |
+111 |   pub fn quota_slugs(conn: &Connection, org_id: i64) -> Vec<String> {
+    |                                                         ----------- expected `Vec<std::string::String>` because 
+of return type
+112 | /     load_all(conn, org_id)
+113 | |         .into_iter()
+114 | |         .filter(|t| t.counts_toward_quota && t.is_active)
+115 | |         .map(|t| t.slug)
+    | |________________________^ expected `Vec<String>`, found `Map<Filter<IntoIter<...>, ...>, ...>`
+    |
+    = note: expected struct `Vec<std::string::String>`
+               found struct `std::iter::Map<std::iter::Filter<std::vec::IntoIter<LeaveTypeConfig>, 
+{closure@src\leave_type_logic.rs:114:17: 114:20}>, {closure@src\leave_type_logic.rs:115:14: 115:17}>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:276:13
+    |
+276 |         let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
+    |             ^^^^^^^^   --------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:279:13
+    |
+279 |         let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
+    |             ^^^^^^^^   ------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:546:13
+    |
+546 |         let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
+    |             ^^^^^^^^   --------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:549:13
+    |
+549 |         let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
+    |             ^^^^^^^^   ------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:827:13
+    |
+827 |         let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
+    |             ^^^^^^^^   --------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\payroll_logic.rs:830:13
+    |
+830 |         let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
+    |             ^^^^^^^^   ------------------------------------------- this expression has type 
+`std::result::Result<NaiveDate, chrono::ParseError>`
+    |             |
+    |             expected `Result<NaiveDate, ParseError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<NaiveDate, chrono::ParseError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+  --> src\workflow_logic.rs:84:32
+   |
+84 |                 workflows.push(wf);
+   |                           ---- ^^ expected `(i64, String, Option<String>, ...)`, found `(i64, i64, i64, i64)`
+   |                           |
+   |                           arguments to this method are incorrect
+   |
+   = note: expected tuple `(_, std::string::String, std::option::Option<std::string::String>, 
+std::option::Option<std::string::String>)`
+              found tuple `(_, i64, i64, i64)`
+note: method defined here
+  --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\vec\mod.rs:1003:11
+
+error[E0308]: mismatched types
+   --> src\workflow_logic.rs:144:24
+    |
+144 |                 if let Some(exec_id) = execution_id {
+    |                        ^^^^^^^^^^^^^   ------------ this expression has type `std::result::Result<i64, 
+db::error::DbError>`
+    |                        |
+    |                        expected `Result<i64, DbError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<i64, db::error::DbError>`
+               found enum `std::option::Option<_>`
+
+error[E0308]: mismatched types
+   --> src\workflow_logic.rs:177:16
+    |
+177 |         if let Some(exec_id) = execution_id {
+    |                ^^^^^^^^^^^^^   ------------ this expression has type `std::result::Result<i64, 
+db::error::DbError>`
+    |                |
+    |                expected `Result<i64, DbError>`, found `Option<_>`
+    |
+    = note: expected enum `std::result::Result<i64, db::error::DbError>`
+               found enum `std::option::Option<_>`
+
+error[E0599]: no method named `ok` found for enum `std::option::Option<T>` in the current scope
+  --> src\payslip_render.rs:52:11
+   |
+47 |        conn.query_row(
+   |  ______-    -
+   | | __________|
+48 | ||         "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = ?2",
+49 | ||         crate::params![org_id, key],
+50 | ||         |r| r.get_idx::<i64>(0),
+51 | ||     )
+   | ||_____- method `ok` is available on `std::result::Result<i64, db::error::DbError>`
+52 | |      .ok().ok().flatten()
+   | |___________-^^
+   |
+help: there is a method `or` with a similar name, but with different arguments
+  --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\option.rs:1621:4
+
+warning: variable does not need to be mutable
+  --> src\chat_department_channels.rs:42:9
+   |
+42 |     let mut stmt = conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\chat_department_channels.rs:125:9
+    |
+125 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:156:60
+    |
+156 |     pub fn query_map<T, P, F>(&self, sql: &str, params: P, mut f: F) -> Vec<T>
+    |                                                            ----^
+    |                                                            |
+    |                                                            help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:270:49
+    |
+270 |     pub fn query_map<T, P, F>(&self, params: P, mut f: F) -> Vec<T>
+    |                                                 ----^
+    |                                                 |
+    |                                                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\db\connection.rs:279:56
+    |
+279 |     pub fn query_map_result<T, P, F>(&self, params: P, mut f: F) -> Result<Vec<T>>
+    |                                                        ----^
+    |                                                        |
+    |                                                        help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\auth.rs:20:15
+   |
+20 |     if let Ok(mut stmt) = conn.prepare(
+   |               ----^^^^
+   |               |
+   |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\users.rs:42:9
+   |
+42 |     let mut stmt = conn
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\roles.rs:13:9
+   |
+13 |     let mut stmt = conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\permissions.rs:14:9
+   |
+14 |     let mut stmt = match conn.prepare("SELECT * FROM permissions ORDER BY \"group\", name") {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\attendance.rs:55:9
+   |
+55 |     let mut stmt = match conn.prepare(sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\leave_requests.rs:202:9
+    |
+202 |     let mut stmt = conn.prepare(&sql).unwrap();
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\handlers\careers.rs:19:9
+   |
+19 |     let mut stmt = match conn.prepare(&sql) {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\biometric.rs:983:9
+    |
+983 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\payslips.rs:255:13
+    |
+255 |         let mut stmt = match conn.prepare(
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:169:9
+    |
+169 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:224:9
+    |
+224 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\handlers\chat.rs:301:9
+    |
+301 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\middleware\rbac.rs:21:9
+   |
+21 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\shift_logic.rs:358:12
+    |
+358 |         Ok(mut stmt) => stmt
+    |            ----^^^^
+    |            |
+    |            help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\shift_logic.rs:384:9
+    |
+384 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_split.rs:346:15
+    |
+346 |     if let Ok(mut stmt) = conn.prepare(
+    |               ----^^^^
+    |               |
+    |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_split.rs:382:15
+    |
+382 |     if let Ok(mut stmt) = conn.prepare(
+    |               ----^^^^
+    |               |
+    |               help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\statutory_logic.rs:104:9
+    |
+104 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\statutory_logic.rs:206:9
+    |
+206 |     let mut stmt = conn
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\salary_logic.rs:76:9
+   |
+76 |     let mut stmt = conn
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\salary_logic.rs:273:9
+    |
+273 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src\leave_type_logic.rs:36:9
+   |
+36 |     let mut stmt = match conn.prepare(
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:137:9
+    |
+137 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:211:9
+    |
+211 |     let mut stmt = match conn.prepare(&sql) {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:305:9
+    |
+305 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:374:9
+    |
+374 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:628:9
+    |
+628 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\payroll_logic.rs:779:9
+    |
+779 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src\subscription_period.rs:221:9
+    |
+221 |     let mut stmt = match conn.prepare(
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+
+Some errors have detailed explanations: E0277, E0308, E0599.
+For more information about an error, try `rustc --explain E0277`.
+warning: `hrm-backend` (bin "hrm-backend") generated 78 warnings
+error: could not compile `hrm-backend` (bin "hrm-backend") due to 46 previous errors; 78 warnings emitted

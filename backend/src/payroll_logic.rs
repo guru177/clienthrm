@@ -1,18 +1,12 @@
 //! Shared payroll calculations: business days, LOP, adjustments.
 
-use chrono::{Datelike, NaiveDate, Weekday};
+use chrono::{Datelike, NaiveDate};
 use std::collections::{HashMap, HashSet};
 
-pub fn is_weekend(d: NaiveDate) -> bool {
-    matches!(d.weekday(), Weekday::Sat | Weekday::Sun)
-}
-
-pub fn is_business_day(d: NaiveDate) -> bool {
-    !is_weekend(d)
-}
+use crate::tenant::org_id_for_user;
 
 pub fn is_working_day_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     d: NaiveDate,
 ) -> bool {
@@ -21,7 +15,11 @@ pub fn is_working_day_for_user(
 }
 
 pub fn month_bounds(month: i32, year: i32) -> (NaiveDate, NaiveDate) {
-    let start = NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap();
+    // Clamp to a valid calendar range so attacker-controlled month/year cannot panic.
+    let m = month.clamp(1, 12) as u32;
+    let y = year.clamp(1970, 9999);
+    let start = NaiveDate::from_ymd_opt(y, m, 1)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).expect("constant date is valid"));
     let end = start
         .with_day(start.num_days_in_month().into())
         .unwrap_or(start);
@@ -34,23 +32,8 @@ pub fn calendar_days_in_month(month: i32, year: i32) -> i64 {
         .unwrap_or(30)
 }
 
-pub fn business_days_between(start: NaiveDate, end: NaiveDate) -> i64 {
-    if end < start {
-        return 0;
-    }
-    let mut count = 0i64;
-    let mut d = start;
-    while d <= end {
-        if is_business_day(d) {
-            count += 1;
-        }
-        d += chrono::Duration::days(1);
-    }
-    count
-}
-
 pub fn working_days_between_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     start: NaiveDate,
     end: NaiveDate,
@@ -69,23 +52,8 @@ pub fn working_days_between_for_user(
     count
 }
 
-fn business_dates_between(start: NaiveDate, end: NaiveDate) -> HashSet<NaiveDate> {
-    let mut dates = HashSet::new();
-    if end < start {
-        return dates;
-    }
-    let mut d = start;
-    while d <= end {
-        if is_business_day(d) {
-            dates.insert(d);
-        }
-        d += chrono::Duration::days(1);
-    }
-    dates
-}
-
 fn working_dates_between_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     start: NaiveDate,
     end: NaiveDate,
@@ -106,7 +74,7 @@ fn working_dates_between_for_user(
 
 /// Returns active date range for user within a payroll month (join/exit clipped).
 pub fn user_active_range_in_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -116,7 +84,7 @@ pub fn user_active_range_in_month(
         .query_row(
             "SELECT date_of_joining, date_of_exit FROM users WHERE id=?1",
             [user_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get_idx::<Option<String>>(0)?, row.get_idx::<Option<String>>(1)?)),
         )
         .unwrap_or((None, None));
 
@@ -144,7 +112,7 @@ pub fn user_active_range_in_month(
 
 /// Business days in month, optionally clipped to employee active range.
 pub fn working_days_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -156,52 +124,9 @@ pub fn working_days_for_user(
     working_days_between_for_user(conn, user_id, range_start, range_end)
 }
 
-pub fn count_holidays_on_business_days(
-    conn: &rusqlite::Connection,
-    month: i32,
-    year: i32,
-) -> i64 {
-    let (start, end) = month_bounds(month, year);
-    let start_s = start.format("%Y-%m-%d").to_string();
-    let end_s = end.format("%Y-%m-%d").to_string();
-
-    let mut stmt = match conn.prepare(
-        "SELECT date FROM holidays WHERE date >= ?1 AND date <= ?2",
-    ) {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-
-    stmt.query_map(rusqlite::params![start_s, end_s], |row| row.get::<_, String>(0))
-        .ok()
-        .map(|iter| {
-            iter.filter_map(|r| r.ok())
-                .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
-                .filter(|d| is_business_day(*d))
-                .count() as i64
-        })
-        .unwrap_or(0)
-}
-
-pub fn business_days_in_leave_overlap(
-    conn: &rusqlite::Connection,
-    user_id: i64,
-    leave_start: NaiveDate,
-    leave_end: NaiveDate,
-    range_start: NaiveDate,
-    range_end: NaiveDate,
-) -> i64 {
-    let overlap_start = leave_start.max(range_start);
-    let overlap_end = leave_end.min(range_end);
-    if overlap_end < overlap_start {
-        return 0;
-    }
-    working_days_between_for_user(conn, user_id, overlap_start, overlap_end)
-}
-
 /// Business-day holidays that fall within the user's active range in the month.
 pub fn paid_holidays_for_user(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -214,30 +139,27 @@ pub fn paid_holidays_for_user(
     let end_s = month_bounds(month, year).1.format("%Y-%m-%d").to_string();
 
     let mut stmt = match conn.prepare(
-        "SELECT date FROM holidays WHERE date >= ?1 AND date <= ?2",
+        "SELECT date FROM holidays WHERE organization_id = ?3 AND date >= ?1 AND date <= ?2",
     ) {
         Ok(s) => s,
         Err(_) => return 0,
     };
 
-    stmt.query_map(rusqlite::params![start_s, end_s], |row| row.get::<_, String>(0))
-        .ok()
-        .map(|iter| {
-            iter.filter_map(|r| r.ok())
-                .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
-                .filter(|d| {
-                    *d >= range_start
-                        && *d <= range_end
-                        && is_working_day_for_user(conn, user_id, *d)
-                })
-                .count() as i64
+    let org_id = org_id_for_user(conn, user_id);
+    stmt.query_map(crate::params![start_s, end_s, org_id], |row| row.get_idx::<String>(0))
+        .into_iter()
+        .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+        .filter(|d| {
+            *d >= range_start
+                && *d <= range_end
+                && is_working_day_for_user(conn, user_id, *d)
         })
-        .unwrap_or(0)
+        .count() as i64
 }
 
 /// Distinct business-day leave dates for a user within a range and status filter.
 pub fn collect_leave_business_dates(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     range_start: NaiveDate,
     range_end: NaiveDate,
@@ -248,7 +170,7 @@ pub fn collect_leave_business_dates(
 
 /// Like collect_leave_business_dates but optionally filter by leave_type slugs.
 pub fn collect_leave_business_dates_filtered(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     range_start: NaiveDate,
     range_end: NaiveDate,
@@ -275,17 +197,17 @@ pub fn collect_leave_business_dates_filtered(
            AND start_date <= ? AND end_date >= ?{slug_clause}",
     );
 
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-        Box::new(user_id),
-        Box::new(range_end.format("%Y-%m-%d").to_string()),
-        Box::new(range_start.format("%Y-%m-%d").to_string()),
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(user_id),
+        crate::db::into_param_value(range_end.format("%Y-%m-%d").to_string()),
+        crate::db::into_param_value(range_start.format("%Y-%m-%d").to_string()),
     ];
     for s in statuses {
-        params.push(Box::new(*s));
+        params.push(crate::db::into_param_value(*s));
     }
     if let Some(slugs) = leave_type_slugs {
         for slug in slugs {
-            params.push(Box::new(slug.clone()));
+            params.push(crate::db::into_param_value(slug.clone()));
         }
     }
 
@@ -294,20 +216,17 @@ pub fn collect_leave_business_dates_filtered(
         Err(_) => return HashSet::new(),
     };
 
-    let rows: Vec<(String, String)> = match stmt.query_map(
-        rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ) {
-        Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
-        Err(_) => return HashSet::new(),
-    };
+    let rows: Vec<(String, String)> = stmt
+        .query_map(&params, |row| {
+            Ok((row.get_idx::<String>(0)?, row.get_idx::<String>(1)?))
+        });
 
     let mut dates = HashSet::new();
     for (start, end) in rows {
-        let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d").ok() else {
+        let Ok(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
             continue;
         };
-        let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d").ok() else {
+        let Ok(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
             continue;
         };
         dates.extend(working_dates_between_for_user(
@@ -322,7 +241,7 @@ pub fn collect_leave_business_dates_filtered(
 
 /// Per-date max LOP weight from approved leave (paid=0, half_day=0.5, unpaid=1).
 pub fn collect_approved_leave_lop_weights(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     range_start: NaiveDate,
     range_end: NaiveDate,
@@ -339,27 +258,28 @@ pub fn collect_approved_leave_lop_weights(
     };
     let rows: Vec<(String, String, String)> = stmt
         .query_map(
-            rusqlite::params![
+            crate::params![
                 user_id,
                 range_end.format("%Y-%m-%d").to_string(),
                 range_start.format("%Y-%m-%d").to_string(),
             ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+            |row| Ok((
+                row.get_idx::<String>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<String>(2)?,
+            )),
+        );
 
     let mut weights: HashMap<NaiveDate, f64> = HashMap::new();
     for (start, end, leave_type) in rows {
-        let factor = crate::leave_type_logic::lop_factor_for_slug(conn, &leave_type);
+        let factor = crate::leave_type_logic::lop_factor_for_user_slug(conn, user_id, &leave_type);
         if factor <= 0.0 {
             continue;
         }
-        let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d").ok() else {
+        let Ok(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
             continue;
         };
-        let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d").ok() else {
+        let Ok(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
             continue;
         };
         for d in working_dates_between_for_user(conn, user_id, ls.max(range_start), le.min(range_end))
@@ -373,9 +293,36 @@ pub fn collect_approved_leave_lop_weights(
     weights
 }
 
+/// Dates with an open clock-in session (no clock-out yet) within range.
+pub fn collect_open_clock_in_dates(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    range_start: NaiveDate,
+    range_end: NaiveDate,
+) -> HashSet<NaiveDate> {
+    if range_end < range_start {
+        return HashSet::new();
+    }
+    let start_s = range_start.format("%Y-%m-%d").to_string();
+    let end_s = range_end.format("%Y-%m-%d").to_string();
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT date FROM attendance
+         WHERE user_id=?1 AND date >= ?2 AND date <= ?3 AND deleted_at IS NULL
+           AND clock_out IS NULL",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashSet::new(),
+    };
+    stmt.query_map(crate::params![user_id, &start_s, &end_s], |row| row.get_idx::<String>(0))
+        .into_iter()
+        .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+        .filter(|d| is_working_day_for_user(conn, user_id, *d))
+        .collect()
+}
+
 /// Total LOP-equivalent days in month (supports fractional half-days).
 pub fn total_lop_days_for_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -385,6 +332,8 @@ pub fn total_lop_days_for_month(
         return 0.0;
     }
     let present = collect_present_business_dates(conn, user_id, active_start, active_end);
+    let open_sessions = collect_open_clock_in_dates(conn, user_id, active_start, active_end);
+    let today = chrono::Utc::now().date_naive();
     let holidays = collect_paid_holiday_dates(conn, user_id, month, year);
     let leave_lop = collect_approved_leave_lop_weights(conn, user_id, active_start, active_end);
     let all_approved =
@@ -396,6 +345,8 @@ pub fn total_lop_days_for_month(
         if is_working_day_for_user(conn, user_id, d) {
             if present.contains(&d) || holidays.contains(&d) {
                 // no LOP
+            } else if open_sessions.contains(&d) && d == today {
+                // in-progress clock-in today — wait for clock-out before LOP
             } else if let Some(w) = leave_lop.get(&d) {
                 total += w;
             } else if all_approved.contains(&d) {
@@ -411,7 +362,7 @@ pub fn total_lop_days_for_month(
 
 /// Completed attendance days (clock-out required), clipped to active range.
 pub fn collect_present_business_dates(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     range_start: NaiveDate,
     range_end: NaiveDate,
@@ -431,22 +382,16 @@ pub fn collect_present_business_dates(
         Err(_) => return HashSet::new(),
     };
 
-    stmt.query_map(rusqlite::params![user_id, &start_s, &end_s], |row| {
-        row.get::<_, String>(0)
-    })
-    .ok()
-    .map(|iter| {
-        iter.filter_map(|r| r.ok())
-            .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
-            .filter(|d| is_working_day_for_user(conn, user_id, *d))
-            .collect()
-    })
-    .unwrap_or_default()
+    stmt.query_map(crate::params![user_id, &start_s, &end_s], |row| row.get_idx::<String>(0))
+        .into_iter()
+        .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+        .filter(|d| is_working_day_for_user(conn, user_id, *d))
+        .collect()
 }
 
 /// Approved leave business days in month (distinct dates — overlapping requests deduped).
 pub fn employee_leave_business_days(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -459,10 +404,10 @@ pub fn employee_leave_business_days(
 }
 
 /// Used approved quota-counting leave business days in calendar year.
-pub fn employee_leave_used_in_year(conn: &rusqlite::Connection, user_id: i64, year: i32) -> i64 {
-    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
-    let slugs = crate::leave_type_logic::quota_slugs(conn);
+pub fn employee_leave_used_in_year(conn: &crate::db::Connection, user_id: i64, year: i32) -> i64 {
+    let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else { return 0; };
+    let Some(year_end) = NaiveDate::from_ymd_opt(year, 12, 31) else { return 0; };
+    let slugs = crate::leave_type_logic::quota_slugs_for_user(conn, user_id);
     if slugs.is_empty() {
         return 0;
     }
@@ -478,10 +423,10 @@ pub fn employee_leave_used_in_year(conn: &rusqlite::Connection, user_id: i64, ye
 }
 
 /// Pending quota-counting leave business days in calendar year (deduped).
-pub fn employee_pending_leave_days_in_year(conn: &rusqlite::Connection, user_id: i64, year: i32) -> i64 {
-    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
-    let slugs = crate::leave_type_logic::quota_slugs(conn);
+pub fn employee_pending_leave_days_in_year(conn: &crate::db::Connection, user_id: i64, year: i32) -> i64 {
+    let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else { return 0; };
+    let Some(year_end) = NaiveDate::from_ymd_opt(year, 12, 31) else { return 0; };
+    let slugs = crate::leave_type_logic::quota_slugs_for_user(conn, user_id);
     if slugs.is_empty() {
         return 0;
     }
@@ -496,28 +441,27 @@ pub fn employee_pending_leave_days_in_year(conn: &rusqlite::Connection, user_id:
     .len() as i64
 }
 
-/// Whether adding a new quota-counting leave request would exceed annual quota.
-pub fn would_exceed_annual_quota(
-    conn: &rusqlite::Connection,
+fn would_exceed_quota_for_year(
+    conn: &crate::db::Connection,
     user_id: i64,
-    start_date: &str,
-    end_date: &str,
+    range_start: NaiveDate,
+    range_end: NaiveDate,
     leave_type: &str,
+    year: i32,
 ) -> bool {
-    if !crate::leave_type_logic::counts_toward_quota(conn, leave_type) {
+    if !crate::leave_type_logic::counts_toward_quota_for_user(conn, user_id, leave_type) {
         return false;
     }
-    let Some(ls) = NaiveDate::parse_from_str(start_date, "%Y-%m-%d").ok() else {
-        return false;
-    };
-    let Some(le) = NaiveDate::parse_from_str(end_date, "%Y-%m-%d").ok() else {
-        return false;
-    };
-    let year = ls.year();
-    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
-    let slugs = crate::leave_type_logic::quota_slugs(conn);
+    let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else { return false; };
+    let Some(year_end) = NaiveDate::from_ymd_opt(year, 12, 31) else { return false; };
+    let slugs = crate::leave_type_logic::quota_slugs_for_user(conn, user_id);
     if slugs.is_empty() {
+        return false;
+    }
+
+    let req_start = range_start.max(year_start);
+    let req_end = range_end.min(year_end);
+    if req_end < req_start {
         return false;
     }
 
@@ -532,16 +476,45 @@ pub fn would_exceed_annual_quota(
     dates.extend(working_dates_between_for_user(
         conn,
         user_id,
-        ls.max(year_start),
-        le.min(year_end),
+        req_start,
+        req_end,
     ));
 
-    dates.len() as i64 > annual_leave_quota(conn)
+    let org_id = org_id_for_user(conn, user_id);
+    let effective = employee_effective_leave_quota(conn, user_id, year, org_id);
+    dates.len() as i64 > effective
 }
 
-/// Total distinct approved leave business days across all employees in a month.
+/// Whether adding a new quota-counting leave request would exceed annual quota.
+/// Spans crossing calendar years are checked against each affected year.
+pub fn would_exceed_annual_quota(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    start_date: &str,
+    end_date: &str,
+    leave_type: &str,
+) -> bool {
+    let Ok(ls) = NaiveDate::parse_from_str(start_date, "%Y-%m-%d") else {
+        return false;
+    };
+    let Ok(le) = NaiveDate::parse_from_str(end_date, "%Y-%m-%d") else {
+        return false;
+    };
+    let mut year = ls.year();
+    let end_year = le.year();
+    while year <= end_year {
+        if would_exceed_quota_for_year(conn, user_id, ls, le, leave_type, year) {
+            return true;
+        }
+        year += 1;
+    }
+    false
+}
+
+/// Total distinct approved leave business days across all employees in a month (tenant-scoped).
 pub fn approved_leave_business_days_in_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
+    org_id: i64,
     month: i32,
     year: i32,
 ) -> i64 {
@@ -550,51 +523,83 @@ pub fn approved_leave_business_days_in_month(
     let start_str = month_start.format("%Y-%m-%d").to_string();
 
     let mut stmt = match conn.prepare(
-        "SELECT user_id, start_date, end_date FROM leave_requests
-         WHERE status='approved' AND deleted_at IS NULL
-           AND start_date <= ?1 AND end_date >= ?2",
+        "SELECT lr.user_id, lr.start_date, lr.end_date FROM leave_requests lr
+         JOIN users u ON u.id = lr.user_id
+         WHERE u.organization_id = ?3
+           AND lr.status='approved' AND lr.deleted_at IS NULL
+           AND lr.start_date <= ?1 AND lr.end_date >= ?2",
     ) {
         Ok(s) => s,
         Err(_) => return 0,
     };
 
     let rows: Vec<(i64, String, String)> = stmt
-        .query_map(rusqlite::params![&end_str, &start_str], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map(crate::params![&end_str, &start_str, org_id], |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<String>(2)?,
+            ))
+        });
 
     let mut dates = HashSet::new();
     for (user_id, start, end) in rows {
-        let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d").ok() else {
+        let Ok(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
             continue;
         };
-        let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d").ok() else {
+        let Ok(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
             continue;
         };
+        let (active_start, active_end) = user_active_range_in_month(conn, user_id, month, year);
+        if active_end < active_start {
+            continue;
+        }
         dates.extend(working_dates_between_for_user(
             conn,
             user_id,
-            ls.max(month_start),
-            le.min(month_end),
+            ls.max(month_start).max(active_start),
+            le.min(month_end).min(active_end),
         ));
     }
     dates.len() as i64
 }
 
-pub fn annual_leave_quota(conn: &rusqlite::Connection) -> i64 {
+pub fn annual_leave_quota(conn: &crate::db::Connection, org_id: i64) -> i64 {
     conn.query_row(
-        "SELECT CAST(value AS INTEGER) FROM app_settings WHERE key='annual_leave_quota'",
-        [],
-        |r| r.get(0),
+        "SELECT CAST(value AS INTEGER) FROM app_settings WHERE organization_id = ?1 AND key='annual_leave_quota'",
+        [org_id],
+        |r| r.get_idx::<i64>(0),
     )
     .unwrap_or(12)
 }
 
+/// Bonus leave days granted by admin (e.g. worked on a holiday / comp-off).
+pub fn employee_leave_credits_in_year(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    year: i32,
+) -> i64 {
+    conn.query_row(
+        "SELECT COALESCE(SUM(days), 0) FROM leave_credits
+         WHERE user_id = ?1 AND year = ?2 AND deleted_at IS NULL",
+        crate::params![user_id, year],
+        |r| r.get_idx::<i64>(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Base org quota plus per-employee bonus credits for the calendar year.
+pub fn employee_effective_leave_quota(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    year: i32,
+    org_id: i64,
+) -> i64 {
+    annual_leave_quota(conn, org_id) + employee_leave_credits_in_year(conn, user_id, year)
+}
+
 pub fn employee_present_business_days(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -606,20 +611,9 @@ pub fn employee_present_business_days(
     collect_present_business_dates(conn, user_id, active_start, active_end).len() as i64
 }
 
-pub fn employee_absent_business_days(
-    conn: &rusqlite::Connection,
-    user_id: i64,
-    month: i32,
-    year: i32,
-    _working_days: i64,
-    _paid_holidays: i64,
-) -> i64 {
-    collect_absent_business_dates(conn, user_id, month, year).len() as i64
-}
-
 /// Distinct paid-holiday business dates for a user in the active month range.
 pub fn collect_paid_holiday_dates(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
@@ -631,62 +625,23 @@ pub fn collect_paid_holiday_dates(
     let start_s = month_bounds(month, year).0.format("%Y-%m-%d").to_string();
     let end_s = month_bounds(month, year).1.format("%Y-%m-%d").to_string();
 
+    let org_id = org_id_for_user(conn, user_id);
     let mut stmt = match conn.prepare(
-        "SELECT date FROM holidays WHERE date >= ?1 AND date <= ?2",
+        "SELECT date FROM holidays WHERE organization_id = ?3 AND date >= ?1 AND date <= ?2",
     ) {
         Ok(s) => s,
         Err(_) => return HashSet::new(),
     };
 
-    stmt.query_map(rusqlite::params![start_s, end_s], |row| row.get::<_, String>(0))
-        .ok()
-        .map(|iter| {
-            iter.filter_map(|r| r.ok())
-                .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
-                .filter(|d| {
-                    is_working_day_for_user(conn, user_id, *d)
-                        && *d >= active_start
-                        && *d <= active_end
-                })
-                .collect()
+    stmt.query_map(crate::params![start_s, end_s, org_id], |row| row.get_idx::<String>(0))
+        .into_iter()
+        .filter_map(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+        .filter(|d| {
+            is_working_day_for_user(conn, user_id, *d)
+                && *d >= active_start
+                && *d <= active_end
         })
-        .unwrap_or_default()
-}
-
-/// Business dates with full-day unexcused absence (excludes paid leave and partial LOP days).
-pub fn collect_absent_business_dates(
-    conn: &rusqlite::Connection,
-    user_id: i64,
-    month: i32,
-    year: i32,
-) -> HashSet<NaiveDate> {
-    let (active_start, active_end) = user_active_range_in_month(conn, user_id, month, year);
-    if active_end < active_start {
-        return HashSet::new();
-    }
-    let present = collect_present_business_dates(conn, user_id, active_start, active_end);
-    let leave_lop = collect_approved_leave_lop_weights(conn, user_id, active_start, active_end);
-    let all_approved =
-        collect_leave_business_dates(conn, user_id, active_start, active_end, &["approved"]);
-    let holidays = collect_paid_holiday_dates(conn, user_id, month, year);
-
-    let mut absent = HashSet::new();
-    let mut d = active_start;
-    while d <= active_end {
-        if !is_working_day_for_user(conn, user_id, d) || present.contains(&d) || holidays.contains(&d) {
-            d += chrono::Duration::days(1);
-            continue;
-        }
-        if let Some(w) = leave_lop.get(&d) {
-            if *w >= 1.0 {
-                absent.insert(d);
-            }
-        } else if !all_approved.contains(&d) {
-            absent.insert(d);
-        }
-        d += chrono::Duration::days(1);
-    }
-    absent
+        .collect()
 }
 
 /// Per-component LOP line (from salary_components earnings).
@@ -713,13 +668,12 @@ pub struct LopBreakdown {
 pub fn component_lop_breakdown(
     salary: &crate::salary_logic::PayrollSalaryBreakdown,
     lop_days: f64,
-    month: i32,
-    year: i32,
+    divisor_days: f64,
 ) -> LopBreakdown {
-    let divisor = calendar_days_in_month(month, year) as f64;
+    let divisor = divisor_days;
     if divisor <= 0.0 || lop_days <= 0.0 {
         return LopBreakdown {
-            net_after_lop: salary.gross,
+            net_after_lop: salary.lop_gross(),
             ..Default::default()
         };
     }
@@ -776,7 +730,11 @@ pub fn component_lop_breakdown(
         }
     }
 
-    let total = crate::salary_split::round2(basic + hra + conveyance + special);
+    let mut total = crate::salary_split::round2(basic + hra + conveyance + special);
+    let lop_gross = salary.lop_gross();
+    if total <= 0.0 && lop_days > 0.0 && lop_gross > 0.0 {
+        total = crate::salary_split::round2(lop_gross * lop_days / divisor);
+    }
     LopBreakdown {
         days: lop_days,
         lines,
@@ -785,19 +743,20 @@ pub fn component_lop_breakdown(
         conveyance,
         special,
         total,
-        net_after_lop: crate::salary_split::round2((salary.gross - total).max(0.0)),
+        net_after_lop: crate::salary_split::round2((lop_gross - total).max(0.0)),
     }
 }
 
 /// LOP with per-component split; uses calendar days in month as divisor.
 pub fn lop_amount_for_user_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     month: i32,
     year: i32,
     _working_days: i64,
 ) -> (f64, LopBreakdown) {
     let lop_days = total_lop_days_for_month(conn, user_id, month, year);
+    let working_divisor = working_days_for_user(conn, user_id, month, year).max(1) as f64;
     if lop_days <= 0.0 {
         return (0.0, LopBreakdown::default());
     }
@@ -806,27 +765,25 @@ pub fn lop_amount_for_user_month(
     let Some(salary) = crate::salary_logic::load_user_salary(conn, user_id, &month_end) else {
         return (0.0, LopBreakdown::default());
     };
-    let breakdown = component_lop_breakdown(&salary, lop_days, month, year);
+    let breakdown = component_lop_breakdown(&salary, lop_days, working_divisor);
     (breakdown.total, breakdown)
 }
 
 /// Sum of per-employee paid holidays across active staff for a month.
 pub fn total_paid_holidays_for_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
+    org_id: i64,
     month: i32,
     year: i32,
 ) -> i64 {
     let mut stmt = match conn.prepare(
-        "SELECT id FROM users WHERE deleted_at IS NULL AND is_super_admin=0",
+        "SELECT id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1",
     ) {
         Ok(s) => s,
         Err(_) => return 0,
     };
     let user_ids: Vec<i64> = stmt
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map([org_id], |row| row.get_idx::<i64>(0));
     user_ids
         .iter()
         .map(|uid| paid_holidays_for_user(conn, *uid, month, year))
@@ -835,7 +792,8 @@ pub fn total_paid_holidays_for_month(
 
 /// Approved leave business days in month grouped by leave type (deduped per date per type).
 pub fn approved_leave_days_by_type_in_month(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
+    org_id: i64,
     month: i32,
     year: i32,
 ) -> HashMap<String, i64> {
@@ -844,39 +802,50 @@ pub fn approved_leave_days_by_type_in_month(
     let start_str = month_start.format("%Y-%m-%d").to_string();
 
     let mut stmt = match conn.prepare(
-        "SELECT user_id, leave_type, start_date, end_date FROM leave_requests
-         WHERE status='approved' AND deleted_at IS NULL
-           AND start_date <= ?1 AND end_date >= ?2",
+        "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date FROM leave_requests lr
+         JOIN users u ON u.id = lr.user_id
+         WHERE u.organization_id = ?3
+           AND lr.status='approved' AND lr.deleted_at IS NULL
+           AND lr.start_date <= ?1 AND lr.end_date >= ?2",
     ) {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
     };
 
     let rows: Vec<(i64, String, String, String)> = stmt
-        .query_map(rusqlite::params![&end_str, &start_str], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map(crate::params![&end_str, &start_str, org_id], |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<String>(2)?,
+                row.get_idx::<String>(3)?,
+            ))
+        });
 
     let mut by_type: HashMap<String, HashSet<NaiveDate>> = HashMap::new();
     for (user_id, leave_type, start, end) in rows {
-        let Some(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d").ok() else {
+        let Ok(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
             continue;
         };
-        let Some(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d").ok() else {
+        let Ok(le) = NaiveDate::parse_from_str(&end, "%Y-%m-%d") else {
             continue;
         };
+        let (active_start, active_end) = user_active_range_in_month(conn, user_id, month, year);
+        if active_end < active_start {
+            continue;
+        }
         let dates = working_dates_between_for_user(
             conn,
             user_id,
-            ls.max(month_start),
-            le.min(month_end),
+            ls.max(month_start).max(active_start),
+            le.min(month_end).min(active_end),
         );
         by_type.entry(leave_type).or_default().extend(dates);
     }
-    by_type.into_iter().map(|(k, v)| (k, v.len() as i64)).collect()
+    by_type
+        .into_iter()
+        .map(|(k, v)| (k, v.len() as i64))
+        .collect()
 }
 
 /// Parse per-employee adjustments from preview request body.
@@ -894,6 +863,41 @@ pub fn parse_employee_adjustments(
         }
     }
     map
+}
+
+fn sum_adjustment_additions(adjs: &[serde_json::Value]) -> f64 {
+    adjs.iter()
+        .filter(|a| a.get("type").and_then(|v| v.as_str()) == Some("addition"))
+        .map(|a| a.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .sum()
+}
+
+fn sum_adjustment_deductions(adjs: &[serde_json::Value]) -> f64 {
+    adjs.iter()
+        .filter(|a| a.get("type").and_then(|v| v.as_str()) == Some("deduction"))
+        .map(|a| a.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0))
+        .sum()
+}
+
+/// Merge draft + generate-time adjustments and apply once (avoids double-counting preview flats).
+pub fn finalize_payslip_adjustments(
+    gross: f64,
+    net: f64,
+    total_deductions: f64,
+    existing_adj_json: &str,
+    common_adjustments: &[serde_json::Value],
+) -> (f64, f64, String) {
+    let existing: Vec<serde_json::Value> =
+        serde_json::from_str(existing_adj_json).unwrap_or_default();
+    let mut all_adjs = existing.clone();
+    all_adjs.extend(common_adjustments.iter().cloned());
+
+    let flat_add = sum_adjustment_additions(&existing);
+    let flat_ded = sum_adjustment_deductions(&existing);
+    let base_net = net - flat_add + flat_ded;
+    let base_total_ded = (total_deductions - flat_ded).max(0.0);
+
+    apply_adjustment_list(gross, base_net, base_total_ded, &all_adjs)
 }
 
 /// Apply a list of flat adjustments; returns (net, total_deductions, json).

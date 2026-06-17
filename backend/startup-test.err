@@ -1,0 +1,23 @@
+[2026-06-17T04:28:03Z INFO  hrm_backend] Signup email OTP: SMTP_HOST is configured
+[2026-06-17T04:28:03Z INFO  hrm_backend] Signup WhatsApp OTP: MSG91 is configured
+[2026-06-17T04:28:03Z INFO  hrm_backend::db::pool] Using SQLite database at ../database/database.sqlite
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] SaaS tenant migrations applied
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] Team chat module migration completed
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] Platform admin extras migration applied
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] Platform billing migration applied
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] Platform support migration applied
+[2026-06-17T04:28:04Z INFO  hrm_backend::db::migrations] ✅ Database migrations completed
+[2026-06-17T04:28:04Z INFO  hrm_backend] 🚀 HRM API http://0.0.0.0:3001
+[2026-06-17T04:28:04Z INFO  actix_server::builder] starting 12 workers
+[2026-06-17T04:28:04Z INFO  actix_server::server] Actix runtime found; starting in Actix runtime
+[2026-06-17T04:28:04Z INFO  actix_server::server] starting service: "actix-web-service-0.0.0.0:3001", workers: 12, listening on: 0.0.0.0:3001
+[2026-06-17T04:28:04Z INFO  hrm_backend] 📡 Biometric device HTTP listener on http://0.0.0.0:7788
+[2026-06-17T04:28:04Z INFO  actix_server::builder] starting 12 workers
+[2026-06-17T04:28:04Z INFO  actix_server::server] Actix runtime found; starting in Actix runtime
+[2026-06-17T04:28:04Z INFO  actix_server::server] starting service: "actix-web-service-0.0.0.0:7788", workers: 12, listening on: 0.0.0.0:7788
+[2026-06-17T04:28:04Z INFO  hrm_backend::bio_park_tcp] 📡 BIO-PARK binary TCP listener on 0.0.0.0:5010
+[2026-06-17T04:28:12Z INFO  actix_web::middleware::logger] 127.0.0.1 "POST /api/public/signup/send-otp HTTP/1.1" 200 207 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-IN) WindowsPowerShell/5.1.26100.8655" 3.777499
+[2026-06-17T04:29:00Z INFO  actix_web::middleware::logger] 127.0.0.1 "POST /api/public/signup/send-otp HTTP/1.1" 200 207 "http://localhost:5174/signup" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" 3.366829
+[2026-06-17T04:29:28Z INFO  actix_web::middleware::logger] 127.0.0.1 "POST /api/public/signup/send-otp HTTP/1.1" 502 189 "http://localhost:5174/signup" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36" 0.337782
+[2026-06-17T04:36:23Z INFO  actix_web::middleware::logger] 127.0.0.1 "GET /api/health HTTP/1.1" 200 39 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-IN) WindowsPowerShell/5.1.26100.8655" 0.002128
+[2026-06-17T04:36:55Z INFO  actix_web::middleware::logger] 127.0.0.1 "POST /api/public/signup/send-otp HTTP/1.1" 502 189 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-IN) WindowsPowerShell/5.1.26100.8655" 0.352554

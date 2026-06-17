@@ -6,11 +6,12 @@ use actix_web::{middleware::Next, Error, HttpResponse};
 
 use crate::db::DbPool;
 use crate::middleware::auth::extract_claims;
+use crate::models::user::JwtClaims;
 use crate::models::ApiError;
 
 /// Load permission slugs for a user (super admin gets `*`).
 pub fn load_user_permissions(
-    conn: &rusqlite::Connection,
+    conn: &crate::db::Connection,
     user_id: i64,
     is_super_admin: bool,
 ) -> Vec<String> {
@@ -21,19 +22,48 @@ pub fn load_user_permissions(
         "SELECT DISTINCT p.slug FROM permissions p
          JOIN permission_role pr ON p.id = pr.permission_id
          JOIN role_user ru ON pr.role_id = ru.role_id
+         JOIN roles r ON r.id = ru.role_id
+         JOIN users u ON u.id = ru.user_id AND u.organization_id = r.organization_id
          WHERE ru.user_id = ?1",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    stmt.query_map([user_id], |row| row.get::<_, String>(0))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect()
+    stmt.query_map([user_id], |row| row.get_idx::<String>(0))
 }
 
 pub fn has_permission(permissions: &[String], slug: &str) -> bool {
     permissions.iter().any(|p| p == "*" || p == slug)
+}
+
+fn permission_satisfied(permissions: &[String], slug: &str) -> bool {
+    if has_permission(permissions, slug) {
+        return true;
+    }
+    if slug == "manage-leave-requests" {
+        return has_permission(permissions, "approve-leave-requests")
+            || has_permission(permissions, "reject-leave-requests");
+    }
+    if slug == "approve-leave-requests" || slug == "reject-leave-requests" {
+        return has_permission(permissions, "manage-leave-requests");
+    }
+    false
+}
+
+fn crud_perm(
+    method: &Method,
+    view: &'static str,
+    create: &'static str,
+    edit: &'static str,
+    delete: &'static str,
+) -> &'static str {
+    match *method {
+        Method::GET | Method::HEAD => view,
+        Method::POST => create,
+        Method::PUT | Method::PATCH => edit,
+        Method::DELETE => delete,
+        _ => view,
+    }
 }
 
 /// Returns required permission slug, or `None` if any authenticated user may access.
@@ -41,27 +71,67 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.starts_with("/api/onboarding/")
         || path.starts_with("/api/admin/settings/profile")
         || path.starts_with("/api/admin/settings/password")
+        || path == "/api/admin/announcements"
     {
+        return None;
+    }
+    if path.starts_with("/api/admin/org-notifications") {
+        if path.ends_with("/upload-banner") && *method == Method::POST {
+            return Some("manage-org-notifications");
+        }
+        if path.ends_with("/sent") && *method == Method::GET {
+            return Some("manage-org-notifications");
+        }
+        if path == "/api/admin/org-notifications" && *method == Method::POST {
+            return Some("manage-org-notifications");
+        }
+        return None;
+    }
+    if path.starts_with("/api/admin/billing") || path.starts_with("/api/admin/kb") {
+        return Some("manage-subscription");
+    }
+    if path.starts_with("/api/admin/support/tickets") {
+        return Some("view-support");
+    }
+    if path == "/api/admin/leave-types" && *method == Method::GET {
         return None;
     }
     if path.starts_with("/api/admin/settings/app") || path.starts_with("/api/admin/settings/centers")
         || path.starts_with("/api/admin/api/settings/centers")
+        || path.starts_with("/api/admin/settings/leave-types")
+        || path.starts_with("/api/admin/settings/leave-policy")
+        || path.starts_with("/api/admin/leave-credits")
     {
         return Some("manage-settings");
     }
-    if path.contains("/leave-requests/manage")
-        || (path.contains("/leave-requests/")
-            && (path.contains("/approve")
-                || path.contains("/reject")
-                || path.contains("/remarks")))
+    if *method == Method::DELETE
+        && path.starts_with("/api/admin/leave-requests/")
+        && !path.contains("/approve")
+        && !path.contains("/reject")
+        && !path.contains("/remarks")
     {
+        return None;
+    }
+    if path.starts_with("/api/admin/payslips/") && path.ends_with("/pdf") && *method == Method::GET {
+        return None;
+    }
+    if path.contains("/leave-requests/") && path.contains("/approve") {
+        return Some("approve-leave-requests");
+    }
+    if path.contains("/leave-requests/") && path.contains("/reject") {
+        return Some("reject-leave-requests");
+    }
+    if path.contains("/leave-requests/manage") {
+        return Some("manage-leave-requests");
+    }
+    if path.contains("/leave-requests/") && path.contains("/remarks") {
         return Some("manage-leave-requests");
     }
     if path.starts_with("/api/admin/dashboard") {
         return Some("view-dashboard");
     }
     if path == "/api/admin/users/list" && method == Method::GET {
-        return None;
+        return Some("view-users");
     }
     if (path == "/api/admin/payroll/preview" || path == "/api/admin/payroll/generate")
         && method == Method::POST
@@ -74,66 +144,213 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.contains("/salary-structure") && method != Method::GET {
         return Some("manage-payroll");
     }
-    if path.starts_with("/api/admin/users") || path.starts_with("/api/admin/roles") {
-        return Some(if method == Method::GET {
-            "view-users"
-        } else {
-            "create-users"
-        });
+    if path.starts_with("/api/admin/roles") {
+        return Some(crud_perm(
+            method,
+            "view-roles",
+            "create-roles",
+            "edit-roles",
+            "delete-roles",
+        ));
+    }
+    if path.starts_with("/api/admin/users") {
+        return Some(crud_perm(
+            method,
+            "view-users",
+            "create-users",
+            "edit-users",
+            "delete-users",
+        ));
     }
     if path.starts_with("/api/admin/permissions") {
-        return Some("view-users");
+        return Some(crud_perm(
+            method,
+            "view-permissions",
+            "create-permissions",
+            "edit-permissions",
+            "delete-permissions",
+        ));
     }
     if path.starts_with("/api/admin/departments") {
-        return Some("view-departments");
+        return Some(crud_perm(
+            method,
+            "view-departments",
+            "create-departments",
+            "edit-departments",
+            "delete-departments",
+        ));
     }
     if path.starts_with("/api/admin/designations") {
-        return Some("view-designations");
+        return Some(crud_perm(
+            method,
+            "view-designations",
+            "create-designations",
+            "edit-designations",
+            "delete-designations",
+        ));
     }
-    if path.starts_with("/api/admin/careers") || path.starts_with("/api/admin/job-applications") {
-        return Some("view-jobs");
+    if path.starts_with("/api/admin/careers") {
+        return Some(crud_perm(
+            method,
+            "view-jobs",
+            "create-jobs",
+            "edit-jobs",
+            "delete-jobs",
+        ));
+    }
+    if path.starts_with("/api/admin/job-applications") {
+        return Some(if *method == Method::GET {
+            "view-jobs"
+        } else {
+            "edit-jobs"
+        });
+    }
+    if path.starts_with("/api/admin/attendance/clock-in")
+        || path.starts_with("/api/admin/attendance/clock-out")
+    {
+        return Some("clock-inout");
     }
     if path.starts_with("/api/admin/biometric") {
-        return Some("view-attendance");
+        return Some(if *method == Method::GET {
+            "view-attendance"
+        } else {
+            "manage-attendance"
+        });
     }
     if path.starts_with("/api/admin/attendance/users") {
         return Some("view-attendance");
     }
     if path.starts_with("/api/admin/attendance") {
-        return Some("view-attendance");
+        // Admin writes (manual entry, edit, delete) require manage-attendance;
+        // reads stay on view-attendance. Self-service clock-in/out is handled above.
+        return Some(if *method == Method::GET {
+            "view-attendance"
+        } else {
+            "manage-attendance"
+        });
     }
     if path.starts_with("/api/admin/shifts") {
-        return Some("view-attendance");
+        return Some(if *method == Method::GET {
+            "view-attendance"
+        } else {
+            "manage-attendance"
+        });
     }
     if path.starts_with("/api/admin/leave-requests") {
+        if *method == Method::GET {
+            return Some("view-leave-requests");
+        }
+        if *method == Method::POST {
+            return Some("create-leave-requests");
+        }
         return Some("manage-leave-requests");
-    }
-    if path.starts_with("/api/admin/me/payslips") {
-        return Some("view-payroll");
     }
     if path.starts_with("/api/admin/me/") {
         return None;
     }
     if path.starts_with("/api/admin/holidays") {
-        return Some("view-holidays");
+        return Some(crud_perm(
+            method,
+            "view-holidays",
+            "create-holidays",
+            "edit-holidays",
+            "delete-holidays",
+        ));
+    }
+    if path.starts_with("/api/admin/reports") {
+        return Some(if *method == Method::GET {
+            "view-reports"
+        } else {
+            "export-reports"
+        });
     }
     if path.starts_with("/api/admin/salaries")
         || path.starts_with("/api/admin/payroll")
         || path.starts_with("/api/admin/payslips")
-        || path.starts_with("/api/admin/reports")
+        || path.contains("/payslips/bulk-download")
     {
-        return Some("view-payroll");
+        if path == "/api/admin/me/payslips" && *method == Method::GET {
+            return Some("view-my-payslips");
+        }
+        return Some(if *method == Method::GET {
+            "view-payroll"
+        } else {
+            "manage-payroll"
+        });
     }
     if path.starts_with("/api/admin/workflows") {
-        return Some("view-workflows");
+        if path.contains("/toggle") {
+            return Some("toggle-workflows");
+        }
+        return Some(crud_perm(
+            method,
+            "view-workflows",
+            "create-workflows",
+            "edit-workflows",
+            "delete-workflows",
+        ));
     }
     if path.starts_with("/api/admin/tasks") {
-        return Some("view-tasks");
+        if path.contains("/status") {
+            return Some("update-task-status");
+        }
+        return Some(crud_perm(
+            method,
+            "view-tasks",
+            "create-tasks",
+            "edit-tasks",
+            "delete-tasks",
+        ));
     }
     if path.starts_with("/api/admin/projects") {
-        return Some("view-projects");
+        return Some(crud_perm(
+            method,
+            "view-projects",
+            "create-projects",
+            "edit-projects",
+            "delete-projects",
+        ));
+    }
+    if path.starts_with("/api/admin/chat") {
+        return Some("view-chat");
     }
     None
+}
+
+/// Check WebSocket access after JWT validation in the handler.
+pub fn ensure_ws_access(
+    conn: &crate::db::Connection,
+    claims: &JwtClaims,
+    path: &str,
+) -> Result<(), String> {
+    let (org_id, is_super_admin) = crate::tenant::verify_tenant_session(conn, claims)?;
+    crate::subscription_period::ensure_org_subscription_enforced(conn, org_id)?;
+
+    let slug = if path.contains("/chat/ws") {
+        "view-chat"
+    } else if path.contains("/biometric/ws") {
+        "view-attendance"
+    } else {
+        return Ok(());
+    };
+
+    let mut perms = load_user_permissions(conn, claims.sub, is_super_admin);
+    if let Some(plan) = crate::plan_limits::load_org_plan(conn, org_id) {
+        perms = crate::plan_limits::apply_plan_to_permissions(perms, &plan);
+    }
+    if !has_permission(&perms, slug) {
+        return Err(format!("Missing permission: {}", slug));
+    }
+    Ok(())
+}
+
+/// Resolve super-admin from DB for handler-level checks.
+pub fn effective_super_admin(
+    conn: &crate::db::Connection,
+    claims: &crate::models::user::JwtClaims,
+    org_id: i64,
+) -> bool {
+    crate::tenant::user_is_super_admin(conn, claims.sub, org_id)
 }
 
 pub async fn rbac_middleware<B>(
@@ -149,20 +366,43 @@ where
         return Ok(res.map_into_right_body());
     }
 
+    // WebSocket and file downloads authenticate via ?token= in the handler.
+    if path.ends_with("/ws") || path.starts_with("/api/admin/files/") {
+        let res = next.call(req).await?;
+        return Ok(res.map_into_right_body());
+    }
+
     let claims = match extract_claims(&req) {
         Ok(c) => c,
         Err(e) => return Err(e),
     };
 
+    let pool = req
+        .app_data::<actix_web::web::Data<DbPool>>()
+        .ok_or_else(|| ErrorForbidden("Server configuration error"))?;
+    let conn = pool
+        .get()
+        .map_err(|_| ErrorForbidden("Database unavailable"))?;
+
+    let (org_id, is_super_admin) = match crate::tenant::verify_tenant_session(&conn, &claims) {
+        Ok(v) => v,
+        Err(msg) => {
+            let body = HttpResponse::Forbidden().json(crate::models::ApiError::new(&msg));
+            return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
+        }
+    };
+
+    if let Err(msg) = crate::subscription_period::ensure_org_subscription_enforced(&conn, org_id) {
+        let body = HttpResponse::Forbidden().json(crate::models::ApiError::new(&msg));
+        return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
+    }
+
     if let Some(slug) = required_permission(req.method(), &path) {
-        let pool = req
-            .app_data::<actix_web::web::Data<DbPool>>()
-            .ok_or_else(|| ErrorForbidden("Server configuration error"))?;
-        let conn = pool
-            .get()
-            .map_err(|_| ErrorForbidden("Database unavailable"))?;
-        let perms = load_user_permissions(&conn, claims.sub, claims.is_super_admin);
-        if !has_permission(&perms, slug) {
+        let mut perms = load_user_permissions(&conn, claims.sub, is_super_admin);
+        if let Some(plan) = crate::plan_limits::load_org_plan(&conn, org_id) {
+            perms = crate::plan_limits::apply_plan_to_permissions(perms, &plan);
+        }
+        if !permission_satisfied(&perms, slug) {
             let body = HttpResponse::Forbidden().json(ApiError::new(&format!(
                 "Missing permission: {}",
                 slug

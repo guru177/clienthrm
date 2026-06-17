@@ -87,7 +87,7 @@ export default function ManageLeaveRequestsPage() {
                 <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
                     <StatCard
                         title="Total Requests"
-                        value={stats?.total_requests || 0}
+                        value={stats?.total ?? stats?.total_requests ?? 0}
                         icon={FileText}
                         iconClassName="text-blue-500"
                     />

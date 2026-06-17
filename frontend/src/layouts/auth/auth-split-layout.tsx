@@ -15,9 +15,9 @@ export default function AuthSplitLayout({
     description,
 }: PropsWithChildren<AuthLayoutProps>) {
     return (
-        <div className="grid min-h-screen lg:grid-cols-2">
+        <div className="grid h-dvh max-h-dvh overflow-hidden lg:grid-cols-2">
             {/* Left Side - Branding/Design (Dark Premium Theme) */}
-            <div className="relative hidden w-[110%] -ml-[10%] -mr-[10%] flex-col justify-between overflow-hidden bg-gradient-to-br from-[#040e1e] via-[#092244] to-[#010815] p-16 text-white lg:flex isolation-auto shadow-[20px_0_30px_-15px_rgba(0,0,0,0.5)] z-10">
+            <div className="relative hidden h-full min-h-0 w-[110%] -ml-[10%] -mr-[10%] flex-col justify-between overflow-hidden bg-gradient-to-br from-[#040e1e] via-[#092244] to-[#010815] p-10 xl:p-16 text-white lg:flex isolation-auto shadow-[20px_0_30px_-15px_rgba(0,0,0,0.5)] z-10">
 
                 <style>
                     {`
@@ -61,9 +61,9 @@ export default function AuthSplitLayout({
                 </div>
 
                 {/* Main Content */}
-                <div className="relative z-10 space-y-10 pl-[8%] max-w-[85%]">
-                    <div className="space-y-4">
-                        <h1 className="text-4xl font-extrabold leading-tight tracking-tight lg:text-[3.25rem] text-white drop-shadow-md">
+                <div className="relative z-10 min-h-0 flex-1 space-y-6 overflow-hidden pl-[8%] max-w-[85%] xl:space-y-10">
+                    <div className="space-y-3 xl:space-y-4">
+                        <h1 className="text-3xl font-extrabold leading-tight tracking-tight xl:text-[3.25rem] text-white drop-shadow-md">
                             Manage Your Workforce
                             <br />
                             Seamlessly
@@ -74,7 +74,7 @@ export default function AuthSplitLayout({
                     </div>
 
                     {/* Features */}
-                    <div className="grid gap-6">
+                    <div className="grid gap-4 xl:gap-6">
                         <div className="flex items-center gap-5">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 shadow-lg border border-white/20 backdrop-blur-md">
                                 <Users className="h-6 w-6 text-blue-200" />
@@ -143,8 +143,9 @@ export default function AuthSplitLayout({
             </div>
 
             {/* Right Side - Form */}
-            <div className="flex items-center justify-center p-8 bg-background">
-                <div className="w-full max-w-md space-y-8">
+            <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-5 sm:px-8 lg:py-6">
+                    <div className="m-auto flex w-full max-w-md flex-col gap-5 py-4">
                     {/* Mobile Logo */}
                     <div className="flex flex-col items-center gap-2 lg:hidden">
                         <Link
@@ -159,8 +160,8 @@ export default function AuthSplitLayout({
                     </div>
 
                     {/* Form Header */}
-                    <div className="space-y-2 text-center lg:text-left">
-                        <h1 className="text-2xl font-bold tracking-tight">
+                    <div className="shrink-0 space-y-1 text-center">
+                        <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
                             {title}
                         </h1>
                         <p className="text-sm text-muted-foreground font-medium">
@@ -169,7 +170,8 @@ export default function AuthSplitLayout({
                     </div>
 
                     {/* Form Content */}
-                    {children}
+                    <div className="w-full">{children}</div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -21,7 +21,7 @@ import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 export default function LeaveRequestsPage() {
     const navigate = useNavigate();
-    const { hasRole, hasPermission } = usePermissions();
+    const { hasPermission } = usePermissions();
     const [stats, setStats] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
@@ -82,7 +82,9 @@ export default function LeaveRequestsPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
-                        {(hasPermission('manage-leave-requests') || hasRole('admin')) && (
+                        {(hasPermission('manage-leave-requests')
+                            || hasPermission('approve-leave-requests')
+                            || hasPermission('reject-leave-requests')) && (
                             <Button
                                 variant="outline"
                                 onClick={() => navigate('/admin/leave-requests/manage')}
@@ -90,10 +92,12 @@ export default function LeaveRequestsPage() {
                                 Manage Requests
                             </Button>
                         )}
+                        {hasPermission('create-leave-requests') && (
                         <Button onClick={() => setShowForm(true)}>
                             <Plus className="h-4 w-4" />
                             New Leave Request
                         </Button>
+                        )}
                     </div>
                 </div>
 
@@ -151,6 +155,7 @@ export default function LeaveRequestsPage() {
             </div>
 
             {/* New Request Dialog */}
+            {hasPermission('create-leave-requests') && (
             <Dialog open={showForm} onOpenChange={setShowForm}>
                 <DialogContent className="max-w-2xl">
                     <DialogHeader>
@@ -165,6 +170,7 @@ export default function LeaveRequestsPage() {
                     />
                 </DialogContent>
             </Dialog>
+            )}
         </AppLayout>
     );
 }

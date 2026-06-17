@@ -193,10 +193,24 @@ fn try_parse_punch(
     let sn: String = conn
         .query_row(
             "SELECT serial_number FROM biometric_devices WHERE ip_address=?1 ORDER BY last_heartbeat DESC LIMIT 1",
-            rusqlite::params![ip],
-            |row| row.get(0),
+            crate::params![ip],
+            |row| row.get_idx::<String>(0),
         )
         .unwrap_or_else(|_| "unknown".into());
+
+    if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+        log::warn!("⛔ [BIO-PARK] Punch ignored — unregistered SN={}", sn);
+        return;
+    }
+
+    if !crate::biometric_device_logic::device_ip_allowed(&conn, &sn, ip) {
+        log::warn!(
+            "⛔ [BIO-PARK] Punch rejected — IP {} does not match registered device SN={}",
+            ip,
+            sn
+        );
+        return;
+    }
 
     let pin = extract_pin_from_payload(payload);
     if pin.is_empty() {
@@ -205,71 +219,21 @@ fn try_parse_punch(
 
     log::info!("  👤 [BIO-PARK] Detected PIN={} from CMD=0x{:04X}", pin, cmd);
 
-    let user_id: Option<i64> = conn
-        .query_row(
-            "SELECT user_id FROM biometric_user_map WHERE device_serial=?1 AND device_pin=?2",
-            rusqlite::params![&sn, &pin],
-            |row| row.get(0),
-        )
-        .ok();
+    let punch_time =
+        crate::handlers::biometric::normalize_punch_timestamp(&punch_time);
 
-    let Some(uid) = user_id else {
-        log::info!("  ⏭️ [BIO-PARK] Unmapped PIN={} on SN={} — punch ignored", pin, sn);
-        return;
-    };
-
-    let exact_dup: bool = conn
-        .query_row(
-            "SELECT 1 FROM biometric_punches
-             WHERE device_serial=?1 AND device_pin=?2 AND punch_time=?3 LIMIT 1",
-            rusqlite::params![&sn, &pin, &punch_time],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if exact_dup {
-        log::info!("  ⏭️ [BIO-PARK] Duplicate punch skipped PIN={} at {}", pin, punch_time);
-        return;
-    }
-
-    let recent_dup: bool = conn
-        .query_row(
-            "SELECT 1 FROM biometric_punches
-             WHERE device_serial=?1 AND device_pin=?2
-               AND punch_time >= datetime(?3, '-60 seconds')
-             LIMIT 1",
-            rusqlite::params![&sn, &pin, &punch_time],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if recent_dup {
-        log::info!("  ⏭️ [BIO-PARK] Near-duplicate punch skipped PIN={}", pin);
-        return;
-    }
-
-    let punch_type = crate::handlers::biometric::next_punch_type(&conn, &sn, &pin);
-
-    if conn
-        .execute(
-            "INSERT INTO biometric_punches (device_serial, device_pin, punch_time, punch_type, verify_method, user_id, is_processed, created_at)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, 0, ?6)",
-            rusqlite::params![&sn, &pin, &punch_time, punch_type, uid, &now],
-        )
-        .is_ok()
-    {
-        let punch_id = conn.last_insert_rowid();
-        crate::handlers::biometric::process_punch_to_attendance(
-            &conn, punch_id, uid, &punch_time, punch_type,
+    if crate::handlers::biometric::store_incoming_punch(
+        &conn, &sn, &pin, &punch_time, 0, 0, &now,
+    ) {
+        events.emit(
+            "punches_received",
+            serde_json::json!({
+                "serial_number": sn,
+                "pin": pin,
+                "count": 1,
+            }),
         );
     }
-
-    events.emit(
-        "punches_received",
-        serde_json::json!({
-            "serial_number": sn,
-            "pin": pin,
-            "count": 1,
-        }),
-    );
 }
 
 /// Try to extract a device timestamp from the binary payload.
@@ -317,20 +281,19 @@ fn extract_pin_from_payload(payload: &[u8]) -> String {
 fn touch_device(pool: &Arc<DbPool>, events: &Arc<BiometricEvents>, sn: &str, ip: &str) {
     if let Ok(conn) = pool.get() {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let _ = conn.execute(
-            "INSERT INTO biometric_devices (serial_number, ip_address, last_heartbeat, is_active, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 1, ?3, ?3)
-             ON CONFLICT(serial_number) DO UPDATE SET ip_address=?2, last_heartbeat=?3, is_active=1, updated_at=?3",
-            rusqlite::params![sn, ip, &now],
-        );
-        events.emit(
-            "device_heartbeat",
-            serde_json::json!({
-                "serial_number": sn,
-                "ip_address": ip,
-                "last_heartbeat": now,
-            }),
-        );
+        if let Some(org_id) =
+            crate::biometric_device_logic::touch_registered_device(&conn, sn, None, Some(ip), &now)
+        {
+            events.emit(
+                "device_heartbeat",
+                serde_json::json!({
+                    "organization_id": org_id,
+                    "serial_number": sn,
+                    "ip_address": ip,
+                    "last_heartbeat": now,
+                }),
+            );
+        }
     }
 }
 

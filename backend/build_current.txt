@@ -1,0 +1,21 @@
+﻿cargo :    Compiling hrm-backend v0.1.0 (C:\Users\ASUS\Pictures\HRM\backend)
+At C:\Users\ASUS\AppData\Local\Temp\ps-script-21dbff60-5f04-4438-81df-4ace2ccb2f36.ps1:90 char:42
++ cd "c:\Users\ASUS\Pictures\HRM\backend"; cargo build 2>&1 | Out-File  ...
++                                          ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling hr...es\HRM\backend):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error: unexpected closing delimiter: `)`
+   --> src\handlers\settings.rs:119:14
+    |
+114 |                     if let Some(rewritten) = rewrite_url(Some(v.to_string())) {
+    |                                                                               - the nearest open delimiter
+115 |                         item.as_object_mut().insert("value".to_string(), 
+serde_json::json!(rewritten))).collect();
+    |                                                                                                       - missing 
+open `(` for this delimiter
+...
+119 |             });
+    |              ^ unexpected closing delimiter
+
+error: could not compile `hrm-backend` (bin "hrm-backend") due to 1 previous error

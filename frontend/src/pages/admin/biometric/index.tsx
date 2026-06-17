@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppLayout from '@/layouts/app-layout';
 import { Button } from '@/components/ui/button';
@@ -43,9 +43,13 @@ import {
     Users,
     Cpu,
     Clock,
+    CircleHelp,
+    Search,
+    Calendar,
+    X,
 } from 'lucide-react';
 import axios from '@/lib/axios';
-import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
 
 interface BiometricDevice {
@@ -105,6 +109,23 @@ const verifyMethodLabel = (method: number) => {
     }
 };
 
+const formatPunchTime = (punchTime: string) => {
+    const iso = punchTime.includes('T') ? punchTime : punchTime.replace(' ', 'T');
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+        return punchTime;
+    }
+    return d.toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+    });
+};
+
 const punchTypeLabel = (type: number) => {
     switch (type) {
         case 0: return { label: 'Check In', color: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' };
@@ -141,6 +162,53 @@ export default function BiometricIndex() {
     const [mapOpen, setMapOpen] = useState(false);
     const [mapForm, setMapForm] = useState({ device_serial: '', device_pin: '', user_id: '' });
     const [mapSaving, setMapSaving] = useState(false);
+
+    // Setup guide dialog
+    const [setupOpen, setSetupOpen] = useState(false);
+
+    // Register device dialog
+    const [registerOpen, setRegisterOpen] = useState(false);
+    const [registerForm, setRegisterForm] = useState({ serial_number: '', name: 'BIO-PARK D01', location: '' });
+    const [registerSaving, setRegisterSaving] = useState(false);
+
+    const [punchSearch, setPunchSearch] = useState('');
+    const [punchDate, setPunchDate] = useState('');
+    const [punchSort, setPunchSort] = useState<'date_desc' | 'date_asc' | 'name_asc' | 'name_desc'>('date_desc');
+
+    const filteredPunches = useMemo(() => {
+        const q = punchSearch.trim().toLowerCase();
+        let list = punches;
+        if (punchDate) {
+            list = list.filter((p) => p.punch_time.slice(0, 10) === punchDate);
+        }
+        if (q) {
+            list = list.filter((p) => {
+                const typeLabel = punchTypeLabel(p.punch_type).label.toLowerCase();
+                const methodLabel = verifyMethodLabel(p.verify_method).label.toLowerCase();
+                return (
+                    (p.user_name?.toLowerCase().includes(q) ?? false) ||
+                    p.device_pin.toLowerCase().includes(q) ||
+                    p.device_serial.toLowerCase().includes(q) ||
+                    p.punch_time.toLowerCase().includes(q) ||
+                    typeLabel.includes(q) ||
+                    methodLabel.includes(q)
+                );
+            });
+        }
+
+        const sorted = [...list];
+        sorted.sort((a, b) => {
+            if (punchSort === 'date_desc' || punchSort === 'date_asc') {
+                const cmp = a.punch_time.localeCompare(b.punch_time);
+                return punchSort === 'date_desc' ? -cmp : cmp;
+            }
+            const aName = (a.user_name || 'Unmapped').toLowerCase();
+            const bName = (b.user_name || 'Unmapped').toLowerCase();
+            const cmp = aName.localeCompare(bName) || a.punch_time.localeCompare(b.punch_time);
+            return punchSort === 'name_asc' ? cmp : -cmp;
+        });
+        return sorted;
+    }, [punches, punchSearch, punchDate, punchSort]);
 
     useEffect(() => {
         loadAll();
@@ -271,6 +339,30 @@ export default function BiometricIndex() {
         }
     };
 
+    const handleRegisterDevice = async () => {
+        const sn = registerForm.serial_number.trim();
+        if (!sn || sn.toLowerCase() === 'unknown') {
+            handleApiError(new Error('Enter the real serial number from the device (Menu → System → Device Info).'));
+            return;
+        }
+        setRegisterSaving(true);
+        try {
+            await axios.post('/admin/biometric/devices', {
+                serial_number: sn,
+                name: registerForm.name.trim() || 'BIO-PARK D01',
+                location: registerForm.location.trim(),
+            });
+            showToast({ type: 'success', message: 'Device registered — reboot the device to connect.' });
+            setRegisterOpen(false);
+            setRegisterForm({ serial_number: '', name: 'BIO-PARK D01', location: '' });
+            await loadDevices();
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setRegisterSaving(false);
+        }
+    };
+
     const breadcrumbs = [{ label: 'Biometric Devices', href: '/admin/biometric' }];
 
     if (loading) {
@@ -323,9 +415,17 @@ export default function BiometricIndex() {
                                 />
                                 {liveConnected ? 'Live' : 'Reconnecting…'}
                             </Badge>
+                            <Button variant="outline" size="sm" onClick={() => setSetupOpen(true)}>
+                                <CircleHelp className="mr-2 h-4 w-4" />
+                                How to Connect
+                            </Button>
                             <Button variant="outline" size="sm" onClick={refreshAll} disabled={refreshing}>
                                 <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
                                 Refresh
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => setRegisterOpen(true)}>
+                                <Plus className="mr-2 h-4 w-4" />
+                                Register Device
                             </Button>
                             <Button size="sm" onClick={() => setMapOpen(true)}>
                                 <Plus className="mr-2 h-4 w-4" />
@@ -334,55 +434,6 @@ export default function BiometricIndex() {
                         </div>
                     </div>
                 </div>
-
-                {/* BIO-PARK D01 setup */}
-                <Card className="border-blue-200/60 bg-blue-50/40 dark:bg-blue-950/20 dark:border-blue-800/40">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-base flex items-center gap-2">
-                            <Wifi className="h-4 w-4 text-blue-600" />
-                            Connect BIO-PARK D01 to Raintech HRM
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4 text-sm">
-                        <p className="text-muted-foreground">
-                            Your device uses the <strong>iClock / ADMS</strong> protocol. It must reach this app&apos;s
-                            backend on the <strong>same network</strong> (e.g. INFOPARK Wi‑Fi). The device cannot use
-                            <code className="mx-1 bg-muted px-1 rounded">data.etimeoffice</code> — point it to your PC/server instead.
-                        </p>
-                        <ol className="list-decimal list-inside space-y-2 text-muted-foreground">
-                            <li>
-                                Start the backend (API on <strong>3001</strong>, device port <strong>7788</strong> automatically):
-                                <pre className="mt-1 rounded-md bg-muted p-2 text-xs overflow-x-auto">{`cd backend
-cargo run`}</pre>
-                                <span className="text-xs">Your <code>.env</code> should have <code>HOST=0.0.0.0</code> and <code>BIOMETRIC_PORT=7788</code> to match <em>SerPortNo</em> on the device.</span>
-                            </li>
-                            <li>
-                                Find your PC&apos;s LAN IP (same subnet as the device, e.g. <code>172.16.1.x</code>):
-                                run <code className="bg-muted px-1 rounded">ipconfig</code> in PowerShell.
-                            </li>
-                            <li>
-                                On the device: <strong>Menu → Server</strong> (as in your photo):
-                                <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
-                                    <li><strong>Server Req:</strong> Yes</li>
-                                    <li><strong>Use domainNm:</strong> <span className="text-destructive font-medium">No</span> (turn off cloud domain)</li>
-                                    <li><strong>Server IP:</strong> your PC IP (not 8.219.14.147)</li>
-                                    <li><strong>SerPortNo:</strong> 7788 (or 3001 if you changed backend port)</li>
-                                    <li><strong>Heartbeat:</strong> 3</li>
-                                </ul>
-                            </li>
-                            <li>Save and reboot the device. It will call <code className="bg-muted px-1 rounded">GET /iclock/cdata?SN=…</code> and auto‑register under the <strong>Devices</strong> tab.</li>
-                            <li>
-                                Enroll employees on the device (each gets a <strong>PIN</strong>). In HRM: <strong>Map PIN</strong> → link PIN to employee.
-                                Punches then appear in <strong>Punch Log</strong> and update <strong>Attendance</strong>.
-                            </li>
-                        </ol>
-                        <p className="text-xs text-muted-foreground">
-                            The device connects via HTTP every few minutes (not a true WebSocket). This page uses a{' '}
-                            <strong>Live</strong> WebSocket to the app so punches and heartbeats appear instantly when the device syncs.
-                            Delete test rows (127.0.0.1 / LAN_TEST) and keep only your real device serial from the device menu.
-                        </p>
-                    </CardContent>
-                </Card>
 
                 {/* Stats Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -446,12 +497,71 @@ cargo run`}</pre>
                     <TabsContent value="punches">
                         <Card>
                             <CardHeader>
-                                <CardTitle className="text-base">Recent Punch Records</CardTitle>
+                                <div className="flex flex-col gap-4">
+                                    <CardTitle className="text-base">
+                                        Recent Punch Records
+                                        {punches.length > 0 && (
+                                            <span className="ml-2 text-sm font-normal text-muted-foreground">
+                                                ({filteredPunches.length} of {punches.length})
+                                            </span>
+                                        )}
+                                    </CardTitle>
+                                    {punches.length > 0 && (
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                                            <div className="relative w-full sm:flex-1 sm:max-w-sm">
+                                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                                <Input
+                                                    placeholder="Search employee, PIN, device..."
+                                                    value={punchSearch}
+                                                    onChange={(e) => setPunchSearch(e.target.value)}
+                                                    className="pl-8"
+                                                />
+                                            </div>
+                                            <div className="relative w-full sm:w-[180px]">
+                                                <Calendar className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                                                <Input
+                                                    type="date"
+                                                    value={punchDate}
+                                                    onChange={(e) => setPunchDate(e.target.value)}
+                                                    className="pl-8"
+                                                    title="Filter by day"
+                                                />
+                                            </div>
+                                            {punchDate && (
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="w-full sm:w-auto"
+                                                    onClick={() => setPunchDate('')}
+                                                >
+                                                    <X className="mr-1.5 h-3.5 w-3.5" />
+                                                    All dates
+                                                </Button>
+                                            )}
+                                            <Select value={punchSort} onValueChange={(v) => setPunchSort(v as typeof punchSort)}>
+                                                <SelectTrigger className="w-full sm:w-[200px]">
+                                                    <SelectValue placeholder="Sort by" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="date_desc">Date (newest first)</SelectItem>
+                                                    <SelectItem value="date_asc">Date (oldest first)</SelectItem>
+                                                    <SelectItem value="name_asc">Name (A–Z)</SelectItem>
+                                                    <SelectItem value="name_desc">Name (Z–A)</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    )}
+                                </div>
                             </CardHeader>
                             <CardContent>
                                 {punches.length === 0 ? (
                                     <p className="text-center text-muted-foreground py-8">
                                         No punches received yet. Connect your BIO-PARK device to start receiving data.
+                                    </p>
+                                ) : filteredPunches.length === 0 ? (
+                                    <p className="text-center text-muted-foreground py-8">
+                                        No punches found for the selected date or search.
                                     </p>
                                 ) : (
                                     <div className="overflow-x-auto">
@@ -467,17 +577,13 @@ cargo run`}</pre>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {punches.slice(0, 50).map((punch) => {
+                                                {filteredPunches.map((punch) => {
                                                     const pType = punchTypeLabel(punch.punch_type);
                                                     const vMethod = verifyMethodLabel(punch.verify_method);
                                                     return (
                                                         <TableRow key={punch.id}>
                                                             <TableCell className="font-mono text-sm">
-                                                                {new Date(punch.punch_time).toLocaleString('en-IN', {
-                                                                    day: '2-digit', month: 'short',
-                                                                    hour: '2-digit', minute: '2-digit', second: '2-digit',
-                                                                    hour12: true,
-                                                                })}
+                                                                {formatPunchTime(punch.punch_time)}
                                                             </TableCell>
                                                             <TableCell>
                                                                 <Badge variant="outline" className="font-mono">{punch.device_pin}</Badge>
@@ -579,8 +685,12 @@ cargo run`}</pre>
                                             No devices registered yet.
                                         </p>
                                         <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                                            Configure Server IP on the device (see setup guide above). It auto-registers on first heartbeat at <code className="bg-muted px-1 rounded">/iclock/cdata</code>.
+                                            Click <strong>Register Device</strong> with the serial from the device menu, then point the device to this PC&apos;s IP on port 7788.
                                         </p>
+                                        <Button size="sm" className="mt-2" onClick={() => setRegisterOpen(true)}>
+                                            <Plus className="mr-2 h-4 w-4" />
+                                            Register Device
+                                        </Button>
                                     </div>
                                 ) : (
                                     <div className="grid gap-4">
@@ -621,6 +731,110 @@ cargo run`}</pre>
                     </TabsContent>
                 </Tabs>
             </div>
+
+            {/* BIO-PARK setup guide */}
+            <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Wifi className="h-4 w-4 text-blue-600" />
+                            Connect BIO-PARK D01 to Raintech HRM
+                        </DialogTitle>
+                        <DialogDescription>
+                            Step-by-step setup for iClock / ADMS devices on your local network.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 text-sm">
+                        <p className="text-muted-foreground">
+                            Your device uses the <strong>iClock / ADMS</strong> protocol. It must reach this app&apos;s
+                            backend on the <strong>same network</strong> (e.g. INFOPARK Wi‑Fi). The device cannot use
+                            <code className="mx-1 bg-muted px-1 rounded">data.etimeoffice</code> — point it to your PC/server instead.
+                        </p>
+                        <ol className="list-decimal list-inside space-y-3 text-muted-foreground">
+                            <li>
+                                Start the backend (API on <strong>3001</strong>, device port <strong>7788</strong> automatically):
+                                <pre className="mt-1 rounded-md bg-muted p-2 text-xs overflow-x-auto">{`cd backend
+cargo run`}</pre>
+                                <span className="text-xs">Your <code>.env</code> should have <code>HOST=0.0.0.0</code> and <code>BIOMETRIC_PORT=7788</code> to match <em>SerPortNo</em> on the device.</span>
+                            </li>
+                            <li>
+                                Find your PC&apos;s LAN IP (same subnet as the device, e.g. <code>172.16.1.x</code>):
+                                run <code className="bg-muted px-1 rounded">ipconfig</code> in PowerShell.
+                            </li>
+                            <li>
+                                On the device: <strong>Menu → Server</strong>:
+                                <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
+                                    <li><strong>Server Req:</strong> Yes</li>
+                                    <li><strong>Use domainNm:</strong> <span className="text-destructive font-medium">No</span> (turn off cloud domain)</li>
+                                    <li><strong>Server IP:</strong> your PC IP (not 8.219.14.147)</li>
+                                    <li><strong>SerPortNo:</strong> 7788 (or 3001 if you changed backend port)</li>
+                                    <li><strong>Heartbeat:</strong> 3</li>
+                                </ul>
+                            </li>
+                            <li>
+                                On the device: <strong>Menu → System → Device Info</strong> — note the <strong>Serial Number</strong>.
+                                In HRM click <strong>Register Device</strong> and enter that exact SN <em>before</em> rebooting.
+                            </li>
+                            <li>Save server settings and reboot the device. It should show <strong>online</strong> (green dot) within a few minutes.</li>
+                            <li>
+                                Enroll employees on the device (each gets a <strong>PIN</strong>). In HRM: <strong>Map PIN</strong> → link PIN to employee.
+                                Punches then appear in <strong>Punch Log</strong> and update <strong>Attendance</strong>.
+                            </li>
+                        </ol>
+                        <p className="text-xs text-muted-foreground">
+                            The device connects via HTTP every few minutes (not a true WebSocket). This page uses a{' '}
+                            <strong>Live</strong> WebSocket to the app so punches and heartbeats appear instantly when the device syncs.
+                            Delete wrong entries (e.g. SN <code>unknown</code> or old test devices). Only keep the row whose SN matches the device exactly.
+                        </p>
+                    </div>
+                    <DialogFooter>
+                        <Button onClick={() => setSetupOpen(false)}>Got it</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Register Device Dialog */}
+            <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Register Biometric Device</DialogTitle>
+                        <DialogDescription>
+                            Enter the serial number from the device (Menu → System → Device Info). It must match exactly or punches will be ignored.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <Label>Serial Number *</Label>
+                            <Input
+                                placeholder="e.g. D01A1B2C3D4"
+                                value={registerForm.serial_number}
+                                onChange={(e) => setRegisterForm({ ...registerForm, serial_number: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Display Name</Label>
+                            <Input
+                                value={registerForm.name}
+                                onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Location (optional)</Label>
+                            <Input
+                                placeholder="e.g. Main entrance"
+                                value={registerForm.location}
+                                onChange={(e) => setRegisterForm({ ...registerForm, location: e.target.value })}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setRegisterOpen(false)}>Cancel</Button>
+                        <Button onClick={handleRegisterDevice} disabled={registerSaving}>
+                            {registerSaving ? 'Saving…' : 'Register'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Add Mapping Dialog */}
             <Dialog open={mapOpen} onOpenChange={setMapOpen}>

@@ -65,7 +65,7 @@ pub struct UpdateTaskStatusRequest {
 }
 
 impl Task {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
             title: row.get("title")?,
@@ -75,7 +75,7 @@ impl Task {
             assigned_to: row.get("assigned_to")?,
             project_id: row.get("project_id")?,
             due_date: row.get("due_date")?,
-            development_type: row.get::<_, Option<String>>("type").ok().flatten(),
+            development_type: row.get::<Option<String>>("type").ok().flatten(),
             created_by: row.get("created_by")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,

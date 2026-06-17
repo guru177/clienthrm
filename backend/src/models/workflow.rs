@@ -25,7 +25,7 @@ pub struct CreateWorkflowRequest {
 }
 
 impl Workflow {
-    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         let actions_str: Option<String> = row.get("actions")?;
         let actions = actions_str.and_then(|s| serde_json::from_str(&s).ok());
         let trigger_conditions_str: Option<String> = row.get("trigger_conditions")?;
@@ -38,7 +38,7 @@ impl Workflow {
             trigger_type: row.get("trigger_type")?,
             trigger_conditions,
             actions,
-            is_active: row.get::<_, Option<bool>>("is_active")?.unwrap_or(false),
+            is_active: row.get::<Option<bool>>("is_active")?.unwrap_or(false),
             execution_count: row.get("execution_count")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,

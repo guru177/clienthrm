@@ -5,6 +5,7 @@ use crate::db::DbPool;
 use crate::leave_type_logic::{load_all, payment_type_label, LeaveTypeConfig};
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 fn type_json(t: &LeaveTypeConfig) -> serde_json::Value {
     serde_json::json!({
@@ -20,15 +21,16 @@ fn type_json(t: &LeaveTypeConfig) -> serde_json::Value {
 
 /// GET /api/admin/leave-types — active types for forms
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let items: Vec<_> = crate::leave_type_logic::load_active(&conn)
+    let items: Vec<_> = crate::leave_type_logic::load_active(&conn, org_id)
         .iter()
         .map(type_json)
         .collect();
@@ -37,15 +39,16 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 
 /// GET /api/admin/settings/leave-types — all types for admin config
 pub async fn settings_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let items: Vec<_> = load_all(&conn).iter().map(type_json).collect();
+    let items: Vec<_> = load_all(&conn, org_id).iter().map(type_json).collect();
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -88,10 +91,11 @@ pub async fn store(
     req: HttpRequest,
     body: web::Json<StoreLeaveTypeRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     if body.name.trim().is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new("Name is required"));
     }
@@ -110,8 +114,8 @@ pub async fn store(
     };
     let exists: bool = conn
         .query_row(
-            "SELECT 1 FROM leave_types WHERE slug=?1",
-            [&slug],
+            "SELECT 1 FROM leave_types WHERE slug=?1 AND organization_id = ?2",
+            crate::params![slug, org_id],
             |_| Ok(()),
         )
         .is_ok();
@@ -126,9 +130,9 @@ pub async fn store(
     };
     let active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
     match conn.execute(
-        "INSERT INTO leave_types (slug, name, payment_type, counts_toward_quota, is_active, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?6)",
-        rusqlite::params![slug, body.name.trim(), payment_type, quota, active, &now],
+        "INSERT INTO leave_types (organization_id, slug, name, payment_type, counts_toward_quota, is_active, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+        crate::params![org_id, slug, body.name.trim(), payment_type, quota, active, &now],
     ) {
         Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
             "id": conn.last_insert_rowid(),
@@ -144,10 +148,11 @@ pub async fn update(
     path: web::Path<i64>,
     body: web::Json<UpdateLeaveTypeRequest>,
 ) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
@@ -155,9 +160,9 @@ pub async fn update(
     };
     let current: Option<(String, String, i64, i64)> = conn
         .query_row(
-            "SELECT name, payment_type, counts_toward_quota, is_active FROM leave_types WHERE id=?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            "SELECT name, payment_type, counts_toward_quota, is_active FROM leave_types WHERE id=?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |row| Ok((row.get_idx::<String>(0)?, row.get_idx::<String>(1)?, row.get_idx::<i64>(2)?, row.get_idx::<i64>(3)?)),
         )
         .ok();
     let Some((cur_name, cur_payment, cur_quota, cur_active)) = current else {
@@ -186,8 +191,9 @@ pub async fn update(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     match conn.execute(
-        "UPDATE leave_types SET name=?1, payment_type=?2, counts_toward_quota=?3, is_active=?4, updated_at=?5 WHERE id=?6",
-        rusqlite::params![name, payment_type, quota, active, &now, id],
+        "UPDATE leave_types SET name=?1, payment_type=?2, counts_toward_quota=?3, is_active=?4, updated_at=?5
+         WHERE id=?6 AND organization_id = ?7",
+        crate::params![name, payment_type, quota, active, &now, id, org_id],
     ) {
         Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"updated": true}))),
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Leave type not found")),

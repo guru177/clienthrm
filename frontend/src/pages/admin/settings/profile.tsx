@@ -69,10 +69,7 @@ export default function Profile() {
         try {
             const formData = new FormData();
             formData.append('photo', photoFile);
-            formData.append('_method', 'PATCH');
-            formData.append('name', user?.name || '');
-            formData.append('email', user?.email || '');
-            const response = await axios.post('/admin/settings/profile', formData, {
+            const response = await axios.post('/admin/settings/profile/photo', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             handleApiResponse(response);

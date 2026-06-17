@@ -1,4 +1,4 @@
-# API input flow test — same payloads the UI sends
+# API input flow test - same payloads the UI sends
 $Base = "http://localhost:5174/api"
 $Email = "admin@mashuptech.in"
 $Password = "password"
@@ -8,7 +8,8 @@ $Created = @{ departments = @(); designations = @(); holidays = @(); tasks = @()
 
 function Log($Module, $Step, $Status, $Detail = "") {
     $script:Results += [pscustomobject]@{ Module = $Module; Step = $Step; Status = $Status; Detail = $Detail }
-    Write-Host "[$Status] $Module — $Step $(if ($Detail) { "($Detail)" })"
+    $extra = if ($Detail) { " ($Detail)" } else { "" }
+    Write-Host "[$Status] $Module - $Step$extra"
 }
 
 function Api($Method, $Path, $Body, $Token) {
@@ -25,13 +26,14 @@ function Api($Method, $Path, $Body, $Token) {
     }
 }
 
-Write-Host "=== API Input Flow Test ===`n"
+Write-Host "=== API Input Flow Test ==="
+Write-Host ""
 $login = Api POST "/auth/login" @{ email = $Email; password = $Password } $null
 if (-not $login.Ok) { Write-Host "Login failed"; exit 1 }
 $token = $login.Json.data.token
 Log "Auth" "Login" "OK"
 
-# Attendance: clock in → today → clock out
+# Attendance: clock in, today, clock out
 $cin = Api POST "/admin/attendance/clock-in" @{ face_verified = $false; face_match_score = $null } $token
 Log "Attendance" "Clock in (no face)" $(if ($cin.Ok) { "OK" } else { "FAIL" }) $cin.Code
 $today = Api GET "/admin/attendance/today" $null $token
@@ -51,13 +53,17 @@ $desName = "API Desig $Ts"
 $des = Api POST "/admin/designations" @{ name = $desName; description = "test"; is_active = $true } $token
 if ($des.Ok) { Log "Designations" "Create" "OK" $desName } else { Log "Designations" "Create" "FAIL" $des.Code }
 
+$holDate = (Get-Date).AddDays(3650 + ($Ts % 3000)).ToString('yyyy-MM-dd')
+$lvStart = (Get-Date).AddDays(3660 + ($Ts % 3000)).ToString('yyyy-MM-dd')
+$lvEnd = (Get-Date).AddDays(3662 + ($Ts % 3000)).ToString('yyyy-MM-dd')
+
 # Holiday
-$hol = Api POST "/admin/holidays" @{ name = "API Hol $Ts"; date = "2099-07-04"; is_paid = $true; description = "test" } $token
+$hol = Api POST "/admin/holidays" @{ name = "API Hol $Ts"; date = $holDate; is_paid = $true; description = "test" } $token
 if ($hol.Ok) { Log "Holidays" "Create" "OK" } else { Log "Holidays" "Create" "FAIL" $hol.Code }
 
 # Leave request
 $lv = Api POST "/admin/leave-requests" @{
-    leave_type = "annual"; start_date = "2099-08-01"; end_date = "2099-08-03"; reason = "API flow test"
+    leave_type = "annual"; start_date = $lvStart; end_date = $lvEnd; reason = "API flow test"
 } $token
 if ($lv.Ok) { Log "Leave" "Submit request" "OK" } else { Log "Leave" "Submit" "FAIL" $lv.Code }
 
@@ -77,7 +83,7 @@ if ($wf.Ok) { Log "Workflows" "Create" "OK" } else { Log "Workflows" "Create" "F
 
 # Project
 $pr = Api POST "/admin/projects" @{
-    name = "API Proj $Ts"; description = "d"; status = "active"; priority = "medium"
+    name = "API Proj $Ts"; description = "d"; status = "planning"; priority = "medium"
 } $token
 if ($pr.Ok) { Log "Projects" "Create" "OK" } else { Log "Projects" "Create" "FAIL" $pr.Code }
 
@@ -100,7 +106,23 @@ if ($emps.Ok -and $emps.Json.data -and $emps.Json.data.Count -gt 0) { $ids = @($
 $prev = Api POST "/admin/payroll/preview" @{ month = $now.Month; year = $now.Year; employee_ids = $ids } $token
 Log "Payroll" "Preview with employee_ids" $(if ($prev.Ok) { "OK" } else { "FAIL" }) ""
 
-Write-Host "`n--- Done ---"
+# Org notification (company admin → employees)
+$notif = Api POST "/admin/org-notifications" @{
+    title = "API Notif $Ts"
+    body = "Automated flow test notification"
+    severity = "info"
+    audience = "all"
+    target_id = $null
+    image_url = $null
+} $token
+Log "Notifications" "Send org notification" $(if ($notif.Ok) { "OK" } else { "FAIL" }) $notif.Code
+$inbox = Api GET "/admin/org-notifications" $null $token
+Log "Notifications" "Inbox list" $(if ($inbox.Ok) { "OK" } else { "FAIL" }) ""
+$sent = Api GET "/admin/org-notifications/sent" $null $token
+Log "Notifications" "Sent history" $(if ($sent.Ok) { "OK" } else { "FAIL" }) ""
+
+Write-Host ""
+Write-Host "--- Done ---"
 $Results | Format-Table -AutoSize
-$fails = @($Results | Where-Object Status -eq "FAIL")
+$fails = @($Results | Where-Object { $_.Status -eq 'FAIL' })
 exit $(if ($fails.Count -gt 0) { 1 } else { 0 })

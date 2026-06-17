@@ -1,9 +1,11 @@
 // Head removed - use document.title instead
 import axios from '@/lib/axios';
 import { Users, Plus, UserCheck, UserX, Ban, Shield, Key } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 import RoleTable from '@/components/roles/role-table';
+import { fetchRolesList, type Role } from '@/lib/roles-api';
+import { fetchPermissionsPayload, type Permission, type PermissionModule } from '@/lib/permissions-api';
 import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,9 +27,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import UserTable from '@/components/users/user-table';
 import AppLayout from '@/layouts/app-layout';
-import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { usePermissions } from '@/hooks/use-permissions';
+import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 
 export default function UsersIndex() {
+    const { hasPermission } = usePermissions();
     const [refreshKey, setRefreshKey] = useState(0);
     const [activeTab, setActiveTab] = useState('users');
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -50,17 +54,48 @@ export default function UsersIndex() {
     });
     const [roleStats, setRoleStats] = useState({
         total: 0,
+        permissions_total: 0,
     });
-    const [roles, setRoles] = useState<any[]>([]);
-    const [permissions, setPermissions] = useState<any[]>([]);
+    const [permissions, setPermissions] = useState<Permission[]>([]);
+    const [permissionModules, setPermissionModules] = useState<PermissionModule[]>([]);
+    const [rolesList, setRolesList] = useState<Role[]>([]);
+    const [rolesLoading, setRolesLoading] = useState(false);
+
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('tab') === 'roles') {
+            setActiveTab('roles');
+        }
+    }, []);
+
+    const loadRolesList = useCallback(async () => {
+        setRolesLoading(true);
+        try {
+            const items = await fetchRolesList();
+            setRolesList(items);
+        } catch (error) {
+            handleApiError(error);
+            setRolesList([]);
+        } finally {
+            setRolesLoading(false);
+        }
+    }, []);
 
     useEffect(() => {
         fetchStats();
         if (activeTab === 'roles') {
-            fetchRoles();
-            fetchRoleStats();
+            void loadRolesList();
+            void fetchRoleStats();
         }
-    }, [refreshKey, activeTab]);
+    }, [activeTab, refreshKey, loadRolesList]);
+
+    const handleTabChange = (value: string) => {
+        setActiveTab(value);
+        if (value === 'roles') {
+            void loadRolesList();
+            void fetchRoleStats();
+        }
+    };
 
     const fetchStats = async () => {
         try {
@@ -84,23 +119,11 @@ export default function UsersIndex() {
         }
     };
 
-    const fetchRoles = async () => {
-        try {
-            const response = await axios.get('/admin/roles/list');
-            if (response.data.success) {
-                setRoles(response.data.data);
-            }
-        } catch (error) {
-            handleApiError(error);
-        }
-    };
-
     const fetchPermissions = async () => {
         try {
-            const response = await axios.get('/admin/permissions');
-            if (response.data.success) {
-                setPermissions(response.data.data);
-            }
+            const payload = await fetchPermissionsPayload();
+            setPermissions(payload.permissions);
+            setPermissionModules(payload.modules);
         } catch (error) {
             handleApiError(error);
         }
@@ -141,7 +164,7 @@ export default function UsersIndex() {
                                 </p>
                             </div>
                         </div>
-                        {activeTab === 'users' && (
+                        {activeTab === 'users' && hasPermission('create-users') && (
                             <Button
                                 onClick={() => setShowCreateModal(true)}
                                 className="shrink-0 bg-gradient-to-r from-[#071b3a] to-[#0d4a8a] hover:from-[#040f22] hover:to-[#0a3272] text-white shadow-md shadow-blue-500/25 dark:shadow-blue-900/40 rounded-xl gap-2"
@@ -153,7 +176,7 @@ export default function UsersIndex() {
                     </div>
                 </div>
 
-                <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <Tabs value={activeTab} onValueChange={handleTabChange}>
                     {/* Glassy pill tabs */}
                     <TabsList className="bg-white/60 dark:bg-white/5 backdrop-blur-sm border border-white/80 dark:border-white/10 shadow-sm rounded-xl h-11 p-1 gap-1">
                         <TabsTrigger
@@ -224,19 +247,22 @@ export default function UsersIndex() {
                             />
                             <StatCard
                                 title="Permissions"
-                                value={permissions.length}
-                                description="Available permissions"
+                                value={roleStats.permissions_total || permissions.length}
+                                description="Permissions in your plan modules"
                                 icon={Key}
                             />
                         </div>
 
                         {/* Roles Table */}
                         <RoleTable
-                            initialRoles={roles}
+                            roles={rolesList}
+                            rolesLoading={rolesLoading}
                             allPermissions={permissions}
+                            permissionModules={permissionModules}
                             onRoleUpdated={() => {
-                                fetchRoles();
-                                fetchRoleStats();
+                                void loadRolesList();
+                                void fetchRoleStats();
+                                setRefreshKey((prev) => prev + 1);
                             }}
                         />
                     </TabsContent>
@@ -260,7 +286,33 @@ export default function UsersIndex() {
                             setErrors({});
 
                             try {
-                                const response = await axios.post('/admin/users', createForm);
+                                if (!createForm.name.trim()) {
+                                    setErrors({ name: ['Name is required'] });
+                                    return;
+                                }
+                                if (!createForm.email.trim()) {
+                                    setErrors({ email: ['Email is required'] });
+                                    return;
+                                }
+                                if (createForm.password.length < 8) {
+                                    setErrors({ password: ['Password must be at least 8 characters'] });
+                                    return;
+                                }
+                                if (createForm.password !== createForm.password_confirmation) {
+                                    showToast({ type: 'error', message: 'Password confirmation does not match' });
+                                    return;
+                                }
+
+                                const payload = {
+                                    name: createForm.name.trim(),
+                                    email: createForm.email.trim(),
+                                    password: createForm.password,
+                                    password_confirmation: createForm.password_confirmation,
+                                    status: createForm.status,
+                                    employee_id: createForm.employee_id.trim() || undefined,
+                                    phone: createForm.phone.trim() || undefined,
+                                };
+                                const response = await axios.post('/admin/users', payload);
                                 handleApiResponse(response);
                                 if (response.data.success) {
                                     setShowCreateModal(false);

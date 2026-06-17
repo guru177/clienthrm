@@ -3,7 +3,7 @@ import {
     Banknote,
     Users, CalendarCheck, Calendar, Star,
     ChevronDown, ChevronRight, Check, Plus, Trash2,
-    Building2, MapPin, LayoutGrid, Loader2, X
+    Building2, MapPin, LayoutGrid, Loader2, X, Download
 } from 'lucide-react';
 import { useEffect, useState, useCallback } from 'react';
 import axios from '@/lib/axios';
@@ -27,7 +27,9 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import AppLayout from '@/layouts/app-layout';
+import { downloadBulkPayslipsZip, openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { usePermissions } from '@/hooks/use-permissions';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface SalaryComponent {
@@ -293,12 +295,14 @@ function PreviewPopup({
     year,
     onGenerate,
     onClose,
+    canManagePayroll,
 }: {
     previews: any[];
     month: number;
     year: number;
     onGenerate: () => void;
     onClose: () => void;
+    canManagePayroll: boolean;
 }) {
     const [generating, setGenerating] = useState(false);
     const [commonAdjs, setCommonAdjs] = useState<CommonAdjustment[]>([]);
@@ -512,11 +516,13 @@ function PreviewPopup({
 
                 <div className="flex justify-between items-center pt-2 border-t">
                     <Button variant="outline" onClick={onClose}>Cancel</Button>
-                    <Button onClick={handleGenerate} disabled={generating} size="lg">
+                    <Button onClick={handleGenerate} disabled={generating || !canManagePayroll} size="lg">
                         {generating ? (
                             <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating...</>
-                        ) : (
+                        ) : canManagePayroll ? (
                             <>Generate Payroll ({previews.length} employees)</>
+                        ) : (
+                            <>Generate Payroll (permission required)</>
                         )}
                     </Button>
                 </div>
@@ -534,6 +540,8 @@ function EmployeeListPanel({
     onToggle,
     onToggleAll,
     onOpenSalary,
+    onDownloadPayslip,
+    downloadingPayslipId,
 }: {
     employees: Employee[];
     loading: boolean;
@@ -542,6 +550,8 @@ function EmployeeListPanel({
     onToggle: (id: number) => void;
     onToggleAll: (checked: boolean) => void;
     onOpenSalary: (emp: Employee) => void;
+    onDownloadPayslip: (payslipId: number) => void;
+    downloadingPayslipId: number | null;
 }) {
     const allChecked = employees.length > 0 && employees.every(e => checkedIds.has(e.id));
     const someUnchecked = employees.some(e => !checkedIds.has(e.id));
@@ -588,7 +598,7 @@ function EmployeeListPanel({
                         </div>
                     </div>
                 </button>
-                <div className="text-right shrink-0">
+                <div className="text-right shrink-0 flex flex-col items-end gap-1">
                     {net != null ? (
                         <>
                             <div className="text-sm font-semibold text-primary">{fmt(net)}</div>
@@ -600,6 +610,22 @@ function EmployeeListPanel({
                         </>
                     ) : (
                         <span className="text-xs text-muted-foreground">No structure</span>
+                    )}
+                    {emp.payslip_status === 'generated' && emp.payslip_id && (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1 text-xs"
+                            disabled={downloadingPayslipId === emp.payslip_id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onDownloadPayslip(emp.payslip_id!);
+                            }}
+                        >
+                            <Download className="h-3 w-3" />
+                            {downloadingPayslipId === emp.payslip_id ? '…' : 'PDF'}
+                        </Button>
                     )}
                 </div>
             </div>
@@ -686,6 +712,8 @@ function EmployeeListPanel({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function PayrollPage() {
+    const { hasPermission } = usePermissions();
+    const canManagePayroll = hasPermission('manage-payroll');
     const [month, setMonth] = useState(new Date().getMonth() + 1);
     const [year, setYear] = useState(new Date().getFullYear());
 
@@ -713,6 +741,8 @@ export default function PayrollPage() {
     const [showPreview, setShowPreview] = useState(false);
     const [previewData, setPreviewData] = useState<any[]>([]);
     const [proceeding, setProceeding] = useState(false);
+    const [downloadingPayslipId, setDownloadingPayslipId] = useState<number | null>(null);
+    const [bulkDownloading, setBulkDownloading] = useState(false);
 
     // Fetch stats
     const fetchStats = useCallback(async () => {
@@ -754,7 +784,7 @@ export default function PayrollPage() {
                 const emps: Employee[] = r.data.data;
                 setEmployees(emps);
                 // Auto-check all newly loaded employees
-                setCheckedIds(new Set(emps.map(e => e.id)));
+                setCheckedIds(new Set(emps.map((e) => e.id)));
             }
         } catch (e) { handleApiError(e); }
         finally { setLoadingEmployees(false); }
@@ -799,6 +829,36 @@ export default function PayrollPage() {
 
     const handleSaveAdj = (empId: number, adjs: Adjustment[]) => {
         setAdjustments(prev => ({ ...prev, [empId]: adjs }));
+    };
+
+    const generatedPayslipIds = employees
+        .filter((e) => e.payslip_status === 'generated' && e.payslip_id)
+        .map((e) => e.payslip_id!);
+
+    const handleDownloadPayslip = async (payslipId: number) => {
+        setDownloadingPayslipId(payslipId);
+        try {
+            await openPayslipPdf(payslipId);
+        } catch (e) {
+            handleApiError(e);
+        } finally {
+            setDownloadingPayslipId(null);
+        }
+    };
+
+    const handleBulkDownload = async () => {
+        setBulkDownloading(true);
+        try {
+            await downloadBulkPayslipsZip({
+                month,
+                year,
+                payslipIds: generatedPayslipIds.length > 0 ? generatedPayslipIds : undefined,
+            });
+        } catch (e) {
+            handleApiError(e);
+        } finally {
+            setBulkDownloading(false);
+        }
     };
 
     const handleProceed = async () => {
@@ -859,7 +919,18 @@ export default function PayrollPage() {
                                 </p>
                             </div>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                            {canManagePayroll && (stats?.total ?? 0) > 0 && (
+                                <Button
+                                    variant="outline"
+                                    className="bg-white/60 border-white/60 z-10"
+                                    disabled={bulkDownloading}
+                                    onClick={() => void handleBulkDownload()}
+                                >
+                                    <Download className="h-4 w-4 mr-2" />
+                                    {bulkDownloading ? 'Preparing ZIP…' : `Download All PDFs (${stats?.total ?? 0})`}
+                                </Button>
+                            )}
                             <Select value={month.toString()} onValueChange={v => setMonth(parseInt(v))}>
                                 <SelectTrigger className="w-36 bg-white/50 border-white/60 hover:bg-white/80 dark:bg-black/20 dark:border-white/10 dark:hover:bg-black/40 text-[#001f3f] dark:text-white backdrop-blur-sm z-10 transition-colors">
                                     <SelectValue />
@@ -1037,8 +1108,10 @@ export default function PayrollPage() {
                                     adjustments={adjustments}
                                     onToggle={handleToggle}
                                     onToggleAll={handleToggleAll}
-                                    onOpenSalary={setSalaryEmployee}
-                                />
+                            onOpenSalary={setSalaryEmployee}
+                            onDownloadPayslip={(id) => void handleDownloadPayslip(id)}
+                            downloadingPayslipId={downloadingPayslipId}
+                        />
                             </div>
                         )}
                     </div>
@@ -1051,17 +1124,23 @@ export default function PayrollPage() {
                             {checkedIds.size} employee(s) selected
                         </span>
                     )}
-                    <Button
-                        size="lg"
-                        disabled={checkedIds.size === 0 || proceeding}
-                        onClick={handleProceed}
-                        className="px-8"
-                    >
-                        {proceeding
-                            ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Processing...</>
-                            : `Proceed to Preview (${checkedIds.size})`
-                        }
-                    </Button>
+                    {canManagePayroll ? (
+                        <Button
+                            size="lg"
+                            disabled={checkedIds.size === 0 || proceeding}
+                            onClick={handleProceed}
+                            className="px-8"
+                        >
+                            {proceeding
+                                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Processing...</>
+                                : `Proceed to Preview (${checkedIds.size})`
+                            }
+                        </Button>
+                    ) : (
+                        <span className="text-sm text-muted-foreground">
+                            You need manage-payroll permission to generate payroll.
+                        </span>
+                    )}
                 </div>
             </div>
 
@@ -1081,6 +1160,7 @@ export default function PayrollPage() {
                     previews={previewData}
                     month={month}
                     year={year}
+                    canManagePayroll={canManagePayroll}
                     onGenerate={() => {
                         setCheckedIds(new Set());
                         setAdjustments({});

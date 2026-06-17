@@ -1,4 +1,6 @@
-const API_BASE = '/api';
+import { apiUrl, resolveApiBase } from '@/lib/api-base';
+
+const API_BASE = resolveApiBase();
 
 /** Get JWT token from localStorage */
 function getToken(): string | null {
@@ -37,7 +39,7 @@ async function tryRefreshToken(): Promise<boolean> {
     if (!refreshInFlight) {
         refreshInFlight = (async () => {
             try {
-                const res = await fetch(`${API_BASE}/auth/refresh`, {
+                const res = await fetch(apiUrl('/auth/refresh'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
                     body: JSON.stringify({ refresh_token: refresh }),
@@ -77,7 +79,7 @@ async function apiFetch<T = any>(
         headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(apiUrl(path), {
         ...options,
         headers,
     });
@@ -92,13 +94,36 @@ async function apiFetch<T = any>(
         throw new Error('Unauthorized');
     }
 
-    const json = await response.json();
-
-    if (!response.ok) {
-        throw new Error(json.message || `API error: ${response.status}`);
+    const text = await response.text();
+    let json: { success?: boolean; data?: T; type?: string; message?: string; total?: number } = {};
+    if (text) {
+        try {
+            json = JSON.parse(text);
+        } catch {
+            throw new Error(
+                response.status >= 500
+                    ? 'Backend unavailable. Start the API server on port 3001 and try again.'
+                    : 'Invalid response from server',
+            );
+        }
+    } else if (!response.ok) {
+        throw new Error(
+            response.status === 502 || response.status === 503 || response.status === 500
+                ? 'Backend unavailable. Start the API server on port 3001 and try again.'
+                : `API error: ${response.status}`,
+        );
     }
 
-    return json;
+    if (!response.ok) {
+        throw new Error(
+            json.message
+                || (response.status >= 500
+                    ? 'Backend unavailable. Start the API server on port 3001 and try again.'
+                    : `API error: ${response.status}`),
+        );
+    }
+
+    return json as { success: boolean; data: T; type?: string; message?: string; total?: number };
 }
 
 /** GET request */
@@ -144,4 +169,30 @@ export async function apiPatch<T = any>(path: string, body?: any): Promise<{ suc
 /** DELETE request */
 export async function apiDelete<T = any>(path: string): Promise<{ success: boolean; data: T }> {
     return apiFetch<T>(path, { method: 'DELETE' });
+}
+
+/** Multipart upload (no JSON Content-Type) */
+export async function apiUpload<T = any>(path: string, formData: FormData): Promise<{ success: boolean; data: T }> {
+    const token = getToken();
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(apiUrl(path), { method: 'POST', headers, body: formData });
+    const text = await response.text();
+    let json: { success?: boolean; data?: T; message?: string } = {};
+    if (text) {
+        try {
+            json = JSON.parse(text);
+        } catch {
+            throw new Error('Invalid response from server');
+        }
+    }
+
+    if (!response.ok) {
+        throw new Error(json.message || `Upload failed (${response.status})`);
+    }
+
+    return json as { success: boolean; data: T };
 }

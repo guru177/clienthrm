@@ -21,12 +21,26 @@ function Avatar({
 
 function AvatarImage({
   className,
+  onError,
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Image>) {
+  const [failed, setFailed] = React.useState(false)
+
+  React.useEffect(() => {
+    setFailed(false)
+  }, [props.src])
+
+  if (failed || !props.src) {
+    return null
+  }
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
       className={cn("aspect-square size-full", className)}
+      onError={(event) => {
+        setFailed(true)
+        onError?.(event)
+      }}
       {...props}
     />
   )

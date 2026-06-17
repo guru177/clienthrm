@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { fetchLeaveTypeOptions } from '@/lib/leave-types';
 
 interface LeaveRequestFormProps {
     onSuccess: () => void;
@@ -31,22 +32,9 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
     const [leaveTypes, setLeaveTypes] = useState<{ value: string; label: string }[]>([]);
 
     useEffect(() => {
-        axios.get('/admin/leave-types').then((res) => {
-            if (res.data.success) {
-                setLeaveTypes(
-                    (res.data.data || []).map((t: { slug: string; name: string; payment_type_label?: string }) => ({
-                        value: t.slug,
-                        label: t.payment_type_label ? `${t.name} (${t.payment_type_label})` : t.name,
-                    })),
-                );
-            }
-        }).catch(() => {
-            setLeaveTypes([
-                { value: 'sick', label: 'Sick Leave' },
-                { value: 'annual', label: 'Annual Leave' },
-                { value: 'unpaid', label: 'Unpaid Leave (LOP)' },
-            ]);
-        });
+        fetchLeaveTypeOptions()
+            .then(setLeaveTypes)
+            .catch(() => setLeaveTypes([]));
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {

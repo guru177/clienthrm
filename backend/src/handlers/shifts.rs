@@ -4,6 +4,7 @@ use serde::Deserialize;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
+use crate::tenant::org_id_from_claims;
 
 #[derive(Debug, Deserialize)]
 pub struct ShiftTemplateRequest {
@@ -61,11 +62,18 @@ fn shift_template_json(
     })
 }
 
-fn set_default_shift(conn: &rusqlite::Connection, template_id: i64) -> Result<(), rusqlite::Error> {
-    conn.execute("UPDATE shift_templates SET is_default = 0", [])?;
+fn set_default_shift(
+    conn: &crate::db::Transaction,
+    template_id: i64,
+    org_id: i64,
+) -> crate::db::Result<()> {
     conn.execute(
-        "UPDATE shift_templates SET is_default = 1 WHERE id = ?1",
-        [template_id],
+        "UPDATE shift_templates SET is_default = 0 WHERE organization_id = ?1",
+        [org_id],
+    )?;
+    conn.execute(
+        "UPDATE shift_templates SET is_default = 1 WHERE id = ?1 AND organization_id = ?2",
+        crate::params![template_id, org_id],
     )?;
     Ok(())
 }
@@ -85,10 +93,11 @@ pub struct ShiftRosterQuery {
 }
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -99,31 +108,29 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
                 st.created_at, st.updated_at,
                 (SELECT COUNT(DISTINCT usa.user_id) FROM user_shift_assignments usa WHERE usa.shift_template_id = st.id) AS assigned_count
          FROM shift_templates st
+         WHERE st.organization_id = ?1
          ORDER BY st.is_default DESC, st.name",
     ) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
     let rows: Vec<serde_json::Value> = stmt
-        .query_map([], |row| {
+        .query_map([org_id], |row| {
             Ok(shift_template_json(
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get::<_, i64>(4).unwrap_or(0),
-                row.get::<_, i64>(5).unwrap_or(0),
-                row.get::<_, i64>(6).unwrap_or(0) != 0,
-                row.get::<_, i64>(7).unwrap_or(0) != 0,
-                row.get::<_, i64>(8).unwrap_or(31),
-                row.get(9).ok(),
-                row.get(10).ok(),
-                row.get::<_, i64>(11).unwrap_or(0),
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<String>(2)?,
+                row.get_idx::<String>(3)?,
+                row.get_idx::<i64>(4).unwrap_or(0),
+                row.get_idx::<i64>(5).unwrap_or(0),
+                row.get_idx::<i64>(6).unwrap_or(0) != 0,
+                row.get_idx::<i64>(7).unwrap_or(0) != 0,
+                row.get_idx::<i64>(8).unwrap_or(31),
+                row.get_idx::<Option<String>>(9)?,
+                row.get_idx::<Option<String>>(10)?,
+                row.get_idx::<i64>(11).unwrap_or(0),
             ))
-        })
-        .ok()
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        });
     HttpResponse::Ok().json(ApiResponse::success(rows))
 }
 
@@ -132,10 +139,11 @@ pub async fn store(
     req: HttpRequest,
     body: web::Json<ShiftTemplateRequest>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -146,13 +154,16 @@ pub async fn store(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Could not start transaction")),
     };
     if body.is_default.unwrap_or(false) {
-        let _ = tx.execute("UPDATE shift_templates SET is_default = 0", []);
+        let _ = tx.execute(
+            "UPDATE shift_templates SET is_default = 0 WHERE organization_id = ?1",
+            [org_id],
+        );
     }
     let working_mask = resolve_working_days_mask(&body);
     match tx.execute(
-        "INSERT INTO shift_templates (name, start_time, end_time, grace_in_minutes, grace_out_minutes, is_active, is_default, working_days_mask, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-        rusqlite::params![
+        "INSERT INTO shift_templates (name, start_time, end_time, grace_in_minutes, grace_out_minutes, is_active, is_default, working_days_mask, organization_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+        crate::params![
             body.name.trim(),
             body.start_time.trim(),
             body.end_time.trim(),
@@ -161,6 +172,7 @@ pub async fn store(
             if body.is_active.unwrap_or(true) { 1 } else { 0 },
             if body.is_default.unwrap_or(false) { 1 } else { 0 },
             working_mask,
+            org_id,
             now,
         ],
     ) {
@@ -184,10 +196,11 @@ pub async fn update(
     path: web::Path<i64>,
     body: web::Json<ShiftTemplateRequest>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -200,14 +213,14 @@ pub async fn update(
     };
     match body.is_default {
         Some(true) => {
-            if set_default_shift(&tx, id).is_err() {
+            if set_default_shift(&tx, id, org_id).is_err() {
                 return HttpResponse::InternalServerError().json(ApiError::new("Failed to set default shift"));
             }
         }
         Some(false) => {
             let _ = tx.execute(
-                "UPDATE shift_templates SET is_default = 0 WHERE id = ?1",
-                [id],
+                "UPDATE shift_templates SET is_default = 0 WHERE id = ?1 AND organization_id = ?2",
+                crate::params![id, org_id],
             );
         }
         None => {}
@@ -216,8 +229,8 @@ pub async fn update(
     match tx.execute(
         "UPDATE shift_templates
          SET name=?1, start_time=?2, end_time=?3, grace_in_minutes=?4, grace_out_minutes=?5, is_active=?6, working_days_mask=?7, updated_at=?8
-         WHERE id=?9",
-        rusqlite::params![
+         WHERE id=?9 AND organization_id=?10",
+        crate::params![
             body.name.trim(),
             body.start_time.trim(),
             body.end_time.trim(),
@@ -227,6 +240,7 @@ pub async fn update(
             working_mask,
             now,
             id,
+            org_id,
         ],
     ) {
         Ok(rows) if rows > 0 => {
@@ -243,10 +257,11 @@ pub async fn update(
 }
 
 pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -255,9 +270,11 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
 
     let assigned: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM user_shift_assignments WHERE shift_template_id = ?1",
-            [id],
-            |r| r.get(0),
+            "SELECT COUNT(*) FROM user_shift_assignments usa
+             JOIN shift_templates st ON st.id = usa.shift_template_id
+             WHERE usa.shift_template_id = ?1 AND st.organization_id = ?2",
+            crate::params![id, org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
 
@@ -269,17 +286,20 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
 
     let was_default: bool = conn
         .query_row(
-            "SELECT is_default FROM shift_templates WHERE id = ?1",
-            [id],
-            |r| r.get::<_, i64>(0),
+            "SELECT is_default FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |r| r.get_idx::<i64>(0),
         )
         .map(|v| v != 0)
         .unwrap_or(false);
 
-    match conn.execute("DELETE FROM shift_templates WHERE id = ?1", [id]) {
+    match conn.execute(
+        "DELETE FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+        crate::params![id, org_id],
+    ) {
         Ok(rows) if rows > 0 => {
             if was_default {
-                let _ = crate::shift_logic::ensure_general_shift_template(&conn);
+                let _ = crate::shift_logic::ensure_general_shift_template(&conn, org_id);
             }
             HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
             "message": "Shift template deleted",
@@ -295,10 +315,11 @@ pub async fn assign_user(
     req: HttpRequest,
     body: web::Json<ShiftAssignmentRequest>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -309,19 +330,33 @@ pub async fn assign_user(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Could not start transaction")),
     };
 
+    if !crate::tenant::user_in_organization(&conn, body.user_id, org_id) {
+        return HttpResponse::BadRequest().json(ApiError::new("User not found in organization"));
+    }
+    let shift_ok = tx
+        .query_row(
+            "SELECT 1 FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+            crate::params![body.shift_template_id, org_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !shift_ok {
+        return HttpResponse::BadRequest().json(ApiError::new("Shift template not found"));
+    }
+
     // Close any open-ended active assignment before inserting the new one.
     let _ = tx.execute(
         "UPDATE user_shift_assignments
          SET effective_to = ?1, updated_at = ?2
          WHERE user_id = ?3
            AND (effective_to IS NULL OR effective_to >= ?1)",
-        rusqlite::params![body.effective_from.trim(), &now, body.user_id],
+        crate::params![body.effective_from.trim(), &now, body.user_id],
     );
 
     let inserted = tx.execute(
         "INSERT INTO user_shift_assignments (user_id, shift_template_id, effective_from, effective_to, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        rusqlite::params![
+        crate::params![
             body.user_id,
             body.shift_template_id,
             body.effective_from.trim(),
@@ -349,15 +384,20 @@ pub async fn user_assignment(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
     let user_id = path.into_inner();
+
+    if !crate::tenant::user_in_organization(&conn, user_id, org_id) {
+        return HttpResponse::NotFound().json(ApiError::new("User not found in organization"));
+    }
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let _ = crate::shift_logic::assign_general_shift_to_user(&conn, user_id, &today);
@@ -369,26 +409,27 @@ pub async fn user_assignment(
                     COALESCE(st.working_days_mask, 31) AS working_days_mask
              FROM user_shift_assignments usa
              JOIN shift_templates st ON st.id = usa.shift_template_id
-             WHERE usa.user_id = ?1
+             JOIN users u ON u.id = usa.user_id
+             WHERE usa.user_id = ?1 AND u.organization_id = ?2 AND st.organization_id = ?2
              ORDER BY usa.effective_from DESC, usa.id DESC
              LIMIT 1",
-            [user_id],
+            crate::params![user_id, org_id],
             |row| {
                 let mask = crate::shift_logic::normalize_working_days_mask(
-                    row.get::<_, i64>(10).unwrap_or(31),
+                    row.get_idx::<i64>(10).unwrap_or(31),
                 );
                 Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "user_id": row.get::<_, i64>(1)?,
-                    "shift_template_id": row.get::<_, i64>(2)?,
-                    "effective_from": row.get::<_, String>(3)?,
-                    "effective_to": row.get::<_, Option<String>>(4).ok(),
+                    "id": row.get_idx::<i64>(0)?,
+                    "user_id": row.get_idx::<i64>(1)?,
+                    "shift_template_id": row.get_idx::<i64>(2)?,
+                    "effective_from": row.get_idx::<String>(3)?,
+                    "effective_to": row.get_idx::<Option<String>>(4).ok().flatten(),
                     "template": {
-                        "name": row.get::<_, String>(5)?,
-                        "start_time": row.get::<_, String>(6)?,
-                        "end_time": row.get::<_, String>(7)?,
-                        "grace_in_minutes": row.get::<_, i64>(8).unwrap_or(0),
-                        "grace_out_minutes": row.get::<_, i64>(9).unwrap_or(0),
+                        "name": row.get_idx::<String>(5)?,
+                        "start_time": row.get_idx::<String>(6)?,
+                        "end_time": row.get_idx::<String>(7)?,
+                        "grace_in_minutes": row.get_idx::<i64>(8).unwrap_or(0),
+                        "grace_out_minutes": row.get_idx::<i64>(9).unwrap_or(0),
                         "working_days": crate::shift_logic::mask_to_weekday_keys(mask),
                         "working_days_label": crate::shift_logic::format_working_days_label(mask),
                     }
@@ -408,10 +449,11 @@ pub async fn roster(
     req: HttpRequest,
     query: web::Query<ShiftRosterQuery>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -426,21 +468,31 @@ pub async fn roster(
 
     let shift_id = query.shift_id.unwrap_or(0);
 
+    if shift_id != 0 {
+        let shift_ok = conn
+            .query_row(
+                "SELECT 1 FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+                crate::params![shift_id, org_id],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !shift_ok {
+            return HttpResponse::NotFound().json(ApiError::new("Shift template not found"));
+        }
+    }
+
     let mut all_users: Vec<(i64, String, Option<String>, Option<String>)> = match conn.prepare(
-        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 ORDER BY name",
+        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name",
     ) {
         Ok(mut stmt) => stmt
-            .query_map([], |row| {
+            .query_map([org_id], |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get_idx::<i64>(0)?,
+                    row.get_idx::<String>(1)?,
+                    row.get_idx::<Option<String>>(2)?,
+                    row.get_idx::<Option<String>>(3)?,
                 ))
-            })
-            .ok()
-            .map(|iter| iter.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default(),
+            }),
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
 
@@ -530,10 +582,11 @@ pub async fn daily_roster_show(
     req: HttpRequest,
     query: web::Query<DailyRosterQuery>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -571,31 +624,34 @@ pub async fn daily_roster_show(
     if let Ok(mut stmt) = conn.prepare(
         "SELECT sdr.user_id, sdr.roster_date, sdr.shift_template_id, COALESCE(sdr.is_day_off, 0), st.name
          FROM shift_daily_roster sdr
+         JOIN users u ON u.id = sdr.user_id
          LEFT JOIN shift_templates st ON st.id = sdr.shift_template_id
-         WHERE sdr.roster_date >= ?1 AND sdr.roster_date <= ?2",
+         WHERE sdr.roster_date >= ?1 AND sdr.roster_date <= ?2 AND u.organization_id = ?3",
     ) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![&from_s, &to_s], |row| {
+        let rows = stmt.query_map(crate::params![&from_s, &to_s, org_id], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, i64>(3)? != 0,
-                row.get::<_, Option<String>>(4)?,
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<Option<i64>>(2)?,
+                row.get_idx::<i64>(3)? != 0,
+                row.get_idx::<Option<String>>(4)?,
             ))
-        }) {
-            for r in rows.flatten() {
-                overrides.insert((r.0, r.1), (r.2, r.3, r.4));
-            }
+        });
+        for r in rows {
+            overrides.insert((r.0, r.1), (r.2, r.3, r.4));
         }
     }
 
     let users: Vec<(i64, String, Option<String>)> = conn
-        .prepare("SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 ORDER BY name")
-        .ok()
-        .and_then(|mut stmt| {
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .ok()
-                .map(|iter| iter.filter_map(|r| r.ok()).collect())
+        .prepare("SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name")
+        .map(|stmt| {
+            stmt.query_map([org_id], |row| {
+                Ok((
+                    row.get_idx::<i64>(0)?,
+                    row.get_idx::<String>(1)?,
+                    row.get_idx::<Option<String>>(2)?,
+                ))
+            })
         })
         .unwrap_or_default();
 
@@ -648,10 +704,11 @@ pub async fn daily_roster_store(
     req: HttpRequest,
     body: web::Json<DailyRosterStoreRequest>,
 ) -> HttpResponse {
-    let _claims = match get_claims_from_request(&req) {
+    let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
@@ -665,6 +722,21 @@ pub async fn daily_roster_store(
     for entry in &body.entries {
         if chrono::NaiveDate::parse_from_str(&entry.roster_date, "%Y-%m-%d").is_err() {
             return HttpResponse::BadRequest().json(ApiError::new("Invalid roster_date"));
+        }
+        if !crate::tenant::user_in_organization(&conn, entry.user_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("User not found in organization"));
+        }
+        if let Some(shift_id) = entry.shift_template_id {
+            let shift_ok = tx
+                .query_row(
+                    "SELECT 1 FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+                    crate::params![shift_id, org_id],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if !shift_ok {
+                return HttpResponse::BadRequest().json(ApiError::new("Shift template not found"));
+            }
         }
         let is_off = entry.is_day_off.unwrap_or(false);
         if let Err(e) = crate::shift_logic::upsert_daily_roster(

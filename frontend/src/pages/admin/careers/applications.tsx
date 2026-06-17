@@ -1,5 +1,6 @@
 // Head removed - use document.title instead
 import axios from '@/lib/axios';
+import { storageUrl, externalHttpsUrl } from '@/lib/storage-url';
 import { useAuth } from '@/contexts/AuthContext';
 import { Search, Eye, Trash2, FileText, MoreHorizontal, RefreshCw, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, ExternalLink, Send, CheckCircle2, XCircle, Loader2, Settings, Sparkles, ArrowUp, ArrowDown } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -156,17 +157,15 @@ export default function JobApplicationsIndex() {
 
     const { settings } = useAuth();
     const appName = settings?.app_name || "Raintech HRM";
-    const appLogo = settings?.app_logo 
-        ? (settings.app_logo.startsWith('http') || settings.app_logo.startsWith('data:') ? settings.app_logo : `/storage/${settings.app_logo.replace(/^\/+/, '')}`) 
-        : "/images/logo.webp";
+    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : "/images/logo.webp";
 
 
 
     const openResumeModal = (application: Application) => {
         const url = application.resume_url
             ? application.resume_url.startsWith('http://') || application.resume_url.startsWith('https://')
-                ? application.resume_url
-                : `/storage/${application.resume_url.replace(/^\/+/, '')}`
+                ? externalHttpsUrl(application.resume_url)
+                : storageUrl(application.resume_url)
             : null;
         setResumeUrl(url);
         setResumeName(application.name);
@@ -359,7 +358,7 @@ export default function JobApplicationsIndex() {
     const handleSaveConfig = async () => {
         setSavingConfig(true);
         try {
-            const res = await axios.put('/admin/settings', configData);
+            const res = await axios.put('/admin/settings/app', configData);
             handleApiResponse(res);
             setShowConfigModal(false);
         } catch (error) {

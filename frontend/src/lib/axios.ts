@@ -5,9 +5,10 @@
  * become '/api/admin/users', which Vite proxies to the Rust backend.
  */
 import axiosLib, { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
+import { apiUrl, resolveApiBase } from '@/lib/api-base';
 
 const axios = axiosLib.create({
-    baseURL: '/api',
+    baseURL: resolveApiBase(),
     headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -22,7 +23,7 @@ async function tryRefreshToken(): Promise<boolean> {
     if (!refreshInFlight) {
         refreshInFlight = (async () => {
             try {
-                const res = await fetch('/api/auth/refresh', {
+                const res = await fetch(apiUrl('/auth/refresh'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
                     body: JSON.stringify({ refresh_token: refresh }),
