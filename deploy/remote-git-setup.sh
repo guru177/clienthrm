@@ -49,9 +49,11 @@ if [ -n "${ENV_BACKUP}" ] && [ -f "${ENV_BACKUP}" ]; then
   cp "${ENV_BACKUP}" "${APP_DIR}/deploy/.env"
   rm -f "${ENV_BACKUP}"
   echo "Restored deploy/.env"
-elif [ ! -f "${APP_DIR}/deploy/.env" ]; then
+elif [ -f "${APP_DIR}/deploy/.env.production.example" ]; then
   cp "${APP_DIR}/deploy/.env.production.example" "${APP_DIR}/deploy/.env"
   echo "WARN: Created deploy/.env from example — edit secrets before going live"
+else
+  echo "WARN: deploy/.env not found — upload before running remote-git-deploy.sh"
 fi
 
 chmod +x "${APP_DIR}/deploy/"*.sh 2>/dev/null || true
