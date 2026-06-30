@@ -74,5 +74,5 @@ pub fn set_platform_bypass(conn: &Connection) {
     if conn.backend() != Backend::Postgres || !pg_rls_enabled() {
         return;
     }
-    let _ = conn.execute_batch("SET LOCAL row_security = off");
+    let _ = conn.execute_batch("SET row_security = off");
 }
