@@ -8,8 +8,11 @@ param(
     [string]$TenantDomain = "hrm.13-232-29-223.sslip.io",
     [string]$PlatformDomain = "platform.13-232-29-223.sslip.io",
     [string]$ApiDomain = "api.13-232-29-223.sslip.io",
+    [string]$GitRepo = "https://github.com/guru177/hrm-rust.git",
+    [string]$GitBranch = "main",
     [switch]$SkipBootstrap,
-    [switch]$SkipElectron
+    [switch]$SkipElectron,
+    [switch]$UseGit
 )
 
 $ErrorActionPreference = "Stop"
@@ -111,6 +114,42 @@ $prodApi = @{
     platformAppUrl = $platformUrl
 } | ConvertTo-Json
 Write-Utf8NoBom (Join-Path $Root "frontend\electron\production-api.json") $prodApi
+
+if ($UseGit) {
+    Write-Host "==> Git deploy to $ServerIp (pull + build on server)..."
+    & scp @scp (Join-Path $deployDir ".env") "${SshUser}@${ServerIp}:/tmp/hrm-deploy.env"
+    & scp @scp (Join-Path $deployDir "remote-git-setup.sh") "${SshUser}@${ServerIp}:/tmp/"
+    & scp @scp (Join-Path $deployDir "remote-git-deploy.sh") "${SshUser}@${ServerIp}:/tmp/"
+    & scp @scp (Join-Path $deployDir "remote-deploy.sh") "${SshUser}@${ServerIp}:/tmp/"
+
+    $gitRemote = @"
+set -e
+export HRM_GIT_REPO='$GitRepo'
+export HRM_GIT_BRANCH='$GitBranch'
+sed -i 's/\r$//' /tmp/remote-git-setup.sh /tmp/remote-git-deploy.sh /tmp/remote-deploy.sh 2>/dev/null || true
+chmod +x /tmp/remote-git-setup.sh /tmp/remote-git-deploy.sh /tmp/remote-deploy.sh
+if [ ! -d /opt/hrm/.git ]; then
+  bash /tmp/remote-git-setup.sh
+  cp /tmp/remote-git-deploy.sh /opt/hrm/deploy/remote-git-deploy.sh
+  cp /tmp/remote-deploy.sh /opt/hrm/deploy/remote-deploy.sh
+  chmod +x /opt/hrm/deploy/remote-git-deploy.sh /opt/hrm/deploy/remote-deploy.sh
+fi
+cp /tmp/hrm-deploy.env /opt/hrm/deploy/.env
+bash /opt/hrm/deploy/remote-git-deploy.sh 2>&1 | tee /tmp/hrm-deploy.log
+"@
+    $gitRemote = ($gitRemote -replace "`r`n", "`n") -replace "`r", ""
+    $gitRemote | & ssh @ssh "${SshUser}@${ServerIp}" "bash -s"
+
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "PRODUCTION DEPLOYED (git)" -ForegroundColor Green
+    Write-Host "Tenant:    $tenantUrl"
+    Write-Host "Platform:  $platformUrl"
+    Write-Host "Biometric: http://${ServerIp}:7788"
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Future deploys on server: cd /opt/hrm && bash deploy/remote-git-deploy.sh" -ForegroundColor Yellow
+    exit 0
+}
 
 Write-Host "==> Building tenant + platform frontends locally..."
 Push-Location (Join-Path $Root "frontend")
