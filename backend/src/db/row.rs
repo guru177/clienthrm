@@ -1,3 +1,4 @@
+use chrono::{NaiveDate, NaiveDateTime};
 use crate::db::error::{DbError, Result};
 
 /// Unified row accessor for SQLite and PostgreSQL.
@@ -71,7 +72,19 @@ impl RowGet for Option<String> {
         row.get(col).map_err(DbError::from)
     }
     fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
-        row.try_get(col).map_err(DbError::from)
+        // Direct string
+        if let Ok(v) = row.try_get::<_, Option<String>>(col) {
+            return Ok(v);
+        }
+        // timestamp / timestamp without time zone  -> NaiveDateTime
+        if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(col) {
+            return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+        }
+        // date -> NaiveDate
+        if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(col) {
+            return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
+        }
+        row.try_get::<_, Option<String>>(col).map_err(DbError::from)
     }
 }
 
@@ -80,7 +93,16 @@ impl RowGetIdx for Option<String> {
         row.get(idx).map_err(DbError::from)
     }
     fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
-        row.try_get(idx).map_err(DbError::from)
+        if let Ok(v) = row.try_get::<_, Option<String>>(idx) {
+            return Ok(v);
+        }
+        if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(idx) {
+            return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+        }
+        if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(idx) {
+            return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
+        }
+        row.try_get::<_, Option<String>>(idx).map_err(DbError::from)
     }
 }
 
