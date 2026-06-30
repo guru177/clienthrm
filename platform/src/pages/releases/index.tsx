@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Monitor, Plus, Pencil, Server, Sparkles, Trash2 } from 'lucide-react';
 import {
     platformDelete,
     platformGet,
     platformPatch,
     platformPost,
+    platformUpload,
 } from '@/lib/platform-api';
 import { PlatformAlertDialog, PlatformConfirmDialog } from '@/components/platform-dialog';
+import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,9 +22,34 @@ interface ReleaseNote {
     audience: string;
     severity: string;
     status: 'draft' | 'published';
+    desktop_installer?: string | null;
     published_at: string | null;
     created_at: string | null;
     updated_at: string | null;
+}
+
+interface DesktopUpdateStatus {
+    backend_version: string;
+    live_desktop_feed: {
+        version: string | null;
+        installer: string | null;
+        release_date: string | null;
+    };
+    feed_url: string;
+    latest_published_release: {
+        id: number;
+        version: string;
+        title: string;
+        desktop_installer?: string | null;
+        published_at: string | null;
+    } | null;
+    latest_desktop_release: {
+        id: number;
+        version: string;
+        title: string;
+        desktop_installer: string;
+        published_at: string | null;
+    } | null;
 }
 
 const AUDIENCE_OPTIONS = ['all', 'admins', 'employees'];
@@ -49,6 +76,7 @@ function severityTone(s: string) {
 
 export default function PlatformReleases() {
     const [releases, setReleases] = useState<ReleaseNote[]>([]);
+    const [versionStatus, setVersionStatus] = useState<DesktopUpdateStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [showForm, setShowForm] = useState(false);
@@ -57,12 +85,29 @@ export default function PlatformReleases() {
     const [confirmDelete, setConfirmDelete] = useState<ReleaseNote | null>(null);
     const [alert, setAlert] = useState<{ title?: string; message: string } | null>(null);
     const [busy, setBusy] = useState(false);
+    const [installerFile, setInstallerFile] = useState<File | null>(null);
+
+    async function uploadInstaller(releaseId: number, version: string) {
+        if (!installerFile) return;
+        const fd = new FormData();
+        fd.append('installer', installerFile);
+        fd.append('version', version);
+        await platformUpload<{ installer: string; feed_url: string; published_to_feed: boolean }>(
+            `/releases/${releaseId}/desktop-installer`,
+            fd,
+        );
+        setInstallerFile(null);
+    }
 
     async function load() {
         setLoading(true);
         try {
-            const res = await platformGet<ReleaseNote[]>('/releases');
-            setReleases(res.data);
+            const [releasesRes, statusRes] = await Promise.all([
+                platformGet<ReleaseNote[]>('/releases'),
+                platformGet<DesktopUpdateStatus>('/desktop-update/status'),
+            ]);
+            setReleases(releasesRes.data);
+            setVersionStatus(statusRes.data);
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'Failed to load');
         } finally {
@@ -77,6 +122,7 @@ export default function PlatformReleases() {
     function openCreate() {
         setEditing(null);
         setForm({ ...emptyForm });
+        setInstallerFile(null);
         setShowForm(true);
     }
 
@@ -90,6 +136,7 @@ export default function PlatformReleases() {
             severity: r.severity,
             status: r.status,
         });
+        setInstallerFile(null);
         setShowForm(true);
     }
 
@@ -97,10 +144,16 @@ export default function PlatformReleases() {
         e.preventDefault();
         setBusy(true);
         try {
+            let releaseId: number;
             if (editing) {
                 await platformPatch(`/releases/${editing.id}`, form);
+                releaseId = editing.id;
             } else {
-                await platformPost('/releases', form);
+                const res = await platformPost<{ id: number }>('/releases', form);
+                releaseId = res.data.id;
+            }
+            if (installerFile) {
+                await uploadInstaller(releaseId, form.version);
             }
             setShowForm(false);
             await load();
@@ -156,7 +209,7 @@ export default function PlatformReleases() {
                 <div>
                     <h1 className="text-2xl font-bold tracking-tight text-[#001f3f]">Release notes</h1>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        Publish "What's new" entries that show up inside every tenant app.
+                        Publish in-app release notes and push Raintech HRM desktop auto-updates from here.
                     </p>
                 </div>
                 <Button onClick={openCreate}>
@@ -165,6 +218,46 @@ export default function PlatformReleases() {
             </div>
 
             {error && <p className="text-sm text-red-600">{error}</p>}
+
+            {versionStatus && (
+                <div className="grid gap-4 md:grid-cols-3">
+                    <StatCard
+                        title="Backend"
+                        value={`v${versionStatus.backend_version}`}
+                        icon={Server}
+                    />
+                    <StatCard
+                        title="Live desktop update"
+                        value={
+                            versionStatus.live_desktop_feed.version
+                                ? `v${versionStatus.live_desktop_feed.version}`
+                                : 'None'
+                        }
+                        icon={Monitor}
+                    />
+                    <StatCard
+                        title="Latest release note"
+                        value={
+                            versionStatus.latest_published_release
+                                ? `v${versionStatus.latest_published_release.version}`
+                                : 'None'
+                        }
+                        icon={Sparkles}
+                    />
+                </div>
+            )}
+
+            {versionStatus?.live_desktop_feed.installer && (
+                <p className="text-xs text-muted-foreground">
+                    Desktop apps check{' '}
+                    <code className="rounded bg-slate-100 px-1 py-0.5">{versionStatus.feed_url}</code>{' '}
+                    — installer{' '}
+                    <span className="font-mono">{versionStatus.live_desktop_feed.installer}</span>
+                    {versionStatus.live_desktop_feed.release_date
+                        ? ` (${versionStatus.live_desktop_feed.release_date})`
+                        : ''}
+                </p>
+            )}
 
             <div className="grid gap-4 lg:grid-cols-2">
                 {loading && (
@@ -209,6 +302,11 @@ export default function PlatformReleases() {
                                     >
                                         {r.status}
                                     </span>
+                                    {r.desktop_installer && (
+                                        <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-medium text-sky-800">
+                                            Desktop update
+                                        </span>
+                                    )}
                                 </div>
                             </div>
                             <div className="flex gap-1">
@@ -309,6 +407,26 @@ export default function PlatformReleases() {
                                     value={form.body}
                                     onChange={(e) => setForm({ ...form, body: e.target.value })}
                                 />
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <Label>Desktop installer (.exe)</Label>
+                                <Input
+                                    type="file"
+                                    accept=".exe,application/x-msdownload,application/octet-stream"
+                                    onChange={(e) =>
+                                        setInstallerFile(e.target.files?.[0] ?? null)
+                                    }
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Optional. Upload the Windows setup built from{' '}
+                                    <code className="rounded bg-slate-100 px-1">npm run electron:build</code>.
+                                    When status is <strong>published</strong>, Electron apps auto-detect the update.
+                                    {editing?.desktop_installer && !installerFile && (
+                                        <span className="mt-1 block">
+                                            Current: {editing.desktop_installer}
+                                        </span>
+                                    )}
+                                </p>
                             </div>
                             <div className="space-y-2">
                                 <Label>Severity</Label>

@@ -138,7 +138,7 @@ pub fn paid_holidays_for_user(
     let start_s = month_bounds(month, year).0.format("%Y-%m-%d").to_string();
     let end_s = month_bounds(month, year).1.format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT date FROM holidays WHERE organization_id = ?3 AND date >= ?1 AND date <= ?2",
     ) {
         Ok(s) => s,
@@ -165,7 +165,15 @@ pub fn collect_leave_business_dates(
     range_end: NaiveDate,
     statuses: &[&str],
 ) -> HashSet<NaiveDate> {
-    collect_leave_business_dates_filtered(conn, user_id, range_start, range_end, statuses, None)
+    collect_leave_business_dates_filtered(
+        conn,
+        user_id,
+        range_start,
+        range_end,
+        statuses,
+        None,
+        None,
+    )
 }
 
 /// Like collect_leave_business_dates but optionally filter by leave_type slugs.
@@ -176,6 +184,7 @@ pub fn collect_leave_business_dates_filtered(
     range_end: NaiveDate,
     statuses: &[&str],
     leave_type_slugs: Option<&[String]>,
+    exclude_leave_id: Option<i64>,
 ) -> HashSet<NaiveDate> {
     if statuses.is_empty() || range_end < range_start {
         return HashSet::new();
@@ -192,37 +201,48 @@ pub fn collect_leave_business_dates_filtered(
         String::new()
     };
     let sql = format!(
-        "SELECT start_date, end_date FROM leave_requests
+        "SELECT id, start_date, end_date FROM leave_requests
          WHERE user_id=? AND deleted_at IS NULL AND status IN ({status_ph})
            AND start_date <= ? AND end_date >= ?{slug_clause}",
     );
 
     let mut params: Vec<crate::db::ParamValue> = vec![
         crate::db::into_param_value(user_id),
-        crate::db::into_param_value(range_end.format("%Y-%m-%d").to_string()),
-        crate::db::into_param_value(range_start.format("%Y-%m-%d").to_string()),
     ];
     for s in statuses {
         params.push(crate::db::into_param_value(*s));
     }
+    params.push(crate::db::into_param_value(
+        range_end.format("%Y-%m-%d").to_string(),
+    ));
+    params.push(crate::db::into_param_value(
+        range_start.format("%Y-%m-%d").to_string(),
+    ));
     if let Some(slugs) = leave_type_slugs {
         for slug in slugs {
             params.push(crate::db::into_param_value(slug.clone()));
         }
     }
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return HashSet::new(),
     };
 
-    let rows: Vec<(String, String)> = stmt
+    let rows: Vec<(i64, String, String)> = stmt
         .query_map(&params, |row| {
-            Ok((row.get_idx::<String>(0)?, row.get_idx::<String>(1)?))
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<String>(2)?,
+            ))
         });
 
     let mut dates = HashSet::new();
-    for (start, end) in rows {
+    for (id, start, end) in rows {
+        if exclude_leave_id == Some(id) {
+            continue;
+        }
         let Ok(ls) = NaiveDate::parse_from_str(&start, "%Y-%m-%d") else {
             continue;
         };
@@ -252,7 +272,7 @@ pub fn collect_approved_leave_lop_weights(
     let sql = "SELECT start_date, end_date, leave_type FROM leave_requests
          WHERE user_id=? AND deleted_at IS NULL AND status='approved'
            AND start_date <= ? AND end_date >= ?";
-    let mut stmt = match conn.prepare(sql) {
+    let stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
     };
@@ -305,7 +325,7 @@ pub fn collect_open_clock_in_dates(
     }
     let start_s = range_start.format("%Y-%m-%d").to_string();
     let end_s = range_end.format("%Y-%m-%d").to_string();
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT DISTINCT date FROM attendance
          WHERE user_id=?1 AND date >= ?2 AND date <= ?3 AND deleted_at IS NULL
            AND clock_out IS NULL",
@@ -343,12 +363,15 @@ pub fn total_lop_days_for_month(
     let mut d = active_start;
     while d <= active_end {
         if is_working_day_for_user(conn, user_id, d) {
-            if present.contains(&d) || holidays.contains(&d) {
-                // no LOP
+            if holidays.contains(&d) {
+                // paid holiday — no LOP
+            } else if let Some(w) = leave_lop.get(&d) {
+                // unpaid / half-day leave still counts even if employee clocked in
+                total += w;
+            } else if present.contains(&d) {
+                // present without unpaid leave
             } else if open_sessions.contains(&d) && d == today {
                 // in-progress clock-in today — wait for clock-out before LOP
-            } else if let Some(w) = leave_lop.get(&d) {
-                total += w;
             } else if all_approved.contains(&d) {
                 // paid approved leave — no LOP
             } else {
@@ -373,7 +396,7 @@ pub fn collect_present_business_dates(
     let start_s = range_start.format("%Y-%m-%d").to_string();
     let end_s = range_end.format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT DISTINCT date FROM attendance
          WHERE user_id=?1 AND date >= ?2 AND date <= ?3 AND deleted_at IS NULL
            AND clock_out IS NOT NULL",
@@ -418,6 +441,7 @@ pub fn employee_leave_used_in_year(conn: &crate::db::Connection, user_id: i64, y
         year_end,
         &["approved"],
         Some(&slugs),
+        None,
     )
     .len() as i64
 }
@@ -437,6 +461,29 @@ pub fn employee_pending_leave_days_in_year(conn: &crate::db::Connection, user_id
         year_end,
         &["pending"],
         Some(&slugs),
+        None,
+    )
+    .len() as i64
+}
+
+/// Approved quota-counting leave business days for one leave type in a calendar year.
+pub fn employee_leave_used_for_type_in_year(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    year: i32,
+    leave_type: &str,
+) -> i64 {
+    let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else { return 0; };
+    let Some(year_end) = NaiveDate::from_ymd_opt(year, 12, 31) else { return 0; };
+    let slugs = vec![leave_type.to_string()];
+    collect_leave_business_dates_filtered(
+        conn,
+        user_id,
+        year_start,
+        year_end,
+        &["approved"],
+        Some(&slugs),
+        None,
     )
     .len() as i64
 }
@@ -448,16 +495,20 @@ fn would_exceed_quota_for_year(
     range_end: NaiveDate,
     leave_type: &str,
     year: i32,
+    exclude_leave_id: Option<i64>,
 ) -> bool {
     if !crate::leave_type_logic::counts_toward_quota_for_user(conn, user_id, leave_type) {
         return false;
     }
+    let org_id = org_id_for_user(conn, user_id);
+    let Some(effective) =
+        employee_effective_leave_quota_for_type(conn, user_id, year, org_id, leave_type)
+    else {
+        return false;
+    };
     let Some(year_start) = NaiveDate::from_ymd_opt(year, 1, 1) else { return false; };
     let Some(year_end) = NaiveDate::from_ymd_opt(year, 12, 31) else { return false; };
-    let slugs = crate::leave_type_logic::quota_slugs_for_user(conn, user_id);
-    if slugs.is_empty() {
-        return false;
-    }
+    let type_slugs = vec![leave_type.to_string()];
 
     let req_start = range_start.max(year_start);
     let req_end = range_end.min(year_end);
@@ -471,17 +522,18 @@ fn would_exceed_quota_for_year(
         year_start,
         year_end,
         &["approved", "pending"],
-        Some(&slugs),
+        Some(&type_slugs),
+        exclude_leave_id,
     );
-    dates.extend(working_dates_between_for_user(
-        conn,
-        user_id,
-        req_start,
-        req_end,
-    ));
+    if exclude_leave_id.is_none() {
+        dates.extend(working_dates_between_for_user(
+            conn,
+            user_id,
+            req_start,
+            req_end,
+        ));
+    }
 
-    let org_id = org_id_for_user(conn, user_id);
-    let effective = employee_effective_leave_quota(conn, user_id, year, org_id);
     dates.len() as i64 > effective
 }
 
@@ -493,6 +545,7 @@ pub fn would_exceed_annual_quota(
     start_date: &str,
     end_date: &str,
     leave_type: &str,
+    exclude_leave_id: Option<i64>,
 ) -> bool {
     let Ok(ls) = NaiveDate::parse_from_str(start_date, "%Y-%m-%d") else {
         return false;
@@ -503,7 +556,15 @@ pub fn would_exceed_annual_quota(
     let mut year = ls.year();
     let end_year = le.year();
     while year <= end_year {
-        if would_exceed_quota_for_year(conn, user_id, ls, le, leave_type, year) {
+        if would_exceed_quota_for_year(
+            conn,
+            user_id,
+            ls,
+            le,
+            leave_type,
+            year,
+            exclude_leave_id,
+        ) {
             return true;
         }
         year += 1;
@@ -522,7 +583,7 @@ pub fn approved_leave_business_days_in_month(
     let end_str = month_end.format("%Y-%m-%d").to_string();
     let start_str = month_start.format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT lr.user_id, lr.start_date, lr.end_date FROM leave_requests lr
          JOIN users u ON u.id = lr.user_id
          WHERE u.organization_id = ?3
@@ -598,6 +659,42 @@ pub fn employee_effective_leave_quota(
     annual_leave_quota(conn, org_id) + employee_leave_credits_in_year(conn, user_id, year)
 }
 
+/// Per-type annual quota. Returns None when the type has no enforced limit.
+pub fn leave_type_annual_quota(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    leave_type: &str,
+) -> Option<i64> {
+    let cfg = crate::leave_type_logic::config_for_slug(conn, org_id, leave_type)?;
+    if !cfg.counts_toward_quota {
+        return None;
+    }
+    if let Some(q) = cfg.quota_days {
+        return Some(q);
+    }
+    if leave_type == "annual" {
+        Some(annual_leave_quota(conn, org_id))
+    } else {
+        None
+    }
+}
+
+/// Effective quota for a specific leave type (includes bonus credits for annual only).
+pub fn employee_effective_leave_quota_for_type(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    year: i32,
+    org_id: i64,
+    leave_type: &str,
+) -> Option<i64> {
+    let base = leave_type_annual_quota(conn, org_id, leave_type)?;
+    if leave_type == "annual" {
+        Some(base + employee_leave_credits_in_year(conn, user_id, year))
+    } else {
+        Some(base)
+    }
+}
+
 pub fn employee_present_business_days(
     conn: &crate::db::Connection,
     user_id: i64,
@@ -626,7 +723,7 @@ pub fn collect_paid_holiday_dates(
     let end_s = month_bounds(month, year).1.format("%Y-%m-%d").to_string();
 
     let org_id = org_id_for_user(conn, user_id);
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT date FROM holidays WHERE organization_id = ?3 AND date >= ?1 AND date <= ?2",
     ) {
         Ok(s) => s,
@@ -776,7 +873,7 @@ pub fn total_paid_holidays_for_month(
     month: i32,
     year: i32,
 ) -> i64 {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1",
     ) {
         Ok(s) => s,
@@ -801,7 +898,7 @@ pub fn approved_leave_days_by_type_in_month(
     let end_str = month_end.format("%Y-%m-%d").to_string();
     let start_str = month_start.format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date FROM leave_requests lr
          JOIN users u ON u.id = lr.user_id
          WHERE u.organization_id = ?3
@@ -941,4 +1038,52 @@ pub fn apply_adjustment_list(
     }
     let json = serde_json::to_string(&applied).unwrap_or_else(|_| "[]".to_string());
     (net, total_deductions, json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calendar_days_june() {
+        assert_eq!(calendar_days_in_month(6, 2026), 30);
+    }
+
+    #[test]
+    fn calendar_days_february_leap() {
+        assert_eq!(calendar_days_in_month(2, 2024), 29);
+    }
+
+    #[test]
+    fn parse_employee_adjustments_map() {
+        let raw = serde_json::json!({"2": [{"type": "addition", "amount": 100}]});
+        let map = parse_employee_adjustments(&Some(raw));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_adjustment_list_flat_deduction() {
+        let adjs = vec![serde_json::json!({
+            "type": "deduction",
+            "label": "Fine",
+            "value_type": "flat",
+            "value": 50.0
+        })];
+        let (net, ded, _) = apply_adjustment_list(1000.0, 800.0, 200.0, &adjs);
+        assert_eq!(net, 750.0);
+        assert_eq!(ded, 250.0);
+    }
+
+    #[test]
+    fn apply_adjustment_percentage_of_gross() {
+        let adjs = vec![serde_json::json!({
+            "type": "addition",
+            "label": "Bonus",
+            "value_type": "percentage",
+            "value": 10.0
+        })];
+        let (net, _, _) = apply_adjustment_list(1000.0, 900.0, 100.0, &adjs);
+        assert!((net - 1000.0).abs() < 0.01);
+    }
 }

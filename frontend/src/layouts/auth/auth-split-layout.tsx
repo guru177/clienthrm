@@ -3,6 +3,7 @@ import { Building2, ShieldCheck, Briefcase, Users, CalendarDays, LineChart } fro
 import { type PropsWithChildren } from 'react';
 
 import AppLogoIcon from '@/components/app-logo-icon';
+import { staticAssetUrl } from '@/lib/static-asset';
 
 interface AuthLayoutProps {
     title?: string;
@@ -40,7 +41,7 @@ export default function AuthSplitLayout({
                     {/* Animated User Graphic - Docked to bottom right */}
                     <div className="absolute bottom-10 right-1 w-[90%] h-[90%] max-w-[500px] flex items-end justify-end mix-blend-screen opacity-50 origin-bottom-right" style={{ animation: 'floatBg 15s ease-in-out infinite' }}>
                         <img
-                            src="/images/hr-bg.png"
+                            src={staticAssetUrl('images/hr-bg.png')}
                             alt="HR Background"
                             className="w-full h-full object-contain object-bottom mix-blend-screen"
                         />
@@ -54,7 +55,7 @@ export default function AuthSplitLayout({
                         className="flex items-center gap-2 text-lg font-bold tracking-tight text-white"
                     >
                         <div className="flex bg-white/10 p-2 rounded-xl shadow-lg border border-white/20 backdrop-blur-md">
-                            <img src="/images/logo.webp" alt="RAINTECH HRM Logo" className="h-8 w-auto object-contain drop-shadow-sm" />
+                            <img src={staticAssetUrl('images/logo.webp')} alt="RAINTECH HRM Logo" className="h-8 w-auto object-contain drop-shadow-sm" />
                         </div>
                         <span className="text-xl">RAINTECH HRM</span>
                     </Link>
@@ -153,7 +154,7 @@ export default function AuthSplitLayout({
                             className="flex items-center gap-2 text-lg font-bold"
                         >
                             <div className="flex bg-[#001f3f] dark:bg-white p-1.5 rounded-lg">
-                                <img src="/images/logo.webp" alt="HRM Pro Logo" className="h-6 w-auto object-contain dark:invert" />
+                                <img src={staticAssetUrl('images/logo.webp')} alt="HRM Pro Logo" className="h-6 w-auto object-contain dark:invert" />
                             </div>
                             <span>HRM Pro</span>
                         </Link>

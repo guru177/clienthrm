@@ -26,7 +26,7 @@ pub async fn tenant_overview(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -92,7 +92,7 @@ pub async fn tenant_users(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -130,7 +130,7 @@ pub async fn tenant_users(
     params.push(crate::db::into_param_value(limit));
     params.push(crate::db::into_param_value(offset));
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
@@ -173,13 +173,13 @@ pub async fn tenant_devices(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
     let org_id = path.into_inner();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT d.id, d.serial_number, d.name, d.model, d.ip_address, d.location,
                 d.is_active, d.last_heartbeat, d.firmware_version, d.created_at,
                 (SELECT MAX(p.punch_time) FROM biometric_punches p WHERE p.device_serial = d.serial_number) AS last_punch,
@@ -220,13 +220,13 @@ pub async fn tenant_payroll(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
     let org_id = path.into_inner();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT year, month,
                 COUNT(*) AS total_payslips,
                 COALESCE(SUM(gross_salary), 0) AS gross,
@@ -255,7 +255,41 @@ pub async fn tenant_payroll(
             "generated_at": row.get_idx::<Option<String>>(7)?,
         }))
     });
-    HttpResponse::Ok().json(ApiResponse::success(items))
+
+    let avg_ctc: f64 = conn
+        .query_row(
+            "SELECT COALESCE(AVG(annual_ctc), 0) FROM employee_salary_profiles esp
+             JOIN users u ON u.id = esp.user_id WHERE u.organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<f64>(0),
+        )
+        .unwrap_or(0.0);
+    let compliance_pct: f64 = conn
+        .query_row(
+            "SELECT CASE WHEN COUNT(*) = 0 THEN 100.0
+                    ELSE 100.0 * SUM(CASE WHEN p.status = 'generated' THEN 1 ELSE 0 END) / COUNT(*)
+             END FROM payslips p WHERE p.organization_id = ?1",
+            [org_id],
+            |r| r.get_idx::<f64>(0),
+        )
+        .unwrap_or(0.0);
+    let total_employer_cost: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(p.gross_salary + p.pf_deduction + p.esi_deduction), 0)
+             FROM payslips p WHERE p.organization_id = ?1 AND p.status = 'generated'",
+            [org_id],
+            |r| r.get_idx::<f64>(0),
+        )
+        .unwrap_or(0.0);
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "periods": items,
+        "analytics": {
+            "avg_annual_ctc": avg_ctc,
+            "compliance_completion_pct": compliance_pct,
+            "total_employer_cost_generated": total_employer_cost,
+        },
+    })))
 }
 
 /// GET /api/platform/organizations/{id}/attendance?days=30
@@ -267,7 +301,7 @@ pub async fn tenant_attendance(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -283,7 +317,7 @@ pub async fn tenant_attendance(
     }
     let cutoff = format!("-{} day", days);
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT a.date,
                 COUNT(*) AS records,
                 SUM(CASE WHEN a.is_late = 1 THEN 1 ELSE 0 END) AS late,
@@ -327,13 +361,13 @@ pub async fn tenant_settings(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
     let org_id = path.into_inner();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT key, value, type, description, updated_at
          FROM app_settings
          WHERE organization_id = ?1
@@ -363,7 +397,7 @@ pub async fn tenant_audit(
     if let Err(e) = get_platform_claims_from_request(&req) {
         return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -381,7 +415,7 @@ pub async fn tenant_audit(
         }
     }
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, actor_admin_id, actor_email, action, target_type, target_id,
                 target_label, meta_json, ip_address, created_at
          FROM platform_audit_log
@@ -455,7 +489,7 @@ pub async fn force_logout_user(
         Ok(c) => c,
         Err(e) => return HttpResponse::Forbidden().json(ApiError::new(&e.to_string())),
     };
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -511,7 +545,7 @@ pub async fn reset_user_password(
         return HttpResponse::BadRequest()
             .json(ApiError::new("Password must be at least 8 characters"));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -579,7 +613,7 @@ pub async fn suspend_user(
         Ok(c) => c,
         Err(e) => return HttpResponse::Forbidden().json(ApiError::new(&e.to_string())),
     };
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -632,7 +666,7 @@ pub async fn unsuspend_user(
         Ok(c) => c,
         Err(e) => return HttpResponse::Forbidden().json(ApiError::new(&e.to_string())),
     };
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };

@@ -1,4 +1,4 @@
-use crate::db::{Connection, OptionalExt};
+use crate::db::Connection;
 
 /// Update heartbeat/metadata only for devices pre-registered by an admin.
 /// Returns the device's organization_id when the serial is known.

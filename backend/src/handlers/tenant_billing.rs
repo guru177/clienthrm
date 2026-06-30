@@ -1,7 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 
 use crate::db::DbPool;
-use crate::handlers::platform_audit::audit_from_request;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
 

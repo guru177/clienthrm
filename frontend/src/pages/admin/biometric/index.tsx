@@ -51,6 +51,9 @@ import {
 import axios from '@/lib/axios';
 import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
+import AttendanceStats from '@/components/attendance/attendance-stats';
+import { useAttendanceStats } from '@/hooks/use-attendance-stats';
+import { usePermissions } from '@/hooks/use-permissions';
 
 interface BiometricDevice {
     id: number;
@@ -87,12 +90,13 @@ interface UserMapping {
 }
 
 interface BiometricStats {
-    total_devices: number;
-    active_devices: number;
-    today_punches: number;
-    total_mappings: number;
-    unmapped_punches: number;
-    last_heartbeat: string | null;
+    scope?: 'org' | 'self';
+    total_devices?: number;
+    active_devices?: number;
+    today_punches?: number;
+    total_mappings?: number;
+    unmapped_punches?: number;
+    last_heartbeat?: string | null;
 }
 
 interface HrmUser {
@@ -149,6 +153,10 @@ function timeAgo(dateStr: string | null): string {
 
 export default function BiometricIndex() {
     const navigate = useNavigate();
+    const { hasPermission } = usePermissions();
+    const canManage = hasPermission('manage-attendance');
+    const { stats: attendanceStats, loading: attendanceStatsLoading } =
+        useAttendanceStats('biometric');
     const [stats, setStats] = useState<BiometricStats | null>(null);
     const [devices, setDevices] = useState<BiometricDevice[]>([]);
     const [punches, setPunches] = useState<BiometricPunch[]>([]);
@@ -244,13 +252,21 @@ export default function BiometricIndex() {
 
     const loadAll = async () => {
         setLoading(true);
-        await Promise.all([loadStats(), loadDevices(), loadPunches(), loadMappings(), loadUsers()]);
+        const tasks = [loadStats(), loadPunches()];
+        if (canManage) {
+            tasks.push(loadDevices(), loadMappings(), loadUsers());
+        }
+        await Promise.all(tasks);
         setLoading(false);
     };
 
     const refreshAll = async () => {
         setRefreshing(true);
-        await Promise.all([loadStats(), loadDevices(), loadPunches(), loadMappings()]);
+        const tasks = [loadStats(), loadPunches()];
+        if (canManage) {
+            tasks.push(loadDevices(), loadMappings());
+        }
+        await Promise.all(tasks);
         setRefreshing(false);
     };
 
@@ -423,19 +439,24 @@ export default function BiometricIndex() {
                                 <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
                                 Refresh
                             </Button>
-                            <Button variant="outline" size="sm" onClick={() => setRegisterOpen(true)}>
-                                <Plus className="mr-2 h-4 w-4" />
-                                Register Device
-                            </Button>
-                            <Button size="sm" onClick={() => setMapOpen(true)}>
-                                <Plus className="mr-2 h-4 w-4" />
-                                Map PIN
-                            </Button>
+                            {canManage && (
+                                <>
+                                    <Button variant="outline" size="sm" onClick={() => setRegisterOpen(true)}>
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        Register Device
+                                    </Button>
+                                    <Button size="sm" onClick={() => setMapOpen(true)}>
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        Map PIN
+                                    </Button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
 
-                {/* Stats Cards */}
+                {/* Device ops stats — managers only */}
+                {canManage && stats?.scope !== 'self' && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                     <Card>
                         <CardContent className="pt-6">
@@ -484,14 +505,48 @@ export default function BiometricIndex() {
                         </CardContent>
                     </Card>
                 </div>
+                )}
+
+                {!canManage && stats?.scope === 'self' && (
+                    <Card>
+                        <CardContent className="pt-6">
+                            <p className="text-sm text-muted-foreground">
+                                Your punches today:{' '}
+                                <span className="font-semibold text-foreground">
+                                    {stats.today_punches ?? 0}
+                                </span>
+                            </p>
+                        </CardContent>
+                    </Card>
+                )}
 
                 {/* Tabs */}
-                <Tabs defaultValue="punches" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3">
-                        <TabsTrigger value="punches">Punch Log</TabsTrigger>
-                        <TabsTrigger value="mapping">PIN Mapping</TabsTrigger>
-                        <TabsTrigger value="devices">Devices</TabsTrigger>
+                <Tabs defaultValue="statistics" className="w-full">
+                    <TabsList className={`grid w-full h-auto ${canManage ? 'grid-cols-4' : 'grid-cols-2'}`}>
+                        <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                        <TabsTrigger value="punches">{canManage ? 'Punch Log' : 'My Punches'}</TabsTrigger>
+                        {canManage && (
+                            <>
+                                <TabsTrigger value="mapping">PIN Mapping</TabsTrigger>
+                                <TabsTrigger value="devices">Devices</TabsTrigger>
+                            </>
+                        )}
                     </TabsList>
+
+                    <TabsContent value="statistics" className="space-y-4">
+                        <AttendanceStats
+                            stats={attendanceStats}
+                            loading={attendanceStatsLoading}
+                            title="Biometric attendance statistics"
+                        />
+                        {!canManage && (
+                            <p className="text-sm text-muted-foreground">
+                                You see only attendance synced from your biometric punches. Device
+                                administration requires{' '}
+                                <code className="rounded bg-muted px-1">manage-attendance</code>.
+                            </p>
+                        )}
+                    </TabsContent>
 
                     {/* Punch Log Tab */}
                     <TabsContent value="punches">

@@ -5,6 +5,7 @@
  * Setup: cd frontend && npm install && npx playwright install chromium
  */
 import { chromium } from '../frontend/node_modules/playwright/index.mjs';
+import { dismissAnnouncements, loginTenant } from '../frontend/scripts/playwright-helpers.mjs';
 
 const BASE = process.env.FE_URL || 'http://localhost:5174';
 const EMAIL = process.env.HRM_EMAIL || 'admin@mashuptech.in';
@@ -95,10 +96,12 @@ async function main() {
 
   // ── Login ──
   try {
-    await page.fill('input[type="email"], input[name="email"]', EMAIL);
-    await page.fill('input[type="password"], input[name="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
-    await page.waitForURL(/\/admin\/dashboard/, { timeout: 20000 });
+    await loginTenant(page, {
+      base: BASE,
+      email: EMAIL,
+      password: PASSWORD,
+      orgSlug: process.env.HRM_ORG_SLUG || 'mashuptech',
+    });
     log({ page: 'Login submit', status: 'OK', detail: 'Redirected to dashboard' });
   } catch (e) {
     log({ page: 'Login submit', status: 'FAIL', detail: e.message });
@@ -113,7 +116,9 @@ async function main() {
     const reqsBefore = failedRequests.length;
 
     try {
-      await page.goto(`${BASE}${route.path}`, { waitUntil: 'networkidle', timeout: 45000 });
+      await page.goto(`${BASE}${route.path}`, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await dismissAnnouncements(page);
       await page.waitForTimeout(800);
 
       const url = page.url();

@@ -66,9 +66,10 @@ interface Designation {
 interface DesignationTableProps {
     onEdit: (designation: Designation) => void;
     onRefresh?: () => void;
+    refreshTrigger?: number;
 }
 
-export default function DesignationTable({ onEdit, onRefresh }: DesignationTableProps) {
+export default function DesignationTable({ onEdit, onRefresh, refreshTrigger = 0 }: DesignationTableProps) {
     const [designations, setDesignations] = useState<Designation[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -86,7 +87,7 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
 
     useEffect(() => {
         fetchDesignations();
-    }, [search, statusFilter, currentPage, perPage, sortBy, sortOrder]);
+    }, [search, statusFilter, currentPage, perPage, sortBy, sortOrder, refreshTrigger]);
 
     const fetchDesignations = async () => {
         setLoading(true);
@@ -146,7 +147,7 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
     const sortIndicator = (col: string) =>
         sortBy === col ? (
             <span className="text-[10px] text-[#071b3a] dark:text-blue-300 font-bold">
-                {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                {sortOrder === 'asc' ? '↑' : '↓'}
             </span>
         ) : null;
 
@@ -296,7 +297,7 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
                                                 </div>
                                             </TableCell>
                                             <TableCell className="text-sm text-muted-foreground/70 max-w-xs truncate">
-                                                {designation.description || <span className="text-muted-foreground/40">â€”</span>}
+                                                {designation.description || <span className="text-muted-foreground/40">—</span>}
                                             </TableCell>
                                             <TableCell className="text-center">
                                                 {designation.level ? (
@@ -304,7 +305,7 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
                                                         {designation.level}
                                                     </span>
                                                 ) : (
-                                                    <span className="text-muted-foreground/40">â€”</span>
+                                                    <span className="text-muted-foreground/40">—</span>
                                                 )}
                                             </TableCell>
                                             <TableCell className="text-center">
@@ -318,7 +319,9 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
                                                 </Badge>
                                             </TableCell>
                                             <TableCell className="text-sm text-muted-foreground/60">
-                                                {new Date(designation.created_at).toLocaleDateString()}
+                                                {designation.created_at
+                                                    ? new Date(designation.created_at).toLocaleDateString()
+                                                    : '—'}
                                             </TableCell>
                                             <TableCell onClick={(e) => e.stopPropagation()}>
                                                 <DropdownMenu>
@@ -359,7 +362,7 @@ export default function DesignationTable({ onEdit, onRefresh }: DesignationTable
                     {!loading && designations.length > 0 && (
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mt-5">
                             <p className="text-xs text-muted-foreground/60">
-                                Showing <span className="font-semibold text-foreground/70">{from}</span>â€“<span className="font-semibold text-foreground/70">{to}</span> of <span className="font-semibold text-foreground/70">{total}</span> results
+                                Showing <span className="font-semibold text-foreground/70">{from}</span>–<span className="font-semibold text-foreground/70">{to}</span> of <span className="font-semibold text-foreground/70">{total}</span> results
                             </p>
                             <div className="flex items-center gap-1.5">
                                 {[

@@ -11,20 +11,24 @@
 {$TENANT_DOMAIN} {
 	encode gzip zstd
 
-	root * /srv/tenant
-	try_files {path} /index.html
-	file_server
-
-	handle /api/* {
-		reverse_proxy backend:3001 {
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up Host {host}
+	route {
+		handle /api/* {
+			reverse_proxy backend:3001 {
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+				header_up Host {host}
+			}
 		}
-	}
 
-	handle /storage/* {
-		respond "Forbidden" 403
+		handle /storage/* {
+			respond "Forbidden" 403
+		}
+
+		handle {
+			root * /srv/tenant
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }
 
@@ -32,15 +36,19 @@
 {$PLATFORM_DOMAIN} {
 	encode gzip zstd
 
-	root * /srv/platform
-	try_files {path} /index.html
-	file_server
+	route {
+		handle /api/* {
+			reverse_proxy backend:3001 {
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+				header_up Host {host}
+			}
+		}
 
-	handle /api/* {
-		reverse_proxy backend:3001 {
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up Host {host}
+		handle {
+			root * /srv/platform
+			try_files {path} /index.html
+			file_server
 		}
 	}
 }

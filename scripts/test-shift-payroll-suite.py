@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import urllib.error
 import urllib.request
+from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import datetime
 
-API = "http://localhost:3001"
+API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 ICLOCK = "http://localhost:7788"
-DB = "database/database.sqlite"
+DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
 LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
 TEST_DAY = "2026-06-12"
 SN = "A250902070"
@@ -58,7 +60,7 @@ def http(method: str, url: str, data: dict | str | None = None, headers: dict | 
 
 
 def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -112,17 +114,68 @@ def attendance_flags(conn: sqlite3.Connection, user_id: int, date: str, notes: s
     return bool(row["is_late"]), bool(row["is_early_exit"])
 
 
-def penalty_days_for_user(conn: sqlite3.Connection, user_id: int, month: int, year: int) -> int:
-    start = f"{year:04d}-{month:02d}-01"
-    end = f"{year:04d}-{month+1:02d}-01" if month < 12 else f"{year+1}-01-01"
-    row = conn.execute(
-        """SELECT COUNT(DISTINCT date) AS c FROM attendance
-           WHERE user_id=? AND deleted_at IS NULL AND clock_out IS NOT NULL
-             AND date >= ? AND date < ?
-             AND (is_late=1 OR is_early_exit=1)""",
-        (user_id, start, end),
+def load_lop_gross(conn: sqlite3.Connection, user_id: int, month: int, year: int) -> float:
+    """Match salary_logic: lop base = gross earnings minus reimbursements."""
+    as_of = f"{year}-{month:02}-{monthrange(year, month)[1]}"
+    eff = conn.execute(
+        """SELECT effective_from FROM salary_structure_items
+           WHERE user_id=? AND effective_from <= ?
+           ORDER BY effective_from DESC LIMIT 1""",
+        (user_id, as_of),
     ).fetchone()
-    return int(row["c"] or 0)
+    if eff:
+        rows = conn.execute(
+            """SELECT COALESCE(sc.component_type, sc.type) AS comp_type, sc.calculation_type,
+                      sc.slug, sc.name, ssi.amount
+               FROM salary_structure_items ssi
+               JOIN salary_components sc ON sc.id = ssi.salary_component_id
+               WHERE ssi.user_id=? AND ssi.effective_from=?""",
+            (user_id, eff["effective_from"]),
+        ).fetchall()
+        gross = 0.0
+        reimb = 0.0
+        for row in rows:
+            ctype = (row["comp_type"] or "").lower()
+            calc = (row["calculation_type"] or "").lower()
+            slug = (row["slug"] or "").lower()
+            name = (row["name"] or "").lower()
+            amount = float(row["amount"] or 0)
+            is_reimb = (
+                ctype == "reimbursement"
+                or calc == "reimbursement"
+                or "reimburse" in slug
+                or "reimburse" in name
+            )
+            if ctype == "earning":
+                if is_reimb:
+                    reimb += amount
+                else:
+                    gross += amount
+        if gross > 0:
+            return max(0.0, gross - reimb)
+
+    legacy = conn.execute(
+        """SELECT basic_salary, hra, transport_allowance, other_allowances
+           FROM salary_structures WHERE user_id=? AND effective_from <= ?
+           ORDER BY effective_from DESC LIMIT 1""",
+        (user_id, as_of),
+    ).fetchone()
+    if legacy:
+        return float(
+            (legacy["basic_salary"] or 0)
+            + (legacy["hra"] or 0)
+            + (legacy["transport_allowance"] or 0)
+            + (legacy["other_allowances"] or 0)
+        )
+    return 0.0
+
+
+def with_db(fn):
+    conn = db()
+    try:
+        return fn(conn)
+    finally:
+        conn.close()
 
 
 def main() -> int:
@@ -147,15 +200,14 @@ def main() -> int:
     shifts = json.loads(shifts_raw).get("data") or []
     suite.record("SP-02", "List shift templates", len(shifts) > 0, f"count={len(shifts)}")
 
-    conn = db()
-    emp = get_demo_employee(conn)
+    emp = with_db(get_demo_employee)
     if not emp:
         suite.record("SP-03", "Find Demo Employee 1", False, "not in DB")
         return suite.summary()
     user_id = int(emp["id"])
     suite.record("SP-03", "Find Demo Employee 1", True, f"id={user_id}")
 
-    shift = shift_for_user_on_date(conn, user_id, TEST_DAY)
+    shift = with_db(lambda c: shift_for_user_on_date(c, user_id, TEST_DAY))
     suite.record(
         "SP-04",
         "User has shift resolved for test day",
@@ -163,10 +215,10 @@ def main() -> int:
         f"{shift['name'] if shift else 'none'} {shift['start_time']}-{shift['end_time']}" if shift else "",
     )
 
-    cleanup_shift_test_day(conn, user_id)
+    with_db(lambda c: cleanup_shift_test_day(c, user_id))
 
     # On-time manual attendance (within grace)
-    code, on_time = http(
+    code, _on_time = http(
         "POST",
         f"{API}/api/admin/attendance/manual",
         {
@@ -179,23 +231,15 @@ def main() -> int:
         },
         auth,
     )
-    flags_on = attendance_flags(conn, user_id, TEST_DAY, "SHIFT-TEST on-time")
     suite.record(
         "SP-05",
         "Manual on-time attendance created",
-        code == 200 and flags_on is not None,
-        f"HTTP {code} flags={flags_on}",
+        code == 200,
+        f"HTTP {code}",
     )
-    if flags_on:
-        suite.record(
-            "SP-06",
-            "On-time: not late, not early",
-            flags_on == (False, False),
-            f"late={flags_on[0]} early={flags_on[1]} shift={shift['start_time']}-{shift['end_time']}" if shift else "",
-        )
 
     # Late in + early out
-    code, late = http(
+    code, _late = http(
         "POST",
         f"{API}/api/admin/attendance/manual",
         {
@@ -208,49 +252,15 @@ def main() -> int:
         },
         auth,
     )
-    flags_le = attendance_flags(conn, user_id, TEST_DAY, "SHIFT-TEST late-early")
     suite.record(
         "SP-07",
         "Manual late+early attendance created",
-        code == 200 and flags_le is not None,
-        f"HTTP {code} flags={flags_le}",
+        code == 200,
+        f"HTTP {code}",
     )
-    if flags_le and shift:
-        expect_late = True  # 10:30 > start + grace
-        expect_early = True  # 17:00 < end - grace
-        suite.record(
-            "SP-08",
-            "Late+early flags match shift rules",
-            flags_le == (expect_late, expect_early),
-            f"got late={flags_le[0]} early={flags_le[1]} (shift {shift['start_time']}-{shift['end_time']}, grace in={shift['grace_in_minutes']} out={shift['grace_out_minutes']})",
-        )
 
-    # Biometric with shift timing
-    mapped = conn.execute(
-        "SELECT device_pin FROM biometric_user_map WHERE user_id=? AND device_serial=? LIMIT 1",
-        (user_id, SN),
-    ).fetchone()
-    if mapped:
-        pin = mapped["device_pin"]
-        body = f"{pin}\t{TEST_DAY} 08:00:00\t0\t0\n{pin}\t{TEST_DAY} 08:30:00\t0\t0"
-        http("POST", f"{ICLOCK}/iclock/cdata?SN={SN}&table=ATTLOG", body, {"X-Forwarded-For": DEVICE_IP})
-        bio_flags = conn.execute(
-            """SELECT is_late, is_early_exit, clock_in, clock_out FROM attendance
-               WHERE user_id=? AND date=? AND source='biometric' AND deleted_at IS NULL
-               ORDER BY id DESC LIMIT 1""",
-            (user_id, TEST_DAY),
-        ).fetchone()
-        suite.record(
-            "SP-09",
-            "Biometric punch uses shift for late flag",
-            bio_flags is not None,
-            f"late={bool(bio_flags['is_late']) if bio_flags else '?'} in={bio_flags['clock_in'] if bio_flags else '?'} out={bio_flags['clock_out'] if bio_flags else '?'}",
-        )
-    else:
-        suite.record("SP-09", "Biometric punch uses shift for late flag", True, "SKIP: user not mapped to device")
-
-    # Payroll shift penalty formula
-    month, year = 2026, 6
+    # Payroll shift penalty formula (no local SQLite reads before this API call)
+    month, year = 6, 2026
     code, prev_raw = http(
         "POST",
         f"{API}/api/admin/payroll/preview",
@@ -268,38 +278,55 @@ def main() -> int:
         return suite.summary()
 
     shift_penalty = float(row.get("shift_penalty") or 0)
+    suggested_penalty = float(row.get("suggested_shift_penalty") or 0)
     gross = float(row.get("gross_salary") or 0)
+    lop_gross = float(row.get("lop_gross") or gross)
     total_ded = float(row.get("total_deductions") or 0)
     net = float(row.get("net_salary") or 0)
     working = int(row.get("working_days") or 0)
+    api_penalty_days = int(row.get("penalty_days") or 0)
 
-    factor_row = conn.execute(
-        """SELECT value FROM app_settings
-           WHERE key='shift_penalty_half_day_factor'
-           AND organization_id=(SELECT id FROM organizations WHERE slug='mashuptech')"""
-    ).fetchone()
-    factor = float(factor_row["value"]) if factor_row else 0.5
+    def payroll_checks(c: sqlite3.Connection):
+        factor_row = c.execute(
+            """SELECT value FROM app_settings
+               WHERE key='shift_penalty_half_day_factor'
+               AND organization_id=(SELECT id FROM organizations WHERE slug='mashuptech')"""
+        ).fetchone()
+        factor = float(factor_row["value"]) if factor_row else 0.5
+        base = float(row.get("lop_gross") or 0) or load_lop_gross(c, user_id, month, year) or lop_gross
+        daily = base / working if working > 0 else 0
+        expected_penalty = round(api_penalty_days * daily * factor, 2)
+        return factor, expected_penalty, base
 
-    penalty_days = penalty_days_for_user(conn, user_id, month, year)
-    lop_gross_row = conn.execute(
-        """SELECT gross_salary FROM payslips WHERE user_id=? AND month=? AND year=? ORDER BY id DESC LIMIT 1""",
-        (user_id, month, year),
-    ).fetchone()
-    # Use gross from preview as lop base approximation
-    daily = gross / working if working > 0 else 0
-    expected_penalty = round(penalty_days * daily * factor, 2)
+    flags_on = with_db(lambda c: attendance_flags(c, user_id, TEST_DAY, "SHIFT-TEST on-time"))
+    suite.record(
+        "SP-06",
+        "On-time: not late, not early",
+        flags_on == (False, False),
+        f"late={flags_on[0] if flags_on else '?'} early={flags_on[1] if flags_on else '?'} shift={shift['start_time']}-{shift['end_time']}" if shift and flags_on else "missing row",
+    )
+    flags_le = with_db(lambda c: attendance_flags(c, user_id, TEST_DAY, "SHIFT-TEST late-early"))
+    if flags_le and shift:
+        suite.record(
+            "SP-08",
+            "Late+early flags match shift rules",
+            flags_le == (True, True),
+            f"got late={flags_le[0]} early={flags_le[1]} (shift {shift['start_time']}-{shift['end_time']}, grace in={shift['grace_in_minutes']} out={shift['grace_out_minutes']})",
+        )
+
+    factor, expected_penalty, penalty_base = with_db(payroll_checks)
 
     suite.record(
         "SP-10",
-        "Payroll includes shift penalty",
-        shift_penalty > 0 or penalty_days == 0,
-        f"penalty=INR{shift_penalty} days={penalty_days} expected~INR{expected_penalty}",
+        "Payroll shows penalty days (not auto-deducted)",
+        shift_penalty == 0 and (api_penalty_days == 0 or suggested_penalty > 0),
+        f"auto_penalty=INR{shift_penalty} days={api_penalty_days} suggested=INR{suggested_penalty}",
     )
     suite.record(
         "SP-11",
-        "Shift penalty formula (days × daily wage × factor)",
-        penalty_days == 0 or abs(shift_penalty - expected_penalty) < 2.0,
-        f"penalty={shift_penalty} expected={expected_penalty} factor={factor} working={working}",
+        "Suggested penalty formula (days × daily wage × factor)",
+        api_penalty_days == 0 or abs(suggested_penalty - expected_penalty) < 2.0,
+        f"suggested={suggested_penalty} expected={expected_penalty} factor={factor} working={working} lop_base={penalty_base}",
     )
     suite.record(
         "SP-12",
@@ -307,6 +334,34 @@ def main() -> int:
         abs(net - max(0, gross - total_ded)) < 0.05,
         f"gross={gross} ded={total_ded} net={net}",
     )
+
+    # Biometric with shift timing (after payroll preview to avoid SQLite/API contention)
+    pin_row = with_db(
+        lambda c: c.execute(
+            "SELECT device_pin FROM biometric_user_map WHERE user_id=? AND device_serial=? LIMIT 1",
+            (user_id, SN),
+        ).fetchone()
+    )
+    if pin_row:
+        mapped = pin_row["device_pin"]
+        body = f"{mapped}\t{TEST_DAY} 08:00:00\t0\t0\n{mapped}\t{TEST_DAY} 08:30:00\t0\t0"
+        http("POST", f"{ICLOCK}/iclock/cdata?SN={SN}&table=ATTLOG", body, {"X-Forwarded-For": DEVICE_IP})
+        bio_flags = with_db(
+            lambda c: c.execute(
+                """SELECT is_late, is_early_exit, clock_in, clock_out FROM attendance
+                   WHERE user_id=? AND date=? AND source='biometric' AND deleted_at IS NULL
+                   ORDER BY id DESC LIMIT 1""",
+                (user_id, TEST_DAY),
+            ).fetchone()
+        )
+        suite.record(
+            "SP-09",
+            "Biometric punch uses shift for late flag",
+            bio_flags is not None and not bool(bio_flags["is_late"]),
+            f"late={bool(bio_flags['is_late']) if bio_flags else '?'} in={bio_flags['clock_in'] if bio_flags else '?'}",
+        )
+    else:
+        suite.record("SP-09", "Biometric punch uses shift for late flag", True, "SKIP: user not mapped to device")
 
     code, today = http("GET", f"{API}/api/admin/attendance/today", headers=auth)
     if code == 200:
@@ -320,7 +375,89 @@ def main() -> int:
     else:
         suite.record("SP-13", "Today attendance API returns shift context", False, f"HTTP {code}")
 
-    conn.close()
+    # SP-14: Daily register supports scheduled_off and extended sync
+    code, daily_raw = http(
+        "GET",
+        f"{API}/api/admin/reports/daily-attendance?date={TEST_DAY}",
+        headers=auth,
+    )
+    if code == 200:
+        daily_payload = json.loads(daily_raw).get("data") or {}
+        employees = daily_payload.get("employees") or []
+        valid_status = all(
+            e.get("attendance_status") in ("present", "open", "absent", "scheduled_off")
+            for e in employees
+        )
+        suite.record(
+            "SP-14",
+            "Daily register attendance_status includes scheduled_off",
+            valid_status and "scheduled_off_count" in daily_payload,
+            f"employees={len(employees)} off={daily_payload.get('scheduled_off_count')}",
+        )
+    else:
+        suite.record("SP-14", "Daily register attendance_status includes scheduled_off", False, f"HTTP {code}")
+
+    # SP-15: Manual bulk marking (manual_attendance module path)
+    code, bulk_raw = http(
+        "POST",
+        f"{API}/api/admin/attendance/manual/bulk",
+        {
+            "date": TEST_DAY,
+            "entries": [
+                {
+                    "user_id": user_id,
+                    "clock_in": "09:10:00",
+                    "clock_out": "18:00:00",
+                    "status": "present",
+                    "notes": "SHIFT-TEST manual-bulk",
+                }
+            ],
+        },
+        auth,
+    )
+    bulk_ok = code == 200 and json.loads(bulk_raw).get("success") is not False
+    suite.record("SP-15", "Manual bulk marking API", bulk_ok, f"HTTP {code}")
+
+    # SP-16: Orphan biometric check-out is marked processed (prevents device retry storms)
+    pin_row2 = with_db(
+        lambda c: c.execute(
+            "SELECT device_pin FROM biometric_user_map WHERE user_id=? AND device_serial=? LIMIT 1",
+            (user_id, SN),
+        ).fetchone()
+    )
+    if pin_row2:
+        # Close any open sessions so check-out has nothing to match (true orphan).
+        with_db(
+            lambda c: c.execute(
+                """UPDATE attendance SET clock_out=clock_in, duration_minutes=0, updated_at=datetime('now')
+                   WHERE user_id=? AND date=? AND clock_out IS NULL AND deleted_at IS NULL""",
+                (user_id, TEST_DAY),
+            )
+        )
+        orphan_time = f"{TEST_DAY} 21:00:00"
+        mapped = pin_row2["device_pin"]
+        http(
+            "POST",
+            f"{ICLOCK}/iclock/cdata?SN={SN}&table=ATTLOG",
+            f"{mapped}\t{orphan_time}\t1\t0\n",
+            {"X-Forwarded-For": DEVICE_IP},
+        )
+        orphan = with_db(
+            lambda c: c.execute(
+                """SELECT is_processed FROM biometric_punches
+                   WHERE device_serial=? AND punch_time=? ORDER BY id DESC LIMIT 1""",
+                (SN, orphan_time),
+            ).fetchone()
+        )
+        suite.record(
+            "SP-16",
+            "Orphan check-out marked processed",
+            orphan is not None and int(orphan["is_processed"]) == 1,
+            f"is_processed={orphan['is_processed'] if orphan else '?'}",
+        )
+    else:
+        suite.record("SP-16", "Orphan check-out marked processed", True, "SKIP: user not mapped")
+
     print(f"\nTest data on {TEST_DAY} tagged SHIFT-TEST* (safe to delete manually).")
     return suite.summary()
 

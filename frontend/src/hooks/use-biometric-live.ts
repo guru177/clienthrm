@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { wsUrl } from '@/lib/ws-base';
 
 export type BiometricLiveEvent = {
     type: string;
@@ -35,8 +36,7 @@ export function useBiometricLive({ enabled = true, onEvent }: Options) {
         let closed = false;
 
         const connect = () => {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${window.location.host}/api/admin/biometric/ws?token=${encodeURIComponent(token)}`;
+            const url = wsUrl(`/api/admin/biometric/ws?token=${encodeURIComponent(token)}`);
             ws = new WebSocket(url);
 
             ws.onopen = () => setConnected(true);

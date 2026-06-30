@@ -7,6 +7,52 @@ use crate::middleware::platform_auth::PLATFORM_AUD;
 use crate::models::user::JwtClaims;
 
 pub const TENANT_AUD: &str = "tenant";
+pub const TENANT_PRE_AUTH_AUD: &str = "tenant_pre_auth";
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TenantPreAuthClaims {
+    pub sub: i64,
+    pub email: String,
+    pub aud: String,
+    pub exp: usize,
+    pub iat: usize,
+}
+
+pub fn generate_tenant_pre_auth_token(
+    user_id: i64,
+    email: &str,
+    secret: &str,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = chrono::Utc::now();
+    let exp = now + chrono::Duration::minutes(5);
+    let claims = TenantPreAuthClaims {
+        sub: user_id,
+        email: email.to_string(),
+        aud: TENANT_PRE_AUTH_AUD.to_string(),
+        exp: exp.timestamp() as usize,
+        iat: now.timestamp() as usize,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+}
+
+pub fn decode_tenant_pre_auth(token: &str, secret: &str) -> Result<TenantPreAuthClaims, String> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_audience(&[TENANT_PRE_AUTH_AUD]);
+    let data = decode::<TenantPreAuthClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|_| "Invalid or expired pre-auth token".to_string())?;
+    if data.claims.aud != TENANT_PRE_AUTH_AUD {
+        return Err("Invalid pre-auth token audience".into());
+    }
+    Ok(data.claims)
+}
 
 /// Decode and validate a tenant JWT string.
 pub fn decode_tenant_token(token: &str, secret: &str) -> Result<JwtClaims, Error> {
@@ -117,6 +163,42 @@ pub fn generate_token(
         org_slug: Some(org_slug.to_string()),
         is_super_admin,
         aud: TENANT_AUD.to_string(),
+        impersonated_by: None,
+        impersonation: false,
+    };
+
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+}
+
+/// Tenant JWT issued during platform impersonation (auditable via `impersonated_by`).
+pub fn generate_impersonation_token(
+    user_id: i64,
+    email: &str,
+    organization_id: i64,
+    org_slug: &str,
+    is_super_admin: bool,
+    platform_admin_id: i64,
+    secret: &str,
+    expiration_hours: u64,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = chrono::Utc::now();
+    let exp = now + chrono::Duration::hours(expiration_hours as i64);
+
+    let claims = JwtClaims {
+        sub: user_id,
+        email: email.to_string(),
+        exp: exp.timestamp() as usize,
+        iat: now.timestamp() as usize,
+        organization_id,
+        org_slug: Some(org_slug.to_string()),
+        is_super_admin,
+        aud: TENANT_AUD.to_string(),
+        impersonated_by: Some(platform_admin_id),
+        impersonation: true,
     };
 
     jsonwebtoken::encode(
@@ -154,6 +236,8 @@ mod tests {
             org_slug: Some("acme".to_string()),
             is_super_admin: false,
             aud: PLATFORM_AUD.to_string(),
+            impersonated_by: None,
+            impersonation: false,
         };
         let token = encode(
             &Header::default(),

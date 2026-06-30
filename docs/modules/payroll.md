@@ -2,7 +2,9 @@
 
 ## Overview
 
-End-to-end compensation: salary components, employee CTC profiles, payroll preview/generation, payslips, advances, statutory deductions (PF/ESI/PT), PDF export, and WhatsApp delivery.
+End-to-end compensation: salary components, employee CTC profiles, payroll preview/generation, payslips, advances, statutory deductions (PF/ESI/PT), **A4 PDF** export, **email distribution**, and WhatsApp delivery.
+
+**How payslip email & PDF work:** [PAYSLIP-DISTRIBUTION.md](../PAYSLIP-DISTRIBUTION.md)
 
 ## Plan module
 
@@ -17,10 +19,11 @@ End-to-end compensation: salary components, employee CTC profiles, payroll previ
 | `/admin/salaries/employees` | `pages/admin/salaries/employees.tsx` |
 | `/admin/salaries/employees/:id/payslips` | `pages/admin/salaries/payslips-route.tsx` |
 | `/admin/payroll` | `pages/admin/payroll/index.tsx` |
+| `/admin/payroll/advanced` | `pages/admin/payroll/advanced.tsx` |
 | `/admin/my-payslips` | `pages/admin/my-payslips.tsx` |
 
 **Components:** `salary-structure-panel.tsx`, `ctc-salary-panel.tsx`, `salary-tabs-panel.tsx`  
-**Lib:** `lib/payslip-pdf.ts` — client PDF generation
+**Lib:** `lib/payslip-pdf.ts` — open PDF, email payslips, bulk ZIP
 
 ## Backend
 
@@ -61,14 +64,35 @@ End-to-end compensation: salary components, employee CTC profiles, payroll previ
 | POST | `/api/admin/payroll/generate` | manage-payroll |
 | POST | `/api/admin/payslips/{id}/unlock` | manage-payroll |
 
+### Advanced payroll
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET/POST/DELETE | `/api/admin/payroll/variable-pay` | Bonus, commission, incentives |
+| GET/POST | `/api/admin/payroll/reimbursements` | Employee claims |
+| POST | `/api/admin/payroll/reimbursements/{id}/review` | Approve/reject claims |
+| GET/POST | `/api/admin/payroll/runs` | Payroll run workflow |
+| POST | `/api/admin/payroll/runs/{id}/action` | review / approve / release |
+| GET | `/api/admin/payroll/checklist` | Pre-run validation |
+| GET | `/api/admin/payroll/reminder` | Monthly reminder status |
+| GET | `/api/admin/payroll/compliance-export` | PF ECR, ESI, PT, Form 16 |
+| GET | `/api/admin/payroll/bank-file` | NEFT CSV |
+| POST | `/api/admin/payroll/mark-paid` | Mark payslips paid |
+| GET | `/api/admin/payroll/accounting-export` | Journal CSV |
+| GET/POST | `/api/admin/payroll/pay-groups` | Pay groups |
+| POST | `/api/admin/users/{id}/payroll-hold` | Salary hold |
+| GET/POST | `/api/admin/users/{id}/tax-declaration` | TDS declarations |
+| POST | `/api/admin/payslips/{id}/send-email` | Email payslip PDF |
+| POST | `/api/admin/payslips/bulk-send-email` | Email all payslips (month or IDs) |
+
 ### Payslips
 
 | Method | Path |
 |--------|------|
 | GET | `/api/admin/me/payslips` |
 | GET | `/api/admin/salaries/employees/{id}/payslips/list` |
-| GET | `/api/admin/payslips/{id}/pdf` |
-| POST | `/api/admin/payslips/bulk-download` |
+| GET | `/api/admin/payslips/{id}/pdf` | A4 PDF |
+| POST | `/api/admin/payslips/bulk-download` | ZIP of PDFs |
 | POST | `/api/admin/payslips/{id}/send-whatsapp` |
 
 ## Database
@@ -94,8 +118,10 @@ End-to-end compensation: salary components, employee CTC profiles, payroll previ
 
 1. Select month → `POST /api/admin/payroll/preview`.
 2. Review LOP, leave overlap, statutory lines (`payroll_logic`, `statutory_logic`).
-3. `POST /api/admin/payroll/generate` creates payslip rows.
-4. Employees view via My Payslips; HR downloads PDF bulk.
+3. `POST /api/admin/payroll/generate` creates payslip rows (`send_emails: true` optionally emails PDFs).
+4. Employees view via **My Payslips**; HR can email, download PDF, or bulk ZIP.
+
+See [Payslip distribution](../PAYSLIP-DISTRIBUTION.md) for SMTP, PDF, and email details.
 
 ## Related modules
 

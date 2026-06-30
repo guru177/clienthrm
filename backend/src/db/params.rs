@@ -205,14 +205,6 @@ macro_rules! params {
     };
 }
 
-pub fn from_one<T: IntoParamValue>(v: T) -> Params {
-    Params::from_values(vec![v.into_param_value()])
-}
-
-pub fn from_two<A: IntoParamValue, B: IntoParamValue>(a: A, b: B) -> Params {
-    Params::from_values(vec![a.into_param_value(), b.into_param_value()])
-}
-
 pub trait ToParams {
     fn to_params(self) -> Params;
 }
@@ -316,14 +308,4 @@ impl IntoParamValue for &Option<f64> {
             None => ParamValue::Null,
         }
     }
-}
-
-/// Dynamic params from string slices (replaces rusqlite::params_from_iter for &str).
-pub fn from_str_refs(values: &[&str]) -> Params {
-    Params::from_values(
-        values
-            .iter()
-            .map(|v| ParamValue::Text((*v).to_string()))
-            .collect(),
-    )
 }

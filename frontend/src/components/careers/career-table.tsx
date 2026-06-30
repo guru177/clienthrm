@@ -265,7 +265,7 @@ export default function CareerTable({ onEdit, onRefresh, reloadTrigger = 0 }: Ca
                                             ID
                                             {sortBy === 'id' && (
                                                 <span className="text-xs">
-                                                    {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                                                    {sortOrder === 'asc' ? '↑' : '↓'}
                                                 </span>
                                             )}
                                         </div>
@@ -278,7 +278,7 @@ export default function CareerTable({ onEdit, onRefresh, reloadTrigger = 0 }: Ca
                                             Title
                                             {sortBy === 'title' && (
                                                 <span className="text-xs">
-                                                    {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                                                    {sortOrder === 'asc' ? '↑' : '↓'}
                                                 </span>
                                             )}
                                         </div>
@@ -295,7 +295,7 @@ export default function CareerTable({ onEdit, onRefresh, reloadTrigger = 0 }: Ca
                                             Status
                                             {sortBy === 'is_active' && (
                                                 <span className="text-xs">
-                                                    {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                                                    {sortOrder === 'asc' ? '↑' : '↓'}
                                                 </span>
                                             )}
                                         </div>
@@ -308,7 +308,7 @@ export default function CareerTable({ onEdit, onRefresh, reloadTrigger = 0 }: Ca
                                             Created
                                             {sortBy === 'created_at' && (
                                                 <span className="text-xs">
-                                                    {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                                                    {sortOrder === 'asc' ? '↑' : '↓'}
                                                 </span>
                                             )}
                                         </div>

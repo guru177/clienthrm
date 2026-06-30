@@ -1,6 +1,6 @@
 use crate::db::Connection;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrgPlanInfo {
@@ -19,7 +19,7 @@ fn parse_json_string_list(raw: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
 }
 
-/// Tenant modules in sidebar / subscription catalog order (24 items).
+/// Tenant modules in sidebar / subscription catalog order (25 items).
 pub const MODULE_CATALOG: &[(&str, &str)] = &[
     ("dashboard", "Dashboard"),
     ("users", "Users & Roles"),
@@ -32,6 +32,7 @@ pub const MODULE_CATALOG: &[(&str, &str)] = &[
     ("attendance", "Attendance"),
     ("shifts", "Shifts"),
     ("biometric", "Biometric Devices"),
+    ("manual_attendance", "Manual Attendance"),
     ("leave", "Leave Requests"),
     ("leave_manage", "Manage Leave"),
     ("holidays", "Holidays"),
@@ -123,11 +124,11 @@ pub fn permissions_for_module(module: &str) -> Vec<&'static str> {
         "attendance" => vec![
             "view-attendance",
             "manage-attendance",
-            "mark-attendance",
             "clock-inout",
         ],
         "shifts" => vec!["view-attendance", "manage-attendance"],
         "biometric" => vec!["view-attendance", "manage-attendance"],
+        "manual_attendance" => vec!["view-attendance", "mark-attendance"],
         "leave" => vec![
             "view-leave-requests",
             "create-leave-requests",
@@ -143,7 +144,7 @@ pub fn permissions_for_module(module: &str) -> Vec<&'static str> {
             "edit-holidays",
             "delete-holidays",
         ],
-        "payroll" => vec!["view-payroll", "manage-payroll", "export-payroll"],
+        "payroll" => vec!["view-payroll", "manage-payroll", "export-payroll", "approve-payroll"],
         "my_payslips" => vec!["view-my-payslips"],
         "workflows" => vec![
             "view-workflows",
@@ -288,6 +289,45 @@ pub fn ensure_user_capacity(conn: &Connection, org_id: i64) -> Result<(), String
     Ok(())
 }
 
+/// Platform per-tenant module toggles (merged into effective plan modules).
+fn load_feature_overrides(conn: &Connection, org_id: i64) -> HashMap<String, bool> {
+    let mut map = HashMap::new();
+    let Ok(stmt) = conn.prepare(
+        "SELECT module_slug, enabled FROM tenant_feature_overrides WHERE organization_id = ?1",
+    ) else {
+        return map;
+    };
+    for (slug, enabled) in stmt.query_map([org_id], |row| {
+        Ok((row.get_idx::<String>(0)?, row.get_idx::<i64>(1)? != 0))
+    }) {
+        map.insert(slug, enabled);
+    }
+    map
+}
+
+/// Apply platform feature overrides on top of subscription plan modules.
+pub fn apply_feature_overrides(
+    conn: &Connection,
+    org_id: i64,
+    base_modules: Vec<String>,
+) -> Vec<String> {
+    let overrides = load_feature_overrides(conn, org_id);
+    if overrides.is_empty() {
+        return base_modules;
+    }
+    let mut modules: HashSet<String> = base_modules.into_iter().collect();
+    for (slug, enabled) in overrides {
+        if enabled {
+            modules.insert(slug);
+        } else {
+            modules.remove(&slug);
+        }
+    }
+    let mut out: Vec<String> = modules.into_iter().collect();
+    out.sort_by_key(|k| module_sort_index(k));
+    out
+}
+
 pub fn load_org_plan(conn: &Connection, org_id: i64) -> Option<OrgPlanInfo> {
     let plan_slug: String = conn
         .query_row(
@@ -308,7 +348,8 @@ pub fn load_org_plan(conn: &Connection, org_id: i64) -> Option<OrgPlanInfo> {
                 .unwrap_or_else(|| "[]".to_string());
             let slug: String = row.get("slug")?;
             let sub = crate::subscription_period::load_subscription_status(conn, org_id, &slug);
-            let modules = parse_json_string_list(&modules_raw);
+            let modules =
+                apply_feature_overrides(conn, org_id, parse_json_string_list(&modules_raw));
             Ok(OrgPlanInfo {
                 name: row.get("name")?,
                 slug,
@@ -328,8 +369,9 @@ pub fn load_org_plan(conn: &Connection, org_id: i64) -> Option<OrgPlanInfo> {
 /// Restrict user permissions to those allowed by the organization subscription plan.
 pub fn apply_plan_to_permissions(user_permissions: Vec<String>, plan: &OrgPlanInfo) -> Vec<String> {
     let plan_permissions = permissions_from_modules(&plan.modules);
-    if plan_permissions.is_empty() {
-        return user_permissions;
+    // Empty plan modules = no entitlements (fail closed), not full role permissions.
+    if plan.modules.is_empty() || plan_permissions.is_empty() {
+        return Vec::new();
     }
 
     if user_permissions.iter().any(|p| p == "*") {
@@ -356,7 +398,7 @@ pub fn resolve_effective_permissions(
     let permissions = match &plan {
         Some(p) if p.subscription_expired => Vec::new(),
         Some(p) => apply_plan_to_permissions(user_permissions, p),
-        None => user_permissions,
+        None => Vec::new(),
     };
     (permissions, plan)
 }

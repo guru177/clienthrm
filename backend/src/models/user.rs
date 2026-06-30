@@ -102,6 +102,11 @@ pub struct JwtClaims {
     pub is_super_admin: bool,
     #[serde(default = "default_tenant_aud")]
     pub aud: String,
+    /// Set when a platform admin impersonates a tenant user.
+    #[serde(default)]
+    pub impersonated_by: Option<i64>,
+    #[serde(default)]
+    pub impersonation: bool,
 }
 
 #[derive(Debug, Deserialize)]

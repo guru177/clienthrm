@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, MapPin, AlertCircle } from 'lucide-react';
+import { RefreshCw, MapPin, AlertCircle, ExternalLink } from 'lucide-react';
 import { platformGet } from '@/lib/platform-api';
+import { googleStreetViewUrl } from '@/lib/street-view-url';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import IpTrackingMap from '@/components/ip-tracking-map';
@@ -167,7 +168,12 @@ export default function PlatformIpTracking() {
                         )}
 
                         <ul className="space-y-3">
-                            {users.map((admin) => (
+                            {users.map((admin) => {
+                                const streetViewUrl = googleStreetViewUrl(
+                                    admin.latitude,
+                                    admin.longitude,
+                                );
+                                return (
                                 <li
                                     key={admin.id}
                                     className="rounded-xl border border-border/60 bg-[#f8fbff] p-3"
@@ -192,15 +198,28 @@ export default function PlatformIpTracking() {
                                                 {admin.organization_name}
                                             </p>
                                             {admin.has_location ? (
-                                                <p className="mt-1 flex items-center gap-1 text-xs text-emerald-700">
-                                                    <MapPin className="h-3 w-3" />
-                                                    {admin.city || admin.region || admin.country || 'Location available'}
-                                                    {admin.accuracy_meters != null && admin.accuracy_meters > 1000 && (
-                                                        <span className="text-amber-600">
-                                                            (approx ±{Math.round(admin.accuracy_meters / 100) / 10} km)
-                                                        </span>
+                                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                    <p className="flex items-center gap-1 text-xs text-emerald-700">
+                                                        <MapPin className="h-3 w-3 shrink-0" />
+                                                        {admin.city || admin.region || admin.country || 'Location available'}
+                                                        {admin.accuracy_meters != null && admin.accuracy_meters > 1000 && (
+                                                            <span className="text-amber-600">
+                                                                (approx ±{Math.round(admin.accuracy_meters / 100) / 10} km)
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                    {streetViewUrl && (
+                                                        <a
+                                                            href={streetViewUrl}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="inline-flex items-center gap-1 rounded-md border border-[#036bd3]/30 bg-white px-2 py-0.5 text-[11px] font-medium text-[#036bd3] hover:bg-[#036bd3]/5"
+                                                        >
+                                                            Street View
+                                                            <ExternalLink className="h-3 w-3" />
+                                                        </a>
                                                     )}
-                                                </p>
+                                                </div>
                                             ) : (
                                                 <p className="mt-1 flex items-center gap-1 text-xs text-amber-600">
                                                     <AlertCircle className="h-3 w-3" />
@@ -218,7 +237,8 @@ export default function PlatformIpTracking() {
                                         </div>
                                     </div>
                                 </li>
-                            ))}
+                                );
+                            })}
                         </ul>
                     </div>
                 </aside>

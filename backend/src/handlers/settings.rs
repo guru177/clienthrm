@@ -46,6 +46,12 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 
     let merge_env = |mut items: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
         let env_vars = vec![
+            ("mail_host", "SMTP_HOST", false),
+            ("mail_port", "SMTP_PORT", false),
+            ("mail_username", "SMTP_USER", false),
+            ("mail_password", "SMTP_PASS", true),
+            ("mail_from_address", "SMTP_FROM", false),
+            ("mail_from_name", "APP_NAME", false),
             ("smtp_host", "SMTP_HOST", false),
             ("smtp_port", "SMTP_PORT", false),
             ("smtp_user", "SMTP_USER", false),
@@ -98,7 +104,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     };
 
     // Try app_settings first
-    if let Ok(mut stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings WHERE organization_id = ?1 ORDER BY id") {
+    if let Ok(stmt) = conn.prepare("SELECT id, key, value, type, description FROM app_settings WHERE organization_id = ?1 ORDER BY id") {
         let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get_idx::<i64>(0)?,

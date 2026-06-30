@@ -273,7 +273,7 @@ pub async fn tickets_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRes
     }
     sql.push_str(" ORDER BY t.updated_at DESC, t.id DESC LIMIT 200");
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };

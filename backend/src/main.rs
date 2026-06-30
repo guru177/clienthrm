@@ -17,17 +17,33 @@ mod statutory_logic;
 mod salary_logic;
 mod leave_type_logic;
 mod payroll_logic;
+mod payroll_month_context;
+mod overtime_logic;
+mod arrears_logic;
+mod tds_logic;
+mod payroll_extras;
 mod attendance_logic;
 mod workflow_logic;
 mod storage;
+mod desktop_update_feed;
 mod tenant;
 mod plan_limits;
 mod presence;
 mod subscription_period;
 mod payslip_render;
+mod payslip_pdf;
+mod payslip_email;
+mod smtp_config;
 mod rate_limit;
 mod signup_otp;
 mod signup_otp_email;
+mod password_reset;
+mod password_reset_email;
+mod password_reset_otp;
+mod password_reset_otp_email;
+mod totp_logic;
+mod validation;
+mod jobs;
 
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, middleware as actix_middleware};
@@ -80,16 +96,22 @@ async fn run_api_server(
             .supports_credentials()
             .max_age(3600)
             .allowed_origin_fn(move |origin, _req_head| {
-                if origin.as_bytes() == b"null" {
-                    return true;
-                }
                 allowed.iter().any(|o| origin == o.as_str())
             });
 
         App::new()
             .app_data(web::PayloadConfig::new(10 * 1024 * 1024))
             .wrap(cors)
+            .wrap(actix_web::middleware::from_fn(
+                crate::middleware::security::security_headers_middleware,
+            ))
+            .wrap(actix_web::middleware::from_fn(
+                crate::middleware::security::global_rate_limit_middleware,
+            ))
             .wrap(actix_middleware::Logger::default())
+            .wrap(actix_web::middleware::from_fn(
+                crate::middleware::platform_guard::platform_guard_middleware,
+            ))
             .wrap(actix_web::middleware::from_fn(
                 crate::middleware::rbac::rbac_middleware,
             ))
@@ -105,7 +127,7 @@ async fn run_api_server(
     .await
 }
 
-#[actix_web::main]
+#[actix_web::main(flavor = "multi_thread")]
 async fn main() -> std::io::Result<()> {
     config::load_dotenv();
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
@@ -129,21 +151,36 @@ async fn main() -> std::io::Result<()> {
         log::warn!("Signup WhatsApp OTP: MSG91_AUTH_KEY / MSG91_AUTHKEY is not set");
     }
     cfg.validate_security();
-    let pool = db::init_pool(&cfg.database_path, cfg.database_url.as_deref());
+
+    let database_path = cfg.database_path.clone();
+    let database_url = cfg.database_url.clone();
+    let pool = tokio::task::spawn_blocking(move || {
+        let pool = db::init_pool(&database_path, database_url.as_deref());
+        db::init_read_pool();
+        db::run_migrations(&pool);
+
+        if pool.backend() == db::Backend::Postgres && !db::postgres_bootstrap::schema_ready(&pool) {
+            panic!(
+                "PostgreSQL schema is not ready (users table missing). \
+                 Run scripts/migrate-sqlite-to-postgres.py before starting with DATABASE_URL."
+            );
+        }
+
+        if let Ok(conn) = pool.get() {
+            crate::plan_limits::seed_all_permissions(&conn);
+            crate::role_defaults::sync_role_defaults(&conn);
+            crate::shift_logic::backfill_general_shift_assignments(&conn);
+        }
+
+        pool
+    })
+    .await
+    .expect("database initialization panicked");
+
     let _ = std::fs::create_dir_all(crate::storage::storage_root());
-    db::run_migrations(&pool);
+    let _ = std::fs::create_dir_all(crate::storage::storage_root().join("desktop-updates"));
 
-    if pool.backend() == db::Backend::Postgres && !db::postgres_bootstrap::schema_ready(&pool) {
-        panic!(
-            "PostgreSQL schema is not ready (users table missing). \
-             Run scripts/migrate-sqlite-to-postgres.py before starting with DATABASE_URL."
-        );
-    }
-
-    if let Ok(conn) = pool.get() {
-        crate::plan_limits::seed_all_permissions(&conn);
-        crate::role_defaults::sync_role_defaults(&conn);
-    }
+    jobs::spawn_all(pool.clone());
 
     let host = cfg.host.clone();
     let api_port = cfg.port;

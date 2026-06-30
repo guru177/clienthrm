@@ -54,5 +54,15 @@ export default defineConfig({
     },
     build: {
         outDir: 'dist',
+        rollupOptions: {
+            output: {
+                manualChunks(id) {
+                    if (id.includes('node_modules/recharts')) return 'recharts';
+                    if (id.includes('node_modules/xlsx')) return 'xlsx';
+                    if (id.includes('node_modules/@radix-ui')) return 'radix';
+                },
+            },
+        },
+        chunkSizeWarningLimit: 600,
     },
 });

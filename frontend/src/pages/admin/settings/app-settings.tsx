@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import {
     Select,
@@ -359,9 +360,8 @@ export default function AppSettings() {
                     {setting.description && (
                         <p className="text-sm text-muted-foreground">{setting.description}</p>
                     )}
-                    <Input
+                    <PasswordInput
                         id={setting.key}
-                        type="password"
                         value={value}
                         onChange={(e) => handleChange(setting.key, e.target.value)}
                         placeholder="Enter password"
@@ -825,7 +825,7 @@ export default function AppSettings() {
                                 <CardHeader>
                                     <CardTitle>Email Configuration</CardTitle>
                                     <CardDescription>
-                                        Configure SMTP settings for sending emails (job application notifications, etc.)
+                                        Configure SMTP for payslips, job applications, and notifications. Overrides server .env when saved here.
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent>
@@ -834,7 +834,7 @@ export default function AppSettings() {
                                     </div>
                                     <div className="mt-4 p-4 bg-muted/50 rounded-lg border border-border">
                                         <p className="text-sm text-muted-foreground">
-                                            <strong>Note:</strong> After updating email settings, restart the Rust backend so it reloads the latest configuration.
+                                            <strong>Note:</strong> Saved settings are used immediately for outgoing mail (payslips, applications, password reset). Empty fields fall back to the server <code className="text-xs">.env</code> defaults.
                                         </p>
                                     </div>
                                 </CardContent>

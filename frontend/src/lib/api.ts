@@ -1,6 +1,5 @@
-import { apiUrl, resolveApiBase } from '@/lib/api-base';
-
-const API_BASE = resolveApiBase();
+import { apiUrl } from '@/lib/api-base';
+import { navigateToLogin } from '@/lib/navigate-login';
 
 /** Get JWT token from localStorage */
 function getToken(): string | null {
@@ -90,7 +89,7 @@ async function apiFetch<T = any>(
             return apiFetch<T>(path, options, true);
         }
         clearToken();
-        window.location.href = '/login';
+        navigateToLogin();
         throw new Error('Unauthorized');
     }
 

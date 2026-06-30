@@ -206,6 +206,7 @@ pub fn mime_for_path(path: &Path) -> &'static str {
         Some(ref ext) if ext == "jpg" || ext == "jpeg" => "image/jpeg",
         Some(ref ext) if ext == "pdf" => "application/pdf",
         Some(ref ext) if ext == "txt" => "text/plain",
+        Some(ref ext) if ext == "yml" || ext == "yaml" => "text/yaml",
         Some(ref ext) if ext == "svg" => "image/svg+xml",
         Some(ref ext) if ext == "mp4" => "video/mp4",
         Some(ref ext) if ext == "mp3" => "audio/mpeg",

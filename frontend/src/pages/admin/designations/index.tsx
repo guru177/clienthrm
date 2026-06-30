@@ -170,7 +170,11 @@ export default function DesignationsIndex() {
                 </div>
 
                 {/* Designations Table */}
-                <DesignationTable onEdit={handleEdit} onRefresh={handleFormSuccess} />
+                <DesignationTable
+                    onEdit={handleEdit}
+                    onRefresh={handleFormSuccess}
+                    refreshTrigger={refreshTrigger}
+                />
 
                 {/* Designation Form Modal */}
                 <DesignationForm

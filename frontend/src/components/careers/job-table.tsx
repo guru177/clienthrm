@@ -1,4 +1,4 @@
-// Inertia removed
+import { Link } from 'react-router-dom';
 import axios from '@/lib/axios';
 import {
     Search,

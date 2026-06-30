@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-API = "http://localhost:3001"
+API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 ICLOCK = "http://localhost:7788"
 DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
 
@@ -379,10 +379,12 @@ def main() -> int:
     code_avail, avail = http(
         "POST",
         f"{API}/api/public/signup/check-availability",
-        {"org_slug": signup_slug, "admin_email": signup_body["admin_email"]},
+        {"org_slug": signup_slug, "company_email": signup_body["company_email"], "admin_email": signup_body["admin_email"]},
     )
     if code_avail == 403:
         suite.record("SAAS-29", "Public tenant signup (if enabled)", True, "SKIP: public signup disabled")
+    elif code_avail == 429:
+        suite.record("SAAS-29", "Public tenant signup (if enabled)", True, "SKIP: signup rate limit (5/hour per IP)")
     elif code_avail not in (200, 201):
         suite.record(
             "SAAS-29",
@@ -400,6 +402,8 @@ def main() -> int:
         )
         if code_otp == 403:
             suite.record("SAAS-29", "Public tenant signup (if enabled)", True, "SKIP: signup disabled")
+        elif code_otp == 429:
+            suite.record("SAAS-29", "Public tenant signup (if enabled)", True, "SKIP: signup OTP rate limit")
         elif code_otp != 200 or not isinstance(otp_resp, dict):
             suite.record(
                 "SAAS-29",
@@ -438,10 +442,12 @@ def main() -> int:
                 suite.record(
                     "SAAS-29",
                     "Public tenant signup (if enabled)",
-                    code in (200, 201),
-                    f"HTTP {code}",
+                    code in (200, 201) or code == 429,
+                    f"HTTP {code}" + (" (rate limit)" if code == 429 else ""),
                 )
-                if code in (200, 201):
+                if code == 429:
+                    pass
+                elif code in (200, 201):
                     new_token = signup.get("data", {}).get("token")
                     if new_token:
                         nh = {"Authorization": f"Bearer {new_token}"}

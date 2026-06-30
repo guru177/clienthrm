@@ -54,6 +54,55 @@ fn leave_overlaps_generated_payslip(
     false
 }
 
+fn leave_dates_outside_employment(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    start_date: &str,
+    end_date: &str,
+) -> bool {
+    let Ok(ls) = NaiveDate::parse_from_str(start_date, "%Y-%m-%d") else {
+        return true;
+    };
+    let Ok(le) = NaiveDate::parse_from_str(end_date, "%Y-%m-%d") else {
+        return true;
+    };
+    let (join, exit): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT date_of_joining, date_of_exit FROM users WHERE id = ?1",
+            [user_id],
+            |row| Ok((row.get_idx(0).ok(), row.get_idx(1).ok())),
+        )
+        .unwrap_or((None, None));
+    if let Some(ref j) = join {
+        if let Ok(jd) = NaiveDate::parse_from_str(j, "%Y-%m-%d") {
+            if ls < jd {
+                return true;
+            }
+        }
+    }
+    if let Some(ref e) = exit {
+        if let Ok(ed) = NaiveDate::parse_from_str(e, "%Y-%m-%d") {
+            if le > ed {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn sync_user_on_leave_status(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    on_leave: bool,
+) {
+    let status = if on_leave { "on-leave" } else { "active" };
+    let _ = conn.execute(
+        "UPDATE users SET status = ?1, updated_at = datetime('now')
+         WHERE id = ?2 AND deleted_at IS NULL AND status != 'inactive'",
+        crate::params![status, user_id],
+    );
+}
+
 fn leave_days_between(conn: &crate::db::Connection, user_id: i64, start: &str, end: &str) -> i64 {
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d").ok();
@@ -199,7 +248,7 @@ fn fetch_leave_list(
     list_params.push(crate::db::into_param_value(per_page));
     list_params.push(crate::db::into_param_value(offset));
 
-    let mut stmt = conn.prepare(&sql).unwrap();
+    let stmt = conn.prepare(&sql).unwrap();
     let items: Vec<serde_json::Value> = stmt
         .query_map(
             &list_params,
@@ -274,7 +323,7 @@ pub async fn index(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -300,55 +349,68 @@ pub async fn store(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    if body.end_date < body.start_date {
+    let leave_type = match crate::validation::require_non_empty(&body.leave_type, "Leave type") {
+        Ok(v) => v,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
+    let start_date = match crate::validation::validate_date_yyyy_mm_dd(&body.start_date, "Start date") {
+        Ok(v) => v,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
+    let end_date = match crate::validation::validate_date_yyyy_mm_dd(&body.end_date, "End date") {
+        Ok(v) => v,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
+    let reason = match body.reason.as_deref() {
+        Some(r) => match crate::validation::require_min_len(r, 10, "Reason") {
+            Ok(v) => Some(v),
+            Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+        },
+        None => {
+            return HttpResponse::BadRequest().json(ApiError::new("Reason is required"));
+        }
+    };
+    if end_date < start_date {
         return HttpResponse::BadRequest().json(ApiError::new("End date must be on or after start date"));
     }
-    if !crate::leave_type_logic::is_valid_active_slug(&conn, org_id, &body.leave_type) {
+    if !crate::leave_type_logic::is_valid_active_slug(&conn, org_id, &leave_type) {
         return HttpResponse::BadRequest().json(ApiError::new("Invalid or inactive leave type"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let days = leave_days_between(&conn, claims.sub, &body.start_date, &body.end_date);
+    let days = leave_days_between(&conn, claims.sub, &start_date, &end_date);
     if days <= 0 {
         return HttpResponse::BadRequest().json(ApiError::new("Invalid leave date range"));
     }
-    if has_overlapping_leave(&conn, claims.sub, &body.start_date, &body.end_date, None) {
+    if has_overlapping_leave(&conn, claims.sub, &start_date, &end_date, None) {
         return HttpResponse::BadRequest().json(ApiError::new(
             "Leave dates overlap with an existing request",
         ));
     }
-    if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &body.leave_type)
+    if leave_dates_outside_employment(&conn, claims.sub, &start_date, &end_date) {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Leave dates must fall within the employee active employment period",
+        ));
+    }
+    if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &leave_type)
         && crate::payroll_logic::would_exceed_annual_quota(
             &conn,
             claims.sub,
-            &body.start_date,
-            &body.end_date,
-            &body.leave_type,
+            &start_date,
+            &end_date,
+            &leave_type,
+            None,
         )
     {
-        let year = NaiveDate::parse_from_str(&body.start_date, "%Y-%m-%d")
+        let year = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
             .map(|d| d.year())
             .unwrap_or_else(|_| chrono::Utc::now().year());
-        let effective = crate::payroll_logic::employee_effective_leave_quota(
-            &conn, claims.sub, year, org_id,
-        );
-        let bonus = crate::payroll_logic::employee_leave_credits_in_year(&conn, claims.sub, year);
-        let base = crate::payroll_logic::annual_leave_quota(&conn, org_id);
-        let msg = if bonus > 0 {
-            format!(
-                "Annual leave balance exceeded (allowance: {} base + {} bonus = {} business days)",
-                base, bonus, effective
-            )
-        } else {
-            format!(
-                "Annual leave balance exceeded (quota: {} business days)",
-                effective
-            )
-        };
-        return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        return HttpResponse::BadRequest().json(ApiError::new(&quota_exceeded_message(
+            &conn, claims.sub, org_id, year, &leave_type,
+        )));
     }
 
     match conn.execute(
@@ -356,11 +418,11 @@ pub async fn store(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
         crate::params![
             claims.sub,
-            body.leave_type,
-            body.start_date,
-            body.end_date,
+            leave_type,
+            start_date,
+            end_date,
             days,
-            body.reason,
+            reason,
             &now,
         ],
     ) {
@@ -373,10 +435,11 @@ pub async fn store(
                 &serde_json::json!({
                     "leave_id": leave_id,
                     "user_id": claims.sub,
-                    "leave_type": body.leave_type,
-                    "start_date": body.start_date,
-                    "end_date": body.end_date,
+                    "leave_type": leave_type,
+                    "start_date": start_date,
+                    "end_date": end_date,
                     "days_count": days,
+                    "reason": reason,
                     "created_by": claims.sub,
                     "organization_id": org_id,
                 }),
@@ -389,6 +452,156 @@ pub async fn store(
     }
 }
 
+fn quota_exceeded_message(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    org_id: i64,
+    year: i32,
+    leave_type: &str,
+) -> String {
+    let type_label = crate::leave_type_logic::config_for_slug(conn, org_id, leave_type)
+        .map(|c| c.name)
+        .unwrap_or_else(|| leave_type.to_string());
+    let Some(effective) = crate::payroll_logic::employee_effective_leave_quota_for_type(
+        conn, user_id, year, org_id, leave_type,
+    ) else {
+        return format!("{type_label} balance exceeded");
+    };
+    let bonus = if leave_type == "annual" {
+        crate::payroll_logic::employee_leave_credits_in_year(conn, user_id, year)
+    } else {
+        0
+    };
+    let base = crate::payroll_logic::leave_type_annual_quota(conn, org_id, leave_type)
+        .unwrap_or(effective);
+    if bonus > 0 {
+        format!(
+            "{type_label} balance exceeded (allowance: {base} base + {bonus} bonus = {effective} business days)"
+        )
+    } else {
+        format!("{type_label} balance exceeded (quota: {effective} business days)")
+    }
+}
+
+pub async fn update(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<crate::models::leave_request::UpdateLeaveRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get_for_tenant(org_id) {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let leave_id = path.into_inner();
+    let leave_row: Option<(i64, String, String, String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT lr.user_id, lr.status, lr.leave_type, lr.start_date, lr.end_date, lr.reason
+             FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
+             WHERE lr.id = ?1 AND lr.deleted_at IS NULL",
+            crate::params![leave_id, org_id],
+            |r| {
+                Ok((
+                    r.get_idx::<i64>(0)?,
+                    r.get_idx::<String>(1)?,
+                    r.get_idx::<String>(2)?,
+                    r.get_idx::<String>(3)?,
+                    r.get_idx::<String>(4)?,
+                    r.get_idx::<Option<String>>(5).ok().flatten(),
+                ))
+            },
+        )
+        .ok();
+    let (owner, status, cur_type, cur_start, cur_end, cur_reason) = match leave_row {
+        Some(r) => r,
+        None => return HttpResponse::NotFound().json(ApiError::new("Leave request not found")),
+    };
+    if status != "pending" {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Only pending leave requests can be updated",
+        ));
+    }
+    let is_super_admin = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+    if owner != claims.sub && !is_super_admin {
+        let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
+        if !crate::middleware::rbac::has_permission(&perms, "manage-leave-requests") {
+            return HttpResponse::Forbidden().json(ApiError::new("Not allowed to update this leave request"));
+        }
+    }
+
+    let leave_type = body
+        .leave_type
+        .as_deref()
+        .unwrap_or(&cur_type)
+        .to_string();
+    let start_date = body
+        .start_date
+        .as_deref()
+        .unwrap_or(&cur_start)
+        .to_string();
+    let end_date = body.end_date.as_deref().unwrap_or(&cur_end).to_string();
+    let reason = body.reason.clone().or(cur_reason);
+
+    if end_date < start_date {
+        return HttpResponse::BadRequest().json(ApiError::new("End date must be on or after start date"));
+    }
+    if !crate::leave_type_logic::is_valid_active_slug(&conn, org_id, &leave_type) {
+        return HttpResponse::BadRequest().json(ApiError::new("Invalid or inactive leave type"));
+    }
+    let days = leave_days_between(&conn, owner, &start_date, &end_date);
+    if days <= 0 {
+        return HttpResponse::BadRequest().json(ApiError::new("Invalid leave date range"));
+    }
+    if has_overlapping_leave(&conn, owner, &start_date, &end_date, Some(leave_id)) {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Leave dates overlap with an existing request",
+        ));
+    }
+    if leave_dates_outside_employment(&conn, owner, &start_date, &end_date) {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Leave dates must fall within the employee active employment period",
+        ));
+    }
+    if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &leave_type)
+        && crate::payroll_logic::would_exceed_annual_quota(
+            &conn,
+            owner,
+            &start_date,
+            &end_date,
+            &leave_type,
+            Some(leave_id),
+        )
+    {
+        let year = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
+            .map(|d| d.year())
+            .unwrap_or_else(|_| chrono::Utc::now().year());
+        return HttpResponse::BadRequest().json(ApiError::new(&quota_exceeded_message(
+            &conn, owner, org_id, year, &leave_type,
+        )));
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let updated = conn.execute(
+        "UPDATE leave_requests
+         SET leave_type=?1, start_date=?2, end_date=?3, days_count=?4, reason=?5, updated_at=?6
+         WHERE id=?7 AND status='pending' AND deleted_at IS NULL
+           AND user_id IN (SELECT id FROM users WHERE organization_id = ?8)",
+        crate::params![leave_type, start_date, end_date, days, reason, &now, leave_id, org_id],
+    );
+    if updated.unwrap_or(0) == 0 {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Leave request not found or already processed",
+        ));
+    }
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"updated": true})))
+}
+
 pub async fn destroy(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -399,7 +612,7 @@ pub async fn destroy(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -456,7 +669,8 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
-    let conn = match pool.get() {
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -473,7 +687,7 @@ pub async fn manage(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&_c);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -495,7 +709,7 @@ pub async fn admin_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&_c);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -561,15 +775,15 @@ pub async fn approve(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let leave_id = path.into_inner();
-    let leave_info: Option<(i64, String, String, String, i64, String)> = conn
+    let leave_info: Option<(i64, String, String, String, i64, String, Option<String>)> = conn
         .query_row(
-            "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days_count, lr.status
+            "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days_count, lr.status, lr.reason
              FROM leave_requests lr
              INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
              WHERE lr.id = ?1 AND lr.deleted_at IS NULL",
@@ -582,17 +796,29 @@ pub async fn approve(
                     row.get_idx::<String>(3)?,
                     row.get_idx::<i64>(4)?,
                     row.get_idx::<String>(5)?,
+                    row.get_idx::<Option<String>>(6)?,
                 ))
             },
         )
         .ok();
 
-    let Some((user_id, leave_type, start_date, end_date, _days_count, status)) = leave_info else {
+    let Some((user_id, leave_type, start_date, end_date, days_count, status, reason)) = leave_info
+    else {
         return HttpResponse::NotFound().json(ApiError::new("Leave request not found"));
     };
     if status != "pending" {
         return HttpResponse::Conflict().json(ApiError::new(
             "Leave request not found or already processed",
+        ));
+    }
+    if leave_dates_outside_employment(&conn, user_id, &start_date, &end_date) {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Leave dates fall outside the employee employment period",
+        ));
+    }
+    if leave_overlaps_generated_payslip(&conn, user_id, &start_date, &end_date) {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Cannot approve leave that overlaps a generated payslip for this period",
         ));
     }
     if has_overlapping_leave(&conn, user_id, &start_date, &end_date, Some(leave_id)) {
@@ -610,14 +836,20 @@ pub async fn approve(
             &start_date,
             &end_date,
             &leave_type,
+            Some(leave_id),
         ) {
-            let effective = crate::payroll_logic::employee_effective_leave_quota(
-                &conn, user_id, year, org_id,
+            let effective = crate::payroll_logic::employee_effective_leave_quota_for_type(
+                &conn, user_id, year, org_id, &leave_type,
+            )
+            .unwrap_or(0);
+            let used = crate::payroll_logic::employee_leave_used_for_type_in_year(
+                &conn, user_id, year, &leave_type,
             );
-            let used = crate::payroll_logic::employee_leave_used_in_year(&conn, user_id, year);
             return HttpResponse::BadRequest().json(ApiError::new(&format!(
-                "Annual leave balance exceeded (used {} + requested > allowance {})",
-                used, effective
+                "{} (used {} + requested > allowance {})",
+                quota_exceeded_message(&conn, user_id, org_id, year, &leave_type),
+                used,
+                effective
             )));
         }
     }
@@ -636,6 +868,8 @@ pub async fn approve(
         ));
     }
 
+    sync_user_on_leave_status(&conn, user_id, true);
+
     crate::workflow_logic::trigger(
         &conn,
         org_id,
@@ -644,6 +878,10 @@ pub async fn approve(
             "leave_id": leave_id,
             "user_id": user_id,
             "leave_type": leave_type,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_count": days_count,
+            "reason": reason,
             "approved_by": claims.sub,
             "organization_id": org_id,
         }),
@@ -663,7 +901,7 @@ pub async fn reject(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -671,18 +909,28 @@ pub async fn reject(
     let reason = body.rejection_reason.clone().unwrap_or_default();
     let leave_id = path.into_inner();
 
-    let leave_info: Option<(i64, String)> = conn
+    let leave_info: Option<(i64, String, String, String, i64, Option<String>)> = conn
         .query_row(
-            "SELECT lr.user_id, lr.leave_type
+            "SELECT lr.user_id, lr.leave_type, lr.start_date, lr.end_date, lr.days_count, lr.reason
              FROM leave_requests lr
              INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
              WHERE lr.id = ?1 AND lr.status = 'pending' AND lr.deleted_at IS NULL",
             crate::params![leave_id, org_id],
-            |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
+            |row| {
+                Ok((
+                    row.get_idx::<i64>(0)?,
+                    row.get_idx::<String>(1)?,
+                    row.get_idx::<String>(2)?,
+                    row.get_idx::<String>(3)?,
+                    row.get_idx::<i64>(4)?,
+                    row.get_idx::<Option<String>>(5)?,
+                ))
+            },
         )
         .ok();
 
-    let Some((user_id, leave_type)) = leave_info else {
+    let Some((user_id, leave_type, start_date, end_date, days_count, request_reason)) = leave_info
+    else {
         return HttpResponse::Conflict().json(ApiError::new(
             "Leave request not found or already processed",
         ));
@@ -708,6 +956,10 @@ pub async fn reject(
             "leave_id": leave_id,
             "user_id": user_id,
             "leave_type": leave_type,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_count": days_count,
+            "reason": request_reason,
             "rejected_by": claims.sub,
             "rejection_reason": reason,
             "organization_id": org_id,
@@ -733,7 +985,7 @@ pub async fn update_remarks(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };

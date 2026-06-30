@@ -10,7 +10,7 @@ fn role_list_json(
     conn: &crate::db::Connection,
     org_id: i64,
 ) -> crate::db::Result<Vec<serde_json::Value>> {
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT r.id, r.name, r.slug, r.description, r.created_at,
                 (SELECT COUNT(*)
                  FROM role_user ru
@@ -112,15 +112,20 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<cr
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let name = match crate::validation::require_non_empty(&body.name, "Name") {
+        Ok(n) => n,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
+    let description = crate::validation::normalize_optional(body.description.clone());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let slug = body
         .slug
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| body.name.to_lowercase().replace(' ', "-"));
+        .unwrap_or_else(|| name.to_lowercase().replace(' ', "-"));
     match conn.execute(
         "INSERT INTO roles (name,slug,description,organization_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
-        crate::params![body.name, slug, body.description, org_id, &now, &now],
+        crate::params![name, slug, description, org_id, &now, &now],
     ) {
         Ok(_) => {
             let role_id = conn.last_insert_rowid();
@@ -156,12 +161,21 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let name = match crate::validation::require_non_empty(&body.name, "Name") {
+        Ok(n) => n,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
+    let description = crate::validation::normalize_optional(body.description.clone());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let id = path.into_inner();
-    let slug = body.slug.clone().unwrap_or_else(|| body.name.to_lowercase().replace(' ', "_"));
+    let slug = body
+        .slug
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| name.to_lowercase().replace(' ', "_"));
     match conn.execute(
         "UPDATE roles SET name=?1,slug=?2,description=?3,updated_at=?4 WHERE id=?5 AND organization_id=?6",
-        crate::params![body.name, slug, body.description, &now, id, org_id],
+        crate::params![name, slug, description, &now, id, org_id],
     ) {
         Ok(0) => return HttpResponse::NotFound().json(ApiError::new("Not found")),
         Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),

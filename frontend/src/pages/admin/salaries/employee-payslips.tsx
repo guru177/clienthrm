@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Download, Eye, FileText, MessageCircle } from 'lucide-react';
+import { Download, Eye, FileText, Mail, MessageCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import axios from '@/lib/axios';
 
@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { usePermissions } from '@/hooks/use-permissions';
-import { openPayslipPdf } from '@/lib/payslip-pdf';
+import { openPayslipPdf, sendPayslipEmail } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface Employee {
@@ -75,6 +75,7 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
     const [filterYear, setFilterYear] = useState<string>('all');
     const [filterMonth, setFilterMonth] = useState<string>('all');
     const [sendingWa, setSendingWa] = useState<number | null>(null);
+    const [sendingEmail, setSendingEmail] = useState<number | null>(null);
     const [openingPdf, setOpeningPdf] = useState<number | null>(null);
 
     const breadcrumbs = [
@@ -108,6 +109,18 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
             handleApiError(e);
         } finally {
             setOpeningPdf(null);
+        }
+    };
+
+    const handleSendEmail = async (payslipId: number) => {
+        setSendingEmail(payslipId);
+        try {
+            const res = await sendPayslipEmail(payslipId);
+            handleApiResponse(res);
+        } catch (e) {
+            handleApiError(e);
+        } finally {
+            setSendingEmail(null);
         }
     };
 
@@ -259,6 +272,18 @@ export default function EmployeePayslipsPage({ employee }: { employee: Employee 
                                                         <Eye className="h-3.5 w-3.5" />
                                                         View
                                                     </Button>
+                                                    {canManagePayroll && p.status === 'generated' && (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="gap-1.5"
+                                                        disabled={sendingEmail === p.id}
+                                                        onClick={() => handleSendEmail(p.id)}
+                                                    >
+                                                        <Mail className="h-3.5 w-3.5" />
+                                                        {sendingEmail === p.id ? 'Sending…' : 'Email'}
+                                                    </Button>
+                                                    )}
                                                     {canManagePayroll && (
                                                     <Button
                                                         variant="outline"

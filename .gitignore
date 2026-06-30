@@ -1,5 +1,5 @@
-# Environment
-.env
+.deploy/.env
+frontend/electron/production-api.json
 .env.*
 !.env.example
 
@@ -9,10 +9,15 @@ backend/target/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/release/
 
-# Database runtime files
+# Database (local dev only)
+database/database.sqlite
 database/*.sqlite-shm
 database/*.sqlite-wal
+
+# Deploy secrets (generated per environment)
+deploy/.env
 
 # OS/editor
 .DS_Store

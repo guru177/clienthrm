@@ -62,7 +62,7 @@ function Run-Step {
     Write-Host $Name -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
     try {
-        & $Action
+        & $Action | Out-Null
         if ($null -ne $global:LASTEXITCODE) {
             $exit = $global:LASTEXITCODE
         } else {

@@ -101,7 +101,13 @@ docker compose -f deploy/docker-compose.production.yml up -d --build caddy
 |----------|---------|-------------|
 | `BIOMETRIC_STRICT_IP` | `0` | Set `1` to reject ATTLOG from IPs that don't match registered device IP |
 | `API_DOMAIN` | — | Optional dedicated API hostname in Caddyfile |
-| `ALLOW_INSECURE_SECRETS` | off in release | **Never** set in production |
+| `DB_POOL_MAX_SIZE` | `50` (PG) / `10` (SQLite) | r2d2 connection pool |
+| `DATABASE_READ_URL` | — | Optional read replica for reports |
+| `DB_STATEMENT_TIMEOUT_MS` | `30000` | PostgreSQL query timeout |
+| `REDIS_URL` | — | Shared rate limiting across API replicas |
+| `ENABLE_PG_RLS` | off | Tenant row-level security (`1` to enable) |
+| `ENABLE_PG_PARTITIONING` | off | Monthly partition management |
+| `DATA_RETENTION_DAYS` | `730` | Audit/punch retention window |
 
 ## HTTPS / reverse proxy
 
@@ -183,6 +189,8 @@ On startup the backend applies Rust-specific tables (`postgres_rust_tables.sql`)
 
 ## Backups
 
+See also [SCALING.md](SCALING.md) for pool sizing, indexes, partitioning, RLS, and read replicas.
+
 ```bash
 # PostgreSQL (production)
 docker compose -f deploy/docker-compose.production.yml exec postgres \
@@ -220,7 +228,14 @@ $env:HRM_PASSWORD = "..."
 node scripts/ui-nav-check.mjs
 ```
 
-Local integration suites (`scripts/run-all-tests.ps1`) remain SQLite + `:5174`/`:3001` dev stack. Re-run `scripts/migrate-sqlite-to-postgres.py` after major schema changes before relying on PostgreSQL in production.
+Local integration suites (`scripts/run-complete-all-tests.ps1`) remain SQLite + `:5174`/`:3001` dev stack. Re-run `scripts/migrate-sqlite-to-postgres.py` after major schema changes before relying on PostgreSQL in production.
+
+**PostgreSQL staging validation** (after migration, with `DATABASE_URL` set):
+
+```powershell
+$env:DATABASE_URL = "postgres://hrm:secret@localhost:5432/hrm"
+powershell -NoProfile -File scripts/run-postgres-staging-tests.ps1
+```
 
 ## Local HTTPS testing (optional)
 

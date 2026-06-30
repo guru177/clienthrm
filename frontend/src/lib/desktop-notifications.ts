@@ -1,3 +1,5 @@
+import { staticAssetUrl } from '@/lib/static-asset';
+
 type NotificationOptions = {
     title: string;
     body: string;
@@ -51,7 +53,7 @@ export function showDesktopNotification(options: NotificationOptions): void {
     const notification = new Notification(title, {
         body,
         tag,
-        icon: '/images/icon.png',
+        icon: staticAssetUrl('images/icon.png'),
     });
     notification.onclick = () => {
         window.focus();

@@ -1,11 +1,11 @@
 import axios from '@/lib/axios';
 
-/** Open a printable payslip in a new tab (use browser Print → Save as PDF). */
+/** Open payslip A4 PDF in a new tab. */
 export async function openPayslipPdf(payslipId: number): Promise<void> {
     const res = await axios.get(`/admin/payslips/${payslipId}/pdf`, {
         responseType: 'blob',
     });
-    const blob = new Blob([res.data], { type: 'text/html;charset=utf-8' });
+    const blob = new Blob([res.data], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const win = window.open(url, '_blank', 'noopener,noreferrer');
     if (!win) {
@@ -15,7 +15,25 @@ export async function openPayslipPdf(payslipId: number): Promise<void> {
     win.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
 }
 
-/** Download a ZIP of printable payslip HTML files for the month (open each → Save as PDF). */
+/** Email one generated payslip to the employee. */
+export async function sendPayslipEmail(payslipId: number) {
+    return axios.post(`/admin/payslips/${payslipId}/send-email`);
+}
+
+/** Email all generated payslips for a month (or selected IDs). */
+export async function bulkSendPayslipEmails(options: {
+    month?: number;
+    year?: number;
+    payslipIds?: number[];
+}) {
+    const payload =
+        options.payslipIds && options.payslipIds.length > 0
+            ? { payslip_ids: options.payslipIds }
+            : { month: options.month, year: options.year };
+    return axios.post('/admin/payslips/bulk-send-email', payload);
+}
+
+/** Download a ZIP of A4 payslip PDFs for the month. */
 export async function downloadBulkPayslipsZip(options: {
     month?: number;
     year?: number;

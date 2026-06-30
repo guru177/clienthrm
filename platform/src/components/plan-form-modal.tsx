@@ -62,6 +62,7 @@ export const ALL_TENANT_MODULE_KEYS = [
     'attendance',
     'shifts',
     'biometric',
+    'manual_attendance',
     'leave',
     'leave_manage',
     'holidays',

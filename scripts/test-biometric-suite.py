@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import urllib.error
@@ -12,9 +13,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-API = "http://localhost:3001"
+API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 ICLOCK = "http://localhost:7788"
-DB = "database/database.sqlite"
+DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
 SN = "A250902070"
 DEVICE_IP = "172.16.1.68"
 LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}

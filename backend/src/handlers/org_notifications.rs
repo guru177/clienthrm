@@ -149,7 +149,7 @@ pub async fn inbox(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
          LIMIT 50"
     );
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
             return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}")))
@@ -205,7 +205,7 @@ pub async fn sent_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespon
         return HttpResponse::Forbidden().json(ApiError::new("Not allowed to view sent notifications"));
     }
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT n.id, n.title, n.body, n.severity, n.audience, n.target_id, n.image_url,
                 COALESCE(d.name, dg.name) AS target_name,
                 n.created_by, u.name AS created_by_name, n.created_at,

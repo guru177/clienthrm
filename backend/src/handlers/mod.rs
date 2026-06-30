@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod health;
 pub mod platform;
 pub mod platform_analytics;
 pub mod platform_audit;
@@ -30,6 +31,7 @@ pub mod settings;
 pub mod careers;
 pub mod job_applications;
 pub mod payroll;
+pub mod payroll_advanced;
 
 pub mod salaries;
 pub mod centers;
@@ -38,4 +40,7 @@ pub mod payslips;
 pub mod shifts;
 pub mod chat;
 pub mod files;
+pub mod desktop_updates;
 pub mod org_notifications;
+pub mod two_factor;
+pub mod openapi;

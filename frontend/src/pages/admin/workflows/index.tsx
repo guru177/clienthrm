@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
+import { SUPPORTED_TRIGGERS, triggerLabel } from '@/lib/workflow-utils';
 
 interface Workflow {
     id: number;
@@ -56,16 +57,6 @@ interface Workflow {
     };
     created_at: string;
 }
-
-const triggerTypeLabels: Record<string, string> = {
-    leave_request_submitted: 'Leave Request Submitted',
-    leave_request_approved: 'Leave Request Approved',
-    leave_request_rejected: 'Leave Request Rejected',
-    attendance_clock_in: 'Attendance Clock-In',
-    user_created: 'User Created',
-    task_due: 'Task Due',
-    time_based: 'Time-Based',
-};
 
 export default function Index() {
     const navigate = useNavigate();
@@ -240,8 +231,10 @@ export default function Index() {
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All Triggers</SelectItem>
-                            {Object.entries(triggerTypeLabels).map(([value, label]) => (
-                                <SelectItem key={value} value={value}>{label}</SelectItem>
+                            {SUPPORTED_TRIGGERS.map((trigger) => (
+                                <SelectItem key={trigger.value} value={trigger.value}>
+                                    {trigger.label}
+                                </SelectItem>
                             ))}
                         </SelectContent>
                     </Select>
@@ -306,7 +299,7 @@ export default function Index() {
                                         </TableCell>
                                         <TableCell>
                                             <Badge variant="outline">
-                                                {triggerTypeLabels[workflow.trigger_type] || workflow.trigger_type}
+                                                {triggerLabel(workflow.trigger_type)}
                                             </Badge>
                                         </TableCell>
                                         <TableCell>

@@ -29,10 +29,14 @@ function Api($Method, $Path, $Body, $Token) {
 
 Write-Host "=== Attendance Module Test ===`n" -ForegroundColor Cyan
 
+. (Join-Path $PSScriptRoot "test-attendance-setup.ps1")
+
 $login = Api POST "/auth/login" @{ email = $Email; password = $Password } $null
 if (-not $login.Ok) { Log "Login" "FAIL" $login.Code; exit 1 }
 $token = $login.Json.data.token
 Log "Login" "OK"
+
+Ensure-TodayRosterForClockIn -Api ${function:Api} -Token $token
 
 $today = Api GET "/admin/attendance/today" $null $token
 if ($today.Ok) {

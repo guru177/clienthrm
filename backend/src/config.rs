@@ -137,5 +137,13 @@ impl AppConfig {
                  or ALLOW_INSECURE_SECRETS=1 for local development only."
             );
         }
+        let razorpay_key = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
+        let razorpay_secret = std::env::var("RAZORPAY_WEBHOOK_SECRET").unwrap_or_default();
+        if !razorpay_key.trim().is_empty() && razorpay_secret.trim().is_empty() && !allow_insecure {
+            panic!(
+                "RAZORPAY_KEY_ID is set but RAZORPAY_WEBHOOK_SECRET is missing. \
+                 Configure the webhook secret or unset Razorpay keys in this environment."
+            );
+        }
     }
 }

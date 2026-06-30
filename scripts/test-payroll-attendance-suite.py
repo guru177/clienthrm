@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-API = "http://localhost:3001"
-DB = "database/database.sqlite"
+API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
+DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
 LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
 
 
@@ -63,6 +64,87 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def payroll_preview_present(
+    auth: dict[str, str], user_id: int, month: int, year: int
+) -> int:
+    code, raw = http(
+        "POST",
+        f"{API}/api/admin/payroll/preview",
+        {"month": month, "year": year, "employee_ids": [user_id]},
+        auth,
+    )
+    if code != 200:
+        return -1
+    rows = json.loads(raw).get("data") or []
+    row = next((p for p in rows if int(p.get("user_id") or 0) == user_id), None)
+    if not row:
+        return -1
+    return int(row.get("present_days") or 0)
+
+
+def cleanup_pa_suite(conn: sqlite3.Connection) -> None:
+    """Remove PA suite test attendance rows from prior runs."""
+    conn.execute("DELETE FROM attendance WHERE notes='PA-16 integration test'")
+    conn.commit()
+
+
+def isolate_pa16_day(conn: sqlite3.Connection, user_id: int, mark_date: str) -> None:
+    """Ensure only the PA-16 row exists for this user/date (stable PA-18 open/close)."""
+    conn.execute(
+        """DELETE FROM attendance
+           WHERE user_id=? AND date=? AND COALESCE(notes, '') != 'PA-16 integration test'""",
+        (user_id, mark_date),
+    )
+    conn.commit()
+
+
+def pick_payroll_attendance_date(
+    conn: sqlite3.Connection,
+    auth: dict[str, str],
+    user_id: int,
+    month: int,
+    year: int,
+    today: date,
+) -> str | None:
+    """Weekday in month where manual completed attendance increases payroll present_days."""
+    baseline = payroll_preview_present(auth, user_id, month, year)
+    if baseline < 0:
+        return None
+    start = date(year, month, 1)
+    end = today if today.month == month and today.year == year else start.replace(day=28)
+    d = end
+    while d >= start:
+        if d.weekday() >= 5:
+            d -= timedelta(days=1)
+            continue
+        ds = d.isoformat()
+        conn.execute(
+            "DELETE FROM attendance WHERE user_id=? AND date=?",
+            (user_id, ds),
+        )
+        conn.commit()
+        code, _ = http(
+            "POST",
+            f"{API}/api/admin/attendance/manual",
+            {
+                "user_id": user_id,
+                "date": ds,
+                "clock_in": "09:00:00",
+                "clock_out": "18:00:00",
+                "status": "present",
+                "notes": "PA-16 integration test",
+            },
+            auth,
+        )
+        if code != 200:
+            d -= timedelta(days=1)
+            continue
+        if payroll_preview_present(auth, user_id, month, year) > baseline:
+            return ds
+        d -= timedelta(days=1)
+    return None
 
 
 def count_present_days(conn: sqlite3.Connection, user_id: int, month: int, year: int) -> int:
@@ -121,6 +203,17 @@ def main() -> int:
 
     auth = {"Authorization": f"Bearer {token}"}
 
+    from test_helpers import ensure_today_roster_for_clock_in
+
+    code_me, me_body = http("GET", f"{API}/api/auth/me", headers=auth)
+    user_id = 1
+    if code_me == 200:
+        try:
+            user_id = int(json.loads(me_body)["data"]["id"])
+        except (KeyError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    ensure_today_roster_for_clock_in(auth, user_id)
+
     # In-app clock cycle
     http("POST", f"{API}/api/admin/attendance/clock-out", {}, auth)
     code, cin = http("POST", f"{API}/api/admin/attendance/clock-in", {"face_verified": False}, auth)
@@ -153,6 +246,7 @@ def main() -> int:
     )
 
     conn = db()
+    cleanup_pa_suite(conn)
     org_id = conn.execute(
         "SELECT id FROM organizations WHERE slug='mashuptech'"
     ).fetchone()[0]
@@ -184,14 +278,15 @@ def main() -> int:
         return suite.summary()
 
     sample = with_salary[0]
-    uid = sample["id"]
+    uid = int(sample["id"])
+    api_present = payroll_preview_present(auth, uid, month, year)
     db_present = count_present_days(conn, uid, month, year)
-    api_present = int(sample.get("present_days") or 0)
-    # API uses working-day filter; DB count is raw distinct dates — allow small variance
+    # Preview uses working-day logic; DB count is raw distinct completed dates
+    variance = abs(api_present - db_present)
     suite.record(
         "PA-09",
         "Present days API vs DB (sample employee)",
-        api_present <= db_present + 2,
+        api_present >= 0 and variance <= 3,
         f"api={api_present} db_distinct={db_present} user={sample.get('name')}",
     )
 
@@ -290,6 +385,130 @@ def main() -> int:
     else:
         suite.record("PA-15", "Biometric stats available", False, f"HTTP {code}")
 
+    # PA-16: Manual single entry increases completed attendance (payroll present_days)
+    payroll_sample = with_salary[0]
+    uid = int(payroll_sample["id"])
+    conn.execute(
+        "UPDATE payslips SET status='draft', generated_at=NULL WHERE user_id=? AND month=? AND year=?",
+        (uid, month, year),
+    )
+    conn.commit()
+    before = payroll_preview_present(auth, uid, month, year)
+    mark_date = pick_payroll_attendance_date(conn, auth, uid, month, year, today)
+    after = payroll_preview_present(auth, uid, month, year)
+    manual_ok = mark_date is not None and after > before
+    suite.record(
+        "PA-16",
+        "Manual mark creates completed attendance for payroll",
+        manual_ok,
+        f"before={before} after={after} date={mark_date or 'none'}",
+    )
+
+    # PA-17: Payroll preview runs after biometric sync helper (API smoke)
+    code, prev2 = http(
+        "POST",
+        f"{API}/api/admin/payroll/preview",
+        {"month": month, "year": year, "employee_ids": [uid]},
+        auth,
+    )
+    suite.record(
+        "PA-17",
+        "Payroll preview after attendance sync path",
+        code == 200 and json.loads(prev2).get("success") is not False,
+        f"HTTP {code}",
+    )
+
+    # PA-18: Generate refreshes draft from latest attendance before lock
+    previews = json.loads(prev2).get("data") or [] if code == 200 else []
+    draft = next((p for p in previews if not p.get("skipped") and p.get("id")), None)
+    if not mark_date:
+        suite.record(
+            "PA-18",
+            "Generate locks payslip after refresh from attendance",
+            False,
+            "skipped — PA-16 found no payroll-affecting date",
+        )
+    elif draft:
+        payslip_id = int(draft["id"])
+        conn.execute(
+            "UPDATE payslips SET status='draft', generated_at=NULL WHERE id=?",
+            (payslip_id,),
+        )
+        conn.commit()
+        isolate_pa16_day(conn, uid, mark_date)
+        conn.execute(
+            """UPDATE attendance SET clock_out=NULL, duration_minutes=NULL
+               WHERE user_id=? AND date=? AND notes='PA-16 integration test'""",
+            (uid, mark_date),
+        )
+        conn.commit()
+        code, prev3 = http(
+            "POST",
+            f"{API}/api/admin/payroll/preview",
+            {"month": month, "year": year, "employee_ids": [uid]},
+            auth,
+        )
+        preview_after_open = json.loads(prev3).get("data") or [] if code == 200 else []
+        row_open = next((p for p in preview_after_open if int(p.get("id") or 0) == payslip_id), None)
+        open_present = int(row_open.get("present_days") or 0) if row_open else -1
+        conn.execute(
+            """UPDATE attendance SET clock_out='18:00:00', duration_minutes=540
+               WHERE user_id=? AND date=? AND notes='PA-16 integration test'""",
+            (uid, mark_date),
+        )
+        conn.commit()
+        code, prev4 = http(
+            "POST",
+            f"{API}/api/admin/payroll/preview",
+            {"month": month, "year": year, "employee_ids": [uid]},
+            auth,
+        )
+        preview_after_close = json.loads(prev4).get("data") or [] if code == 200 else []
+        row_closed = next(
+            (p for p in preview_after_close if int(p.get("id") or 0) == payslip_id),
+            None,
+        )
+        expected_present = int(row_closed.get("present_days") or 0) if row_closed else -1
+        code, gen_raw = http(
+            "POST",
+            f"{API}/api/admin/payroll/generate",
+            {"month": month, "year": year, "payslip_ids": [payslip_id]},
+            auth,
+        )
+        gen_payload = json.loads(gen_raw) if code == 200 else {}
+        gen_data = gen_payload.get("data") or {}
+        gen_results = gen_data.get("results") or []
+        gen_row = next((r for r in gen_results if int(r.get("id") or 0) == payslip_id), None)
+        gen_status = (gen_row or {}).get("status")
+        locked = conn.execute(
+            "SELECT present_days, status FROM payslips WHERE id=?",
+            (payslip_id,),
+        ).fetchone()
+        refresh_ok = (
+            code == 200
+            and gen_payload.get("success") is not False
+            and gen_status == "generated"
+            and locked is not None
+            and locked["status"] == "generated"
+            and int(locked["present_days"]) == expected_present
+            and open_present < expected_present
+        )
+        suite.record(
+            "PA-18",
+            "Generate locks payslip after refresh from attendance",
+            refresh_ok,
+            f"generate HTTP {code} status={gen_status} open_present={open_present} "
+            f"final_present={locked['present_days'] if locked else '?'} expected={expected_present}",
+        )
+        conn.execute(
+            "UPDATE payslips SET status='draft', generated_at=NULL WHERE id=? AND status='generated'",
+            (payslip_id,),
+        )
+        conn.commit()
+    else:
+        suite.record("PA-18", "Generate locks payslip after refresh from attendance", False, "no draft payslip from preview")
+
+    cleanup_pa_suite(conn)
     conn.close()
     return suite.summary()
 

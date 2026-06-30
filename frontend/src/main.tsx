@@ -59,7 +59,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 // ── Lazy-loaded Pages ──
 const Login = lazy(() => import('@/pages/auth/login'));
+const ForgotPassword = lazy(() => import('@/pages/auth/forgot-password'));
+const ResetPassword = lazy(() => import('@/pages/auth/reset-password'));
 const Signup = lazy(() => import('@/pages/auth/signup'));
+const Register = lazy(() => import('@/pages/auth/register'));
+const PublicCareers = lazy(() => import('@/pages/auth/public-careers'));
+const TwoFactorChallenge = lazy(() => import('@/pages/auth/two-factor-challenge'));
+const VerifyEmail = lazy(() => import('@/pages/auth/verify-email'));
+const ConfirmPassword = lazy(() => import('@/pages/auth/confirm-password'));
 const ImpersonateCallback = lazy(() => import('@/pages/auth/impersonate'));
 const Dashboard = lazy(() => import('@/pages/admin/dashboard'));
 const UsersIndex = lazy(() => import('@/pages/admin/users/index'));
@@ -70,6 +77,7 @@ const DesignationsIndex = lazy(() => import('@/pages/admin/designations/index'))
 const CentersIndex = lazy(() => import('@/pages/admin/centers/index'));
 const JobApplicationsIndex = lazy(() => import('@/pages/admin/careers/applications'));
 const AttendanceIndex = lazy(() => import('@/pages/admin/attendance/index'));
+const ManualAttendanceIndex = lazy(() => import('@/pages/admin/manual-attendance/index'));
 const ShiftsIndex = lazy(() => import('@/pages/admin/shifts/index'));
 const ShiftRoster = lazy(() => import('@/pages/admin/shifts/roster'));
 const DailyShiftSchedule = lazy(() => import('@/pages/admin/shifts/daily-schedule'));
@@ -80,6 +88,7 @@ const HolidaysIndex = lazy(() => import('@/pages/admin/holidays/index'));
 const SalaryComponents = lazy(() => import('@/pages/admin/salaries/components'));
 const SalaryEmployees = lazy(() => import('@/pages/admin/salaries/employees'));
 const PayrollIndex = lazy(() => import('@/pages/admin/payroll/index'));
+const PayrollAdvanced = lazy(() => import('@/pages/admin/payroll/advanced'));
 const WorkflowsIndex = lazy(() => import('@/pages/admin/workflows/index'));
 const WorkflowsView = lazy(() => import('@/pages/admin/workflows/view'));
 const WorkflowsEdit = lazy(() => import('@/pages/admin/workflows/edit'));
@@ -99,6 +108,8 @@ const LeaveTypesSettings = lazy(() => import('@/pages/admin/settings/leave-types
 const SettingsProfile = lazy(() => import('@/pages/admin/settings/profile'));
 const SettingsPassword = lazy(() => import('@/pages/admin/settings/password'));
 const SettingsAppearance = lazy(() => import('@/pages/admin/settings/appearance'));
+const TwoFactorSettings = lazy(() => import('@/pages/admin/settings/two-factor'));
+const WorkLocationsSettings = lazy(() => import('@/pages/admin/settings/work-locations'));
 const CareersIndex = lazy(() => import('@/pages/admin/careers/index'));
 const EmployeePayslipsRoute = lazy(() => import('@/pages/admin/salaries/payslips-route'));
 const Unauthorized = lazy(() => import('@/pages/unauthorized'));
@@ -172,9 +183,15 @@ function App() {
         <Routes>
             {/* Public routes */}
             <Route path="/login" element={<GuestRoute><Suspense fallback={<PageLoader />}><Login /></Suspense></GuestRoute>} />
+            <Route path="/register" element={<GuestRoute><Suspense fallback={<PageLoader />}><Register /></Suspense></GuestRoute>} />
+            <Route path="/forgot-password" element={<GuestRoute><Suspense fallback={<PageLoader />}><ForgotPassword /></Suspense></GuestRoute>} />
+            <Route path="/reset-password" element={<GuestRoute><Suspense fallback={<PageLoader />}><ResetPassword /></Suspense></GuestRoute>} />
             <Route path="/signup" element={<GuestRoute><Suspense fallback={<PageLoader />}><Signup /></Suspense></GuestRoute>} />
+            <Route path="/auth/two-factor-challenge" element={<GuestRoute><Suspense fallback={<PageLoader />}><TwoFactorChallenge /></Suspense></GuestRoute>} />
+            <Route path="/auth/verify-email" element={<GuestRoute><Suspense fallback={<PageLoader />}><VerifyEmail /></Suspense></GuestRoute>} />
+            <Route path="/auth/confirm-password" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><ConfirmPassword /></Suspense></ProtectedRoute>} />
             <Route path="/auth/impersonate" element={<Suspense fallback={<PageLoader />}><ImpersonateCallback /></Suspense>} />
-            <Route path="/careers" element={<Navigate to="/login" replace />} />
+            <Route path="/careers" element={<Suspense fallback={<PageLoader />}><PublicCareers /></Suspense>} />
 
             {/* Dashboard */}
             <Route element={<AdminLayout />}>
@@ -197,6 +214,7 @@ function App() {
 
             {/* Attendance & Leave */}
             <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
+            <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
             <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
             <Route path="/admin/reports" element={<PermissionRoute permission="view-reports" module="reports"><ReportsIndex /></PermissionRoute>} />
             <Route path="/admin/shifts">
@@ -214,6 +232,7 @@ function App() {
             <Route path="/admin/salaries/employees" element={<PermissionRoute permission="view-payroll" module="payroll"><SalaryEmployees /></PermissionRoute>} />
             <Route path="/admin/salaries/employees/:id/payslips" element={<PermissionRoute permission="view-payroll" module="payroll"><EmployeePayslipsRoute /></PermissionRoute>} />
             <Route path="/admin/payroll" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollIndex /></PermissionRoute>} />
+            <Route path="/admin/payroll/advanced" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollAdvanced /></PermissionRoute>} />
 
             {/* Workflows */}
             <Route path="/admin/workflows" element={<PermissionRoute permission="view-workflows" module="workflows"><WorkflowsIndex /></PermissionRoute>} />
@@ -249,6 +268,8 @@ function App() {
             <Route path="/admin/settings/profile" element={<SettingsProfile />} />
             <Route path="/admin/settings/password" element={<SettingsPassword />} />
             <Route path="/admin/settings/appearance" element={<SettingsAppearance />} />
+            <Route path="/admin/settings/two-factor" element={<TwoFactorSettings />} />
+            <Route path="/admin/settings/work-locations" element={<PermissionRoute permission="manage-settings" module="centers"><WorkLocationsSettings /></PermissionRoute>} />
 
             <Route path="/unauthorized" element={<Unauthorized />} />
 

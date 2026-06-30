@@ -145,7 +145,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
     const sortIndicator = (col: string) =>
         sortBy === col ? (
             <span className="text-[10px] text-[#071b3a] dark:text-blue-300 font-bold">
-                {sortOrder === 'asc' ? 'â†‘' : 'â†“'}
+                {sortOrder === 'asc' ? '↑' : '↓'}
             </span>
         ) : null;
 
@@ -269,7 +269,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                                                 </div>
                                             </TableCell>
                                             <TableCell className="text-sm text-muted-foreground/70 max-w-xs truncate">
-                                                {department.description || <span className="text-muted-foreground/40">â€”</span>}
+                                                {department.description || <span className="text-muted-foreground/40">—</span>}
                                             </TableCell>
                                             <TableCell className="text-center">
                                                 <span className="inline-flex items-center justify-center h-6 min-w-[24px] px-1.5 rounded-full bg-[#071b3a]/10 dark:bg-blue-900/30 text-[11px] font-bold text-[#071b3a] dark:text-blue-300 border border-[#071b3a]/15 dark:border-blue-700/30">
@@ -319,7 +319,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                     {!loading && departments.length > 0 && (
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mt-5">
                             <p className="text-xs text-muted-foreground/60">
-                                Showing <span className="font-semibold text-foreground/70">{from}</span>â€“<span className="font-semibold text-foreground/70">{to}</span> of <span className="font-semibold text-foreground/70">{total}</span> results
+                                Showing <span className="font-semibold text-foreground/70">{from}</span>–<span className="font-semibold text-foreground/70">{to}</span> of <span className="font-semibold text-foreground/70">{total}</span> results
                             </p>
                             <div className="flex items-center gap-1.5">
                                 {[

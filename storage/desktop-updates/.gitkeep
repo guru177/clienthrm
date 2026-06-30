@@ -1,0 +1,3 @@
+# Desktop auto-update feed for electron-updater (generic provider).
+# Populate with: cd frontend && npm run electron:publish-local
+# Served at: GET /api/public/desktop/updates/latest.yml

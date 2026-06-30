@@ -47,21 +47,46 @@ export default function DepartmentForm({
     });
 
     useEffect(() => {
-        if (department) {
-            setFormData({
-                name: department.name,
-                description: department.description || '',
-                is_active: department.is_active,
-            });
-        } else {
+        if (!open) {
+            return;
+        }
+
+        if (!department?.id) {
             setFormData({
                 name: '',
                 description: '',
                 is_active: true,
             });
+            setErrors({});
+            return;
         }
-        setErrors({});
-    }, [department, open]);
+
+        let cancelled = false;
+        const loadDepartment = async () => {
+            try {
+                const response = await axios.get(`/admin/departments/${department.id}`);
+                if (cancelled || !response.data.success) {
+                    return;
+                }
+                const data = response.data.data;
+                setFormData({
+                    name: data.name ?? '',
+                    description: data.description || '',
+                    is_active: data.is_active ?? true,
+                });
+                setErrors({});
+            } catch (error) {
+                if (!cancelled) {
+                    handleApiError(error);
+                }
+            }
+        };
+
+        void loadDepartment();
+        return () => {
+            cancelled = true;
+        };
+    }, [department?.id, open]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -89,7 +114,7 @@ export default function DepartmentForm({
     };
 
     return (
-        <Dialog open={open} onOpenChange={onClose}>
+        <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
             <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                     <DialogTitle>

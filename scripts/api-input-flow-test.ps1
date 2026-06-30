@@ -28,10 +28,13 @@ function Api($Method, $Path, $Body, $Token) {
 
 Write-Host "=== API Input Flow Test ==="
 Write-Host ""
-$login = Api POST "/auth/login" @{ email = $Email; password = $Password } $null
+$login = Api POST "/auth/login" @{ email = $Email; password = $Password; org_slug = "mashuptech" } $null
 if (-not $login.Ok) { Write-Host "Login failed"; exit 1 }
 $token = $login.Json.data.token
 Log "Auth" "Login" "OK"
+
+. (Join-Path $PSScriptRoot "test-attendance-setup.ps1")
+Ensure-TodayRosterForClockIn -Api ${function:Api} -Token $token
 
 # Attendance: clock in, today, clock out
 $cin = Api POST "/admin/attendance/clock-in" @{ face_verified = $false; face_match_score = $null } $token
@@ -53,18 +56,26 @@ $desName = "API Desig $Ts"
 $des = Api POST "/admin/designations" @{ name = $desName; description = "test"; is_active = $true } $token
 if ($des.Ok) { Log "Designations" "Create" "OK" $desName } else { Log "Designations" "Create" "FAIL" $des.Code }
 
-$holDate = (Get-Date).AddDays(3650 + ($Ts % 3000)).ToString('yyyy-MM-dd')
-$lvStart = (Get-Date).AddDays(3660 + ($Ts % 3000)).ToString('yyyy-MM-dd')
-$lvEnd = (Get-Date).AddDays(3662 + ($Ts % 3000)).ToString('yyyy-MM-dd')
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$dateJson = python "$ScriptRoot/test_date_pools.py" $Ts api_write | ConvertFrom-Json
+$holDate = $dateJson.holiday
+$lvStart = $dateJson.start
+$lvEnd = $dateJson.end
 
 # Holiday
 $hol = Api POST "/admin/holidays" @{ name = "API Hol $Ts"; date = $holDate; is_paid = $true; description = "test" } $token
 if ($hol.Ok) { Log "Holidays" "Create" "OK" } else { Log "Holidays" "Create" "FAIL" $hol.Code }
 
-# Leave request
+# Leave request (retry once with shifted salt if overlap from prior suite data)
 $lv = Api POST "/admin/leave-requests" @{
-    leave_type = "annual"; start_date = $lvStart; end_date = $lvEnd; reason = "API flow test"
+    leave_type = "annual"; start_date = $lvStart; end_date = $lvEnd; reason = "API flow test $Ts"
 } $token
+if (-not $lv.Ok) {
+    $retryJson = python "$ScriptRoot/test_date_pools.py" ($Ts + 1) api_write | ConvertFrom-Json
+    $lv = Api POST "/admin/leave-requests" @{
+        leave_type = "annual"; start_date = $retryJson.start; end_date = $retryJson.end; reason = "API flow retry $Ts"
+    } $token
+}
 if ($lv.Ok) { Log "Leave" "Submit request" "OK" } else { Log "Leave" "Submit" "FAIL" $lv.Code }
 
 # Task

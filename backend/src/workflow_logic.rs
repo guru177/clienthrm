@@ -63,7 +63,7 @@ pub fn trigger(
 
     let mut workflows: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
     for variant in variants {
-        let mut stmt = match conn.prepare(
+        let stmt = match conn.prepare(
             "SELECT id, name, trigger_conditions, actions FROM workflows
              WHERE is_active = 1 AND trigger_type = ?1 AND organization_id = ?2",
         ) {
@@ -130,6 +130,7 @@ pub fn trigger(
 
         if let Some(ref actions_str) = actions_json {
             if let Ok(actions) = serde_json::from_str::<serde_json::Value>(actions_str) {
+                let actions = normalize_workflow_actions(&actions);
                 let (executed, skipped) = if let Some(actor) = created_by {
                     execute_actions(conn, org_id, actor, &name, &actions, context, &now)
                 } else {
@@ -304,6 +305,165 @@ fn action_count(actions: &serde_json::Value) -> usize {
     }
 }
 
+fn action_field<'a>(action: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    action
+        .get(key)
+        .or_else(|| action.get("config").and_then(|c| c.get(key)))
+}
+
+fn action_field_str<'a>(action: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    action_field(action, key).and_then(|v| v.as_str())
+}
+
+fn action_field_i64(action: &serde_json::Value, key: &str) -> Option<i64> {
+    action_field(action, key).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+
+fn canonical_action_type(action_type: &str) -> &str {
+    match action_type {
+        "send_notification" | "notify" => "notification",
+        "send_email" => "email",
+        "assign_to_user" | "task" => "create_task",
+        other => other,
+    }
+}
+
+pub const SUPPORTED_TRIGGER_TYPES: &[&str] = &[
+    "leave_request_submitted",
+    "leave_request_approved",
+    "leave_request_rejected",
+    "leave_submitted",
+    "leave_approved",
+    "leave_rejected",
+];
+
+pub fn validate_workflow_trigger(trigger_type: &str) -> Result<(), String> {
+    let ok = trigger_type_variants(trigger_type)
+        .iter()
+        .any(|v| SUPPORTED_TRIGGER_TYPES.contains(&v.as_str()));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("Unsupported workflow trigger: {trigger_type}"))
+    }
+}
+
+pub fn validate_workflow_actions(actions: &serde_json::Value) -> Result<(), String> {
+    let normalized = normalize_workflow_actions(actions);
+    let Some(arr) = normalized.as_array() else {
+        return Err("Workflow actions must be an array".to_string());
+    };
+    if arr.is_empty() {
+        return Err("At least one workflow action is required".to_string());
+    }
+    for action in arr {
+        let t = action
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if t.is_empty() {
+            return Err("Each workflow action must have a type".to_string());
+        }
+        // Unknown action types are allowed at save time; execution logs and skips them.
+    }
+    Ok(())
+}
+
+/// Flatten UI `{ type, config }` actions into engine-ready JSON (also accepts flat API format).
+pub fn normalize_workflow_actions(actions: &serde_json::Value) -> serde_json::Value {
+    let items = match actions {
+        serde_json::Value::Array(arr) => arr.clone(),
+        serde_json::Value::Object(_) => vec![actions.clone()],
+        _ => return serde_json::json!([]),
+    };
+
+    let normalized: Vec<serde_json::Value> = items
+        .into_iter()
+        .filter_map(|action| {
+            let raw_type = action
+                .get("type")
+                .or_else(|| action.get("action"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if raw_type.is_empty() {
+                return None;
+            }
+            let canonical = canonical_action_type(raw_type);
+            let mut flat = serde_json::Map::new();
+            flat.insert(
+                "type".to_string(),
+                serde_json::Value::String(canonical.to_string()),
+            );
+            if let Some(cfg) = action.get("config").and_then(|v| v.as_object()) {
+                for (k, v) in cfg {
+                    flat.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(obj) = action.as_object() {
+                for (k, v) in obj {
+                    if k == "type" || k == "action" || k == "config" {
+                        continue;
+                    }
+                    flat.insert(k.clone(), v.clone());
+                }
+            }
+            Some(serde_json::Value::Object(flat))
+        })
+        .collect();
+
+    serde_json::Value::Array(normalized)
+}
+
+fn insert_org_notification(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    created_by: i64,
+    title: &str,
+    body: &str,
+    recipient_user_id: Option<i64>,
+    now: &str,
+) -> bool {
+    let (audience, target_id): (&str, Option<i64>) = if let Some(uid) = recipient_user_id {
+        let dept: Option<i64> = conn
+            .query_row(
+                "SELECT department_id FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+                crate::params![uid, org_id],
+                |row| row.get_idx::<Option<i64>>(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(d) = dept {
+            ("department", Some(d))
+        } else {
+            ("all", None)
+        }
+    } else {
+        ("all", None)
+    };
+
+    conn.execute(
+        "INSERT INTO org_notifications (organization_id, title, body, severity, audience, target_id, created_by, created_at)
+         VALUES (?1, ?2, ?3, 'info', ?4, ?5, ?6, ?7)",
+        crate::params![org_id, title, body, audience, target_id, created_by, now],
+    )
+    .is_ok()
+}
+
+fn due_date_from_action(action: &serde_json::Value, now: &str) -> Option<String> {
+    let days = action_field_i64(action, "due_days")?;
+    if days <= 0 {
+        return None;
+    }
+    let base = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.date())
+        .or_else(|| chrono::NaiveDate::parse_from_str(now, "%Y-%m-%d").ok())?;
+    Some((base + chrono::Duration::days(days)).format("%Y-%m-%d").to_string())
+}
+
 fn execute_actions(
     conn: &crate::db::Connection,
     org_id: i64,
@@ -323,18 +483,16 @@ fn execute_actions(
     let mut skipped = 0usize;
 
     for action in items {
-        let action_type = action
+        let raw_type = action
             .get("type")
             .or_else(|| action.get("action"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let action_type = canonical_action_type(raw_type);
 
         match action_type {
-            "create_task" | "task" => {
-                let title = action
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Workflow task");
+            "create_task" => {
+                let title = action_field_str(&action, "title").unwrap_or("Workflow task");
                 let Some(assignee) =
                     resolve_assignee(conn, org_id, created_by, context, &action)
                 else {
@@ -346,10 +504,25 @@ fn execute_actions(
                     skipped += 1;
                     continue;
                 };
-                if conn
-                    .execute(
+                let due_date = due_date_from_action(&action, now);
+                let inserted = if let Some(ref due) = due_date {
+                    conn.execute(
+                        "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, organization_id, due_date, created_at, updated_at)
+                         VALUES (?1, ?2, 'todo', 'medium', ?3, ?4, ?5, ?6, ?7, ?7)",
+                        crate::params![
+                            format!("{}: {}", workflow_name, title),
+                            format!("Auto-created by workflow. Context: {}", context),
+                            assignee,
+                            created_by,
+                            org_id,
+                            due,
+                            now,
+                        ],
+                    )
+                } else {
+                    conn.execute(
                         "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, organization_id, created_at, updated_at)
-                     VALUES (?1, ?2, 'todo', 'medium', ?3, ?4, ?5, ?6, ?6)",
+                         VALUES (?1, ?2, 'todo', 'medium', ?3, ?4, ?5, ?6, ?6)",
                         crate::params![
                             format!("{}: {}", workflow_name, title),
                             format!("Auto-created by workflow. Context: {}", context),
@@ -359,70 +532,146 @@ fn execute_actions(
                             now,
                         ],
                     )
-                    .is_ok()
-                {
+                };
+                if inserted.is_ok() {
                     executed += 1;
                 } else {
                     skipped += 1;
                 }
             }
-            "notify" | "notification" | "log" => {
-                let message = action
-                    .get("message")
-                    .or_else(|| action.get("body"))
-                    .and_then(|v| v.as_str())
+            "notification" | "log" => {
+                let message = action_field_str(&action, "message")
+                    .or_else(|| action_field_str(&action, "body"))
                     .unwrap_or("Workflow notification");
                 let recipient = resolve_assignee(conn, org_id, created_by, context, &action);
-                log::info!(
-                    "Workflow notify [{}] to user {:?}: {} — context: {}",
-                    workflow_name,
-                    recipient,
+                let title = format!("Workflow: {}", workflow_name);
+                if insert_org_notification(
+                    conn,
+                    org_id,
+                    created_by,
+                    &title,
                     message,
-                    context
-                );
-                executed += 1;
-                if action
-                    .get("create_task")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    let Some(recipient) =
-                        resolve_assignee(conn, org_id, created_by, context, &action)
-                    else {
-                        skipped += 1;
-                        continue;
-                    };
-                    if conn
-                        .execute(
-                            "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, organization_id, created_at, updated_at)
-                         VALUES (?1, ?2, 'todo', 'low', ?3, ?4, ?5, ?6, ?6)",
-                            crate::params![
-                                format!("{}: {}", workflow_name, message),
-                                format!("Notification from workflow. Context: {}", context),
-                                recipient,
-                                created_by,
-                                org_id,
-                                now,
-                            ],
-                        )
-                        .is_ok()
-                    {
-                        executed += 1;
-                    } else {
-                        skipped += 1;
-                    }
+                    recipient,
+                    now,
+                ) {
+                    log::info!(
+                        "Workflow notification [{}] to user {:?}: {}",
+                        workflow_name,
+                        recipient,
+                        message
+                    );
+                    executed += 1;
+                } else {
+                    log::warn!(
+                        "Workflow '{}' failed to create org notification",
+                        workflow_name
+                    );
+                    skipped += 1;
+                }
+            }
+            "email" => {
+                let subject = action_field_str(&action, "subject")
+                    .or_else(|| action_field_str(&action, "template"))
+                    .unwrap_or("Workflow email");
+                let body = action_field_str(&action, "message")
+                    .or_else(|| action_field_str(&action, "body"))
+                    .unwrap_or(subject);
+                let recipient = resolve_assignee(conn, org_id, created_by, context, &action);
+                if insert_org_notification(
+                    conn,
+                    org_id,
+                    created_by,
+                    subject,
+                    body,
+                    recipient,
+                    now,
+                ) {
+                    log::info!(
+                        "Workflow email [{}] queued as in-app notice for user {:?}: {}",
+                        workflow_name,
+                        recipient,
+                        subject
+                    );
+                    executed += 1;
+                } else {
+                    skipped += 1;
                 }
             }
             _ => {
-                log::info!(
-                    "Workflow action '{}' in '{}' — context: {}",
-                    action_type,
+                log::warn!(
+                    "Workflow action '{}' in '{}' — not implemented (context: {})",
+                    raw_type,
                     workflow_name,
                     context
                 );
-                executed += 1;
+                skipped += 1;
             }
         }
     }
     (executed, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_type_variants_leave_approved() {
+        let v = trigger_type_variants("leave_approved");
+        assert!(v.contains(&"leave_request_approved".to_string()));
+    }
+
+    #[test]
+    fn conditions_object_equals() {
+        let cond = serde_json::json!({"leave_type": "annual"});
+        let ctx = serde_json::json!({"leave_type": "annual", "user_id": 1});
+        assert!(conditions_match(&cond, &ctx));
+    }
+
+    #[test]
+    fn conditions_array_rule_fails_on_mismatch() {
+        let cond = serde_json::json!([
+            {"field": "leave_type", "operator": "equals", "value": "sick"}
+        ]);
+        let ctx = serde_json::json!({"leave_type": "annual"});
+        assert!(!conditions_match(&cond, &ctx));
+    }
+
+    #[test]
+    fn numeric_gte_operator() {
+        let rule = serde_json::json!({"field": "days_count", "operator": "gte", "value": 2});
+        let ctx = serde_json::json!({"days_count": 3});
+        assert!(evaluate_rule(&rule, &ctx));
+    }
+
+    #[test]
+    fn contains_operator() {
+        let rule = serde_json::json!({"field": "reason", "operator": "contains", "value": "urgent"});
+        let ctx = serde_json::json!({"reason": "urgent medical"});
+        assert!(evaluate_rule(&rule, &ctx));
+    }
+
+    #[test]
+    fn normalize_ui_create_task_action() {
+        let ui = serde_json::json!([{"type": "create_task", "config": {"title": "My task", "due_days": 3}}]);
+        let norm = normalize_workflow_actions(&ui);
+        let item = norm.as_array().unwrap().first().unwrap();
+        assert_eq!(item.get("type").and_then(|v| v.as_str()), Some("create_task"));
+        assert_eq!(item.get("title").and_then(|v| v.as_str()), Some("My task"));
+        assert_eq!(item.get("due_days").and_then(|v| v.as_i64()), Some(3));
+    }
+
+    #[test]
+    fn normalize_send_notification_alias() {
+        let ui = serde_json::json!([{"type": "send_notification", "config": {"message": "Hello"}}]);
+        let norm = normalize_workflow_actions(&ui);
+        assert_eq!(
+            norm[0].get("type").and_then(|v| v.as_str()),
+            Some("notification")
+        );
+        assert_eq!(
+            norm[0].get("message").and_then(|v| v.as_str()),
+            Some("Hello")
+        );
+    }
 }

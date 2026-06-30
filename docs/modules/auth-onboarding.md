@@ -30,7 +30,9 @@ Handles tenant authentication (login, refresh, logout, signup), JWT issuance, an
 | GET | `/api/auth/me` | JWT | User, roles, permissions, org plan |
 | POST | `/api/auth/presence` | JWT | Super-admin online heartbeat |
 | POST | `/api/auth/logout` | JWT | Revoke refresh token |
-| POST | `/api/public/signup` | Public | Create org + admin (env-gated) |
+| POST | `/api/public/signup/check-availability` | Public | Early slug / company / admin email checks |
+| POST | `/api/public/signup/send-otp` | Public | Send email or WhatsApp OTP for signup |
+| POST | `/api/public/signup` | Public | Create org + admin (requires OTP unless bypass) |
 | POST | `/api/onboarding/complete` | JWT | Mark org onboarding done |
 
 ## JWT claims (tenant)
@@ -63,9 +65,16 @@ Handles tenant authentication (login, refresh, logout, signup), JWT issuance, an
 
 ### Signup (public)
 
-1. `POST /api/public/signup` with org name, admin details.
-2. Creates organization, default roles, super admin user.
-3. Disabled in production unless `ALLOW_PUBLIC_SIGNUP=1`.
+Requires `ALLOW_PUBLIC_SIGNUP=1`. Optional dev flags: `SIGNUP_OTP_DEBUG=1` (return OTP in API response), `SIGNUP_OTP_BYPASS=1` (skip OTP verification — dev only).
+
+1. **Step 1 — Company** (`/signup`): user enters org name, slug, contact, company email/phone, country, timezone.
+2. **Availability** — `POST /api/public/signup/check-availability` with `org_slug` and `company_email` (step 1); again with `admin_email` on step 2.
+3. **Step 2 — Admin** — name, work email, mobile, password.
+4. **Step 3 — OTP** — `POST /api/public/signup/send-otp` (`channel`: `email` or `whatsapp`); user enters code.
+5. **Create** — `POST /api/public/signup` with full payload plus `verification_id` and `otp`.
+6. Backend creates organization (trial plan), seeds defaults, super-admin user, returns tenant JWT.
+
+Duplicate checks: organization slug, company email (organizations table), and admin work email (users table). Emails must match `local@domain.tld` format.
 
 ### Impersonation
 

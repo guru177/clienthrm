@@ -116,7 +116,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, name, slug, price_label, billing_period, max_users, modules, features,
                 is_active, sort_order, created_at, updated_at
          FROM subscription_plans

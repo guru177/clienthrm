@@ -34,6 +34,16 @@ except ImportError:
 
 SKIP_TABLES = {"sqlite_sequence", "sqlite_stat1", "sqlite_stat4"}
 
+# Create parent tables before children (SQLite master order is alphabetical).
+TABLE_CREATE_PRIORITY = [
+    "organizations",
+    "users",
+    "roles",
+    "permissions",
+    "subscription_plans",
+    "biometric_devices",
+]
+
 
 def transform_ddl(sql: str) -> str:
     """Convert SQLite CREATE TABLE to PostgreSQL-compatible DDL."""
@@ -52,11 +62,47 @@ def transform_ddl(sql: str) -> str:
         flags=re.IGNORECASE,
     )
     s = re.sub(r"datetime\s*\(\s*['\"]now['\"]\s*\)", "CURRENT_TIMESTAMP", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bTINYINT\s*\(\s*1\s*\)", "SMALLINT", s, flags=re.IGNORECASE)
     s = re.sub(r"\bTINYINT\b", "SMALLINT", s, flags=re.IGNORECASE)
+    s = re.sub(r"SMALLINT\s*\(\s*1\s*\)", "SMALLINT", s, flags=re.IGNORECASE)
     s = re.sub(r"\bDATETIME\b", "TIMESTAMP", s, flags=re.IGNORECASE)
     s = re.sub(r"\bNUMERIC\b", "NUMERIC", s, flags=re.IGNORECASE)
     # SQLite UNIQUE constraints inline — keep as-is (PG accepts most)
     s = re.sub(r"WITHOUT ROWID", "", s, flags=re.IGNORECASE)
+    # Drop FK clauses for create-order independence (SQLite data is already consistent).
+    s = re.sub(
+        r",?\s*FOREIGN KEY\s*\([^)]+\)\s*REFERENCES\s+[^(,\s]+(?:\([^)]*\))?"
+        r"(?:\s+ON\s+DELETE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION))?"
+        r"(?:\s+ON\s+UPDATE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION))?",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\s+REFERENCES\s+[^(,\s]+(?:\([^)]*\))?"
+        r"(?:\s+ON\s+DELETE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION))?"
+        r"(?:\s+ON\s+UPDATE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION))?",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\s+ON\s+DELETE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION)",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\s+ON\s+UPDATE\s+(?:CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION)",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # SQLite table-level FK removal can leave stray closing parens / commas.
+    while re.search(r",\s*\)", s):
+        s = re.sub(r",\s*\)", ")", s)
+    while s.count("(") > s.count(")"):
+        s = s + ")"
     return s
 
 
@@ -64,7 +110,15 @@ def list_tables(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ).fetchall()
-    return [r[0] for r in rows if r[0] not in SKIP_TABLES]
+    names = [r[0] for r in rows if r[0] not in SKIP_TABLES]
+
+    def sort_key(name: str) -> tuple[int, str]:
+        try:
+            return (TABLE_CREATE_PRIORITY.index(name), name)
+        except ValueError:
+            return (len(TABLE_CREATE_PRIORITY), name)
+
+    return sorted(names, key=sort_key)
 
 
 def table_ddl(conn: sqlite3.Connection, table: str) -> str | None:
@@ -77,6 +131,48 @@ def table_ddl(conn: sqlite3.Connection, table: str) -> str | None:
     return transform_ddl(row[0])
 
 
+def sqlite_column_meta(conn: sqlite3.Connection, table: str) -> dict[str, tuple[str, bool]]:
+    """Map column name -> (uppercase type, not_null)."""
+    meta: dict[str, tuple[str, bool]] = {}
+    for _cid, name, col_type, notnull, *_rest in conn.execute(f'PRAGMA table_info("{table}")'):
+        meta[name] = ((col_type or "").upper(), bool(notnull))
+    return meta
+
+
+def coerce_empty_typed(col: str, col_type: str, not_null: bool, row: sqlite3.Row) -> Any:
+    """SQLite allows '' in typed columns; PostgreSQL does not."""
+    if "DATE" in col_type and "TIME" not in col_type:
+        created = row["created_at"] if "created_at" in row.keys() else None
+        if created:
+            return str(created)[:10]
+        return "1970-01-01" if not_null else None
+    if "TIME" in col_type or "DATETIME" in col_type:
+        created = row["created_at"] if "created_at" in row.keys() else None
+        return created if created else ("1970-01-01 00:00:00" if not_null else None)
+    if any(k in col_type for k in ("INT", "BOOL")):
+        return 0 if not_null else None
+    if any(k in col_type for k in ("REAL", "FLOA", "DOUB", "NUM", "DEC")):
+        return 0 if not_null else None
+    return None
+
+
+def row_for_pg(row: sqlite3.Row, col_meta: dict[str, tuple[str, bool]]) -> dict[str, Any] | None:
+    out: dict[str, Any] = {}
+    for key in row.keys():
+        val = row[key]
+        col_type, not_null = col_meta.get(key, ("", False))
+        typed = any(
+            k in col_type
+            for k in ("INT", "REAL", "FLOA", "DOUB", "NUM", "DEC", "DATE", "TIME", "BOOL")
+        )
+        if val == "" and typed:
+            val = coerce_empty_typed(key, col_type, not_null, row)
+            if val is None and not_null:
+                return None
+        out[key] = val
+    return out
+
+
 def copy_table(
     sqlite_conn: sqlite3.Connection,
     pg_conn: Any,
@@ -87,13 +183,28 @@ def copy_table(
     if not rows:
         return 0
 
+    col_meta = sqlite_column_meta(sqlite_conn, table)
     cols = rows[0].keys()
     col_list = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(f"%({c})s" for c in cols)
     sql = f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING'
 
+    payload: list[dict[str, Any]] = []
+    skipped = 0
+    for r in rows:
+        mapped = row_for_pg(r, col_meta)
+        if mapped is None:
+            skipped += 1
+            continue
+        payload.append(mapped)
+    if skipped:
+        print(f"  {table}: skipped {skipped} row(s) with invalid NOT NULL typed values")
+
+    if not payload:
+        return 0
+
     with pg_conn.cursor() as cur:
-        psycopg2.extras.execute_batch(cur, sql, [dict(r) for r in rows], page_size=500)
+        psycopg2.extras.execute_batch(cur, sql, payload, page_size=500)
     pg_conn.commit()
     return len(rows)
 
@@ -176,6 +287,11 @@ def migrate(sqlite_path: str, pg_url: str | None, dry_run: bool) -> None:
     pg_conn.commit()
 
     reset_sequences(pg_conn, tables)
+
+    with pg_conn.cursor() as cur:
+        cur.execute("ANALYZE")
+    pg_conn.commit()
+
     pg_conn.close()
     sqlite_conn.close()
     print(f"\nDone. {total} rows copied to PostgreSQL.")

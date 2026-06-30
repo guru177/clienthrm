@@ -16,6 +16,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import {
     Select,
@@ -408,9 +409,8 @@ export default function UsersIndex() {
                                 <Label htmlFor="password">
                                     Password <span className="text-destructive">*</span>
                                 </Label>
-                                <Input
+                                <PasswordInput
                                     id="password"
-                                    type="password"
                                     value={createForm.password}
                                     onChange={(e) =>
                                         setCreateForm({ ...createForm, password: e.target.value })
@@ -426,9 +426,8 @@ export default function UsersIndex() {
                                 <Label htmlFor="password_confirmation">
                                     Confirm Password <span className="text-destructive">*</span>
                                 </Label>
-                                <Input
+                                <PasswordInput
                                     id="password_confirmation"
-                                    type="password"
                                     value={createForm.password_confirmation}
                                     onChange={(e) =>
                                         setCreateForm({

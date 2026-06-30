@@ -1,0 +1,141 @@
+name: HRM Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  rust-unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo fmt check
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy
+      - name: cargo test
+        run: cargo test
+
+  python-api:
+    runs-on: ubuntu-latest
+    services:
+      # Backend is started manually; SQLite file copied from repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --release
+      - name: Start backend
+        working-directory: backend
+        env:
+          HRM_AUTH_LOGIN_MAX: "500"
+        run: |
+          nohup ./target/release/hrm-backend > ../backend-ci.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/api/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:3001/api/health
+      - name: Database health
+        run: python scripts/test-database-health.py
+      - name: SaaS suite
+        run: python scripts/test-saas-suite.py
+      - name: Workflow suite
+        run: python scripts/test-workflow-suite.py
+      - name: Payroll compliance suite
+        run: python scripts/test-payroll-compliance-suite.py
+      - name: Module catalog API
+        run: python scripts/test-all-24-modules.py
+      - name: Auth security suite
+        env:
+          HRM_AUTH_LOGIN_MAX: "500"
+        run: python scripts/test-auth-security-suite.py
+
+  postgres-staging:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hrm
+          POSTGRES_PASSWORD: hrm_test
+          POSTGRES_DB: hrm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install psycopg2
+        run: pip install psycopg2-binary
+      - name: Migrate SQLite to PostgreSQL
+        env:
+          DATABASE_URL: postgres://hrm:hrm_test@localhost:5432/hrm
+        run: |
+          python scripts/migrate-sqlite-to-postgres.py \
+            --sqlite database/database.sqlite \
+            --pg-url "$DATABASE_URL"
+      - name: Database health on PostgreSQL
+        env:
+          DATABASE_URL: postgres://hrm:hrm_test@localhost:5432/hrm
+        run: python scripts/test-database-health.py
+
+  frontend-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --release
+      - name: Start backend
+        working-directory: backend
+        env:
+          HRM_AUTH_LOGIN_MAX: "500"
+        run: |
+          nohup ./target/release/hrm-backend > ../backend-fe.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/api/health && break
+            sleep 2
+          done
+      - name: Install tenant frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+      - name: Start tenant dev server
+        working-directory: frontend
+        run: |
+          nohup npm run dev -- --host 127.0.0.1 --port 5174 > ../frontend-ci.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:5174/ && break
+            sleep 2
+          done
+      - name: Frontend module check
+        run: node scripts/frontend-module-check.mjs
+        env:
+          FE_URL: http://127.0.0.1:5174
+      - name: Targeted E2E flows
+        run: node scripts/e2e-targeted-flows.mjs
+        env:
+          FE_URL: http://127.0.0.1:5174

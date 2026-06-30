@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use r2d2_postgres::PostgresConnectionManager;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -17,39 +17,97 @@ type PgConn = r2d2::PooledConnection<PostgresConnectionManager<postgres::NoTls>>
 pub struct Connection {
     backend: Backend,
     sqlite: Option<r2d2::PooledConnection<SqliteConnectionManager>>,
-    postgres: Option<RefCell<PgConn>>,
-    pg_param_cache: RefCell<Vec<Box<dyn postgres::types::ToSql + Sync + Send>>>,
+    postgres: Option<Mutex<PgConn>>,
     /// Last `id` from an INSERT … RETURNING on this connection (PostgreSQL).
-    last_insert_id: RefCell<Option<i64>>,
+    last_insert_id: Mutex<Option<i64>>,
     /// True when a PostgreSQL transaction is open on this connection.
-    pg_in_transaction: RefCell<bool>,
+    pg_in_transaction: Mutex<bool>,
 }
 
 impl Connection {
     pub fn sqlite(conn: r2d2::PooledConnection<SqliteConnectionManager>) -> Self {
+        let _ = conn.execute_batch(
+            "PRAGMA busy_timeout=5000;
+             PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;",
+        );
         Self {
             backend: Backend::Sqlite,
             sqlite: Some(conn),
             postgres: None,
-            pg_param_cache: RefCell::new(Vec::new()),
-            last_insert_id: RefCell::new(None),
-            pg_in_transaction: RefCell::new(false),
+            last_insert_id: Mutex::new(None),
+            pg_in_transaction: Mutex::new(false),
         }
     }
 
-    pub fn postgres(conn: PgConn) -> Self {
+    pub fn postgres(mut conn: PgConn) -> Self {
+        let mut set_timezone = || {
+            let _ = conn.batch_execute("SET timezone = 'UTC'");
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|scope| match scope.spawn(set_timezone).join() {
+                Ok(()) => (),
+                Err(panic) => std::panic::resume_unwind(panic),
+            });
+        } else {
+            set_timezone();
+        }
         Self {
             backend: Backend::Postgres,
             sqlite: None,
-            postgres: Some(RefCell::new(conn)),
-            pg_param_cache: RefCell::new(Vec::new()),
-            last_insert_id: RefCell::new(None),
-            pg_in_transaction: RefCell::new(false),
+            postgres: Some(Mutex::new(conn)),
+            last_insert_id: Mutex::new(None),
+            pg_in_transaction: Mutex::new(false),
         }
     }
 
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    fn with_postgres<T, F>(&self, f: F) -> T
+    where
+        T: Send,
+        F: FnOnce(&mut PgConn) -> T + Send,
+    {
+        let pg_mutex = self.postgres.as_ref().expect("postgres connection");
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|scope| {
+                match scope
+                    .spawn(move || {
+                        let mut pg = pg_mutex.lock().unwrap();
+                        f(&mut pg)
+                    })
+                    .join()
+                {
+                    Ok(result) => result,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            })
+        } else {
+            let mut pg = pg_mutex.lock().unwrap();
+            f(&mut pg)
+        }
+    }
+
+    /// Return a PostgreSQL pooled connection off the Tokio runtime (sync `postgres` crate).
+    fn release_postgres_conn(&mut self) {
+        if self.backend != Backend::Postgres {
+            return;
+        }
+        let Some(pg_mutex) = self.postgres.take() else {
+            return;
+        };
+        let pg = match pg_mutex.into_inner() {
+            Ok(c) => c,
+            Err(p) => p.into_inner(),
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Return connection to r2d2 off the async runtime (sync postgres cannot drop on Tokio).
+            std::thread::spawn(move || drop(pg));
+        } else {
+            drop(pg);
+        }
     }
 
     pub fn sqlite_conn(&self) -> &rusqlite::Connection {
@@ -74,11 +132,11 @@ impl Connection {
             }
             Backend::Postgres => {
                 let sql = adapt_sql(sql, Backend::Postgres);
-                *self.pg_param_cache.borrow_mut() = params.postgres_boxes();
-                let cache = self.pg_param_cache.borrow();
-                let refs = Params::postgres_refs(&cache);
-                let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-                let row = pg.query_one(&sql, &refs).map_err(DbError::from)?;
+                let boxes = params.postgres_boxes();
+                let row = self.with_postgres(|pg| {
+                    let refs = Params::postgres_refs(&boxes);
+                    pg.query_one(&sql, &refs).map_err(DbError::from)
+                })?;
                 f(&Row::Postgres(&row))
             }
         }
@@ -99,13 +157,13 @@ impl Connection {
                 if is_insert_without_returning(&sql) {
                     return self.execute_insert_returning_id(&sql, params);
                 }
-                *self.pg_param_cache.borrow_mut() = params.postgres_boxes();
-                let cache = self.pg_param_cache.borrow();
-                let refs = Params::postgres_refs(&cache);
-                let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-                pg.execute(&sql, &refs)
-                    .map_err(DbError::from)
-                    .map(|n| n as usize)
+                let boxes = params.postgres_boxes();
+                self.with_postgres(|pg| {
+                    let refs = Params::postgres_refs(&boxes);
+                    pg.execute(&sql, &refs)
+                        .map_err(DbError::from)
+                        .map(|n| n as usize)
+                })
             }
         }
     }
@@ -114,25 +172,21 @@ impl Connection {
         let returning_sql = format!("{} RETURNING id", sql.trim().trim_end_matches(';'));
         match self.query_row(&returning_sql, params.clone(), |row| row.get_idx::<i64>(0)) {
             Ok(id) => {
-                *self.last_insert_id.borrow_mut() = Some(id);
+                *self.last_insert_id.lock().unwrap() = Some(id);
                 Ok(1)
             }
             // No row returned (e.g. `ON CONFLICT DO NOTHING` hit an existing row) or the
             // table has no integer `id` column (TEXT/composite PK). Fall back to a plain
             // INSERT so the row is still written; last_insert_id is left unset.
             Err(_) => {
-                *self.last_insert_id.borrow_mut() = None;
-                *self.pg_param_cache.borrow_mut() = params.postgres_boxes();
-                let cache = self.pg_param_cache.borrow();
-                let refs = Params::postgres_refs(&cache);
-                let mut pg = self
-                    .postgres
-                    .as_ref()
-                    .expect("postgres connection")
-                    .borrow_mut();
-                pg.execute(sql, &refs)
-                    .map_err(DbError::from)
-                    .map(|n| n as usize)
+                *self.last_insert_id.lock().unwrap() = None;
+                let boxes = params.postgres_boxes();
+                self.with_postgres(|pg| {
+                    let refs = Params::postgres_refs(&boxes);
+                    pg.execute(sql, &refs)
+                        .map_err(DbError::from)
+                        .map(|n| n as usize)
+                })
             }
         }
     }
@@ -152,10 +206,8 @@ impl Connection {
                 })
             }
             Backend::Postgres => {
-                let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-                pg.batch_execute("BEGIN")
-                    .map_err(DbError::from)?;
-                *self.pg_in_transaction.borrow_mut() = true;
+                self.with_postgres(|pg| pg.batch_execute("BEGIN").map_err(DbError::from))?;
+                *self.pg_in_transaction.lock().unwrap() = true;
                 Ok(Transaction {
                     backend: Backend::Postgres,
                     sqlite: None,
@@ -175,9 +227,8 @@ impl Connection {
             Backend::Postgres => {
                 let upper = sql.trim().to_ascii_uppercase();
                 if upper == "BEGIN" || upper == "BEGIN IMMEDIATE" || upper.starts_with("BEGIN ") {
-                    let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-                    pg.batch_execute("BEGIN").map_err(DbError::from)?;
-                    *self.pg_in_transaction.borrow_mut() = true;
+                    self.with_postgres(|pg| pg.batch_execute("BEGIN").map_err(DbError::from))?;
+                    *self.pg_in_transaction.lock().unwrap() = true;
                     return Ok(());
                 }
                 if upper == "COMMIT" {
@@ -186,24 +237,21 @@ impl Connection {
                 if upper == "ROLLBACK" {
                     return self.pg_rollback();
                 }
-                let mut conn = self.postgres.as_ref().expect("postgres connection").borrow_mut();
                 let adapted = adapt_sql(sql, Backend::Postgres);
-                conn.batch_execute(&adapted).map_err(DbError::from)
+                self.with_postgres(|pg| pg.batch_execute(&adapted).map_err(DbError::from))
             }
         }
     }
 
     fn pg_commit(&self) -> Result<()> {
-        let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-        pg.batch_execute("COMMIT").map_err(DbError::from)?;
-        *self.pg_in_transaction.borrow_mut() = false;
+        self.with_postgres(|pg| pg.batch_execute("COMMIT").map_err(DbError::from))?;
+        *self.pg_in_transaction.lock().unwrap() = false;
         Ok(())
     }
 
     fn pg_rollback(&self) -> Result<()> {
-        let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-        let _ = pg.batch_execute("ROLLBACK");
-        *self.pg_in_transaction.borrow_mut() = false;
+        let _ = self.with_postgres(|pg| pg.batch_execute("ROLLBACK"));
+        *self.pg_in_transaction.lock().unwrap() = false;
         Ok(())
     }
 
@@ -214,19 +262,18 @@ impl Connection {
                 .as_ref()
                 .expect("sqlite connection")
                 .last_insert_rowid(),
-            Backend::Postgres => self.last_insert_id.borrow().unwrap_or(0),
+            Backend::Postgres => self.last_insert_id.lock().unwrap().unwrap_or(0),
         }
     }
 
     pub fn prepare(&self, sql: &str) -> Result<Statement<'_>> {
         Ok(Statement {
-            backend: self.backend,
             sql: adapt_sql(sql, self.backend),
             conn: self,
         })
     }
 
-    pub fn query_map<T, P, F>(&self, sql: &str, params: P, mut f: F) -> Vec<T>
+    pub fn query_map<T, P, F>(&self, sql: &str, params: P, f: F) -> Vec<T>
     where
         P: ToParams,
         F: FnMut(&Row<'_>) -> Result<T>,
@@ -257,16 +304,22 @@ impl Connection {
             }
             Backend::Postgres => {
                 let sql = adapt_sql(sql, Backend::Postgres);
-                *self.pg_param_cache.borrow_mut() = params.postgres_boxes();
-                let cache = self.pg_param_cache.borrow();
-                let refs = Params::postgres_refs(&cache);
-                let mut pg = self.postgres.as_ref().expect("postgres connection").borrow_mut();
-                let rows = pg.query(&sql, &refs).map_err(DbError::from)?;
+                let boxes = params.postgres_boxes();
+                let rows = self.with_postgres(|pg| {
+                    let refs = Params::postgres_refs(&boxes);
+                    pg.query(&sql, &refs).map_err(DbError::from)
+                })?;
                 rows.iter()
                     .map(|row| f(&Row::Postgres(row)))
                     .collect()
             }
         }
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.release_postgres_conn();
     }
 }
 
@@ -385,26 +438,17 @@ impl Drop for Transaction<'_> {
 }
 
 pub struct Statement<'conn> {
-    backend: Backend,
     sql: String,
     conn: &'conn Connection,
 }
 
 impl Statement<'_> {
-    pub fn query_map<T, P, F>(&self, params: P, mut f: F) -> Vec<T>
+    pub fn query_map<T, P, F>(&self, params: P, f: F) -> Vec<T>
     where
         P: ToParams,
         F: FnMut(&Row<'_>) -> Result<T>,
     {
         self.conn.query_map(&self.sql, params, f)
-    }
-
-    pub fn query_map_result<T, P, F>(&self, params: P, mut f: F) -> Result<Vec<T>>
-    where
-        P: ToParams,
-        F: FnMut(&Row<'_>) -> Result<T>,
-    {
-        self.conn.query_map_result(&self.sql, params, f)
     }
 }
 

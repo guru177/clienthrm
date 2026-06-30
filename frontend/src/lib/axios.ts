@@ -6,9 +6,9 @@
  */
 import axiosLib, { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
 import { apiUrl, resolveApiBase } from '@/lib/api-base';
+import { navigateToLogin } from '@/lib/navigate-login';
 
 const axios = axiosLib.create({
-    baseURL: resolveApiBase(),
     headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -48,6 +48,7 @@ async function tryRefreshToken(): Promise<boolean> {
 
 // ── Request interceptor: inject JWT token ───────────────────────────────────
 axios.interceptors.request.use((config) => {
+    config.baseURL = resolveApiBase();
     const token = localStorage.getItem('hrm_token');
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
@@ -85,7 +86,7 @@ axios.interceptors.response.use(
         if (error.response?.status === 401) {
             localStorage.removeItem('hrm_token');
             localStorage.removeItem('hrm_refresh_token');
-            window.location.href = '/login';
+            navigateToLogin();
         }
         return Promise.reject(error);
     },

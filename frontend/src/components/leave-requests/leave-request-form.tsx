@@ -42,6 +42,20 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
         setLoading(true);
         setErrors({});
 
+        const nextErrors: Record<string, string[]> = {};
+        if (!formData.leave_type) nextErrors.leave_type = ['Leave type is required'];
+        if (!formData.start_date) nextErrors.start_date = ['Start date is required'];
+        if (!formData.end_date) nextErrors.end_date = ['End date is required'];
+        if (!formData.reason.trim()) nextErrors.reason = ['Reason is required'];
+        else if (formData.reason.trim().length < 10) {
+            nextErrors.reason = ['Reason must be at least 10 characters'];
+        }
+        if (Object.keys(nextErrors).length > 0) {
+            setErrors(nextErrors);
+            setLoading(false);
+            return;
+        }
+
         try {
             const response = await axios.post('/admin/leave-requests', formData);
             handleApiResponse(response);

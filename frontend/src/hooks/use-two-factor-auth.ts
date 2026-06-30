@@ -1,32 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
+import axios from '@/lib/axios';
 
-// Two-factor API paths (was imported from @/routes/two-factor)
-const qrCode = { url: () => '/api/two-factor/qr-code' };
-const secretKey = { url: () => '/api/two-factor/secret-key' };
-const recoveryCodes = { url: () => '/api/two-factor/recovery-codes' };
-
-interface TwoFactorSetupData {
-    svg: string;
-    url: string;
-}
-
-interface TwoFactorSecretKey {
-    secretKey: string;
-}
-
+export const TENANT_TWO_FACTOR_AVAILABLE = true;
 export const OTP_MAX_LENGTH = 6;
-
-const fetchJson = async <T>(url: string): Promise<T> => {
-    const response = await fetch(url, {
-        headers: { Accept: 'application/json' },
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.status}`);
-    }
-
-    return response.json();
-};
 
 export const useTwoFactorAuth = () => {
     const [qrCodeSvg, setQrCodeSvg] = useState<string | null>(null);
@@ -40,9 +16,11 @@ export const useTwoFactorAuth = () => {
     );
 
     const fetchQrCode = useCallback(async (): Promise<void> => {
+        if (!TENANT_TWO_FACTOR_AVAILABLE) return;
         try {
-            const { svg } = await fetchJson<TwoFactorSetupData>(qrCode.url());
-            setQrCodeSvg(svg);
+            const res = await axios.get('/two-factor/qr-code');
+            const body = res.data as { data?: { svg?: string } };
+            setQrCodeSvg(body.data?.svg ?? null);
         } catch {
             setErrors((prev) => [...prev, 'Failed to fetch QR code']);
             setQrCodeSvg(null);
@@ -50,11 +28,11 @@ export const useTwoFactorAuth = () => {
     }, []);
 
     const fetchSetupKey = useCallback(async (): Promise<void> => {
+        if (!TENANT_TWO_FACTOR_AVAILABLE) return;
         try {
-            const { secretKey: key } = await fetchJson<TwoFactorSecretKey>(
-                secretKey.url(),
-            );
-            setManualSetupKey(key);
+            const res = await axios.get('/two-factor/secret-key');
+            const body = res.data as { data?: { secretKey?: string } };
+            setManualSetupKey(body.data?.secretKey ?? null);
         } catch {
             setErrors((prev) => [...prev, 'Failed to fetch a setup key']);
             setManualSetupKey(null);
@@ -72,10 +50,12 @@ export const useTwoFactorAuth = () => {
     }, [clearErrors]);
 
     const fetchRecoveryCodes = useCallback(async (): Promise<void> => {
+        if (!TENANT_TWO_FACTOR_AVAILABLE) return;
         try {
             clearErrors();
-            const codes = await fetchJson<string[]>(recoveryCodes.url());
-            setRecoveryCodesList(codes);
+            const res = await axios.get('/two-factor/recovery-codes');
+            const body = res.data as { data?: string[] };
+            setRecoveryCodesList(Array.isArray(body.data) ? body.data : []);
         } catch {
             setErrors((prev) => [...prev, 'Failed to fetch recovery codes']);
             setRecoveryCodesList([]);
@@ -83,6 +63,7 @@ export const useTwoFactorAuth = () => {
     }, [clearErrors]);
 
     const fetchSetupData = useCallback(async (): Promise<void> => {
+        if (!TENANT_TWO_FACTOR_AVAILABLE) return;
         try {
             clearErrors();
             await Promise.all([fetchQrCode(), fetchSetupKey()]);
@@ -91,6 +72,23 @@ export const useTwoFactorAuth = () => {
             setManualSetupKey(null);
         }
     }, [clearErrors, fetchQrCode, fetchSetupKey]);
+
+    const enableTwoFactor = useCallback(async (code: string): Promise<string[]> => {
+        const res = await axios.post('/two-factor/enable', { code });
+        const body = res.data as { data?: { recovery_codes?: string[] } };
+        return body.data?.recovery_codes ?? [];
+    }, []);
+
+    const disableTwoFactor = useCallback(async (password: string, code?: string): Promise<void> => {
+        await axios.post('/two-factor/disable', { password, code: code ?? undefined });
+    }, []);
+
+    const fetchStatus = useCallback(async (): Promise<boolean> => {
+        if (!TENANT_TWO_FACTOR_AVAILABLE) return false;
+        const res = await axios.get('/two-factor/status');
+        const body = res.data as { data?: { enabled?: boolean } };
+        return Boolean(body.data?.enabled);
+    }, []);
 
     return {
         qrCodeSvg,
@@ -104,5 +102,8 @@ export const useTwoFactorAuth = () => {
         fetchSetupKey,
         fetchSetupData,
         fetchRecoveryCodes,
+        enableTwoFactor,
+        disableTwoFactor,
+        fetchStatus,
     };
 };

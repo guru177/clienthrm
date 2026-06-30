@@ -59,8 +59,11 @@ Logo stored in `storage/` and referenced in settings JSON.
 
 ### Configure SMTP
 
-1. App Settings → mail host, port, credentials.
-2. Used by job application emails and notifications.
+1. App Settings → **Email Configuration** (mail host, port, credentials).
+2. Used for **payslip emails**, job application emails, password-reset OTP, etc.
+3. Org App Settings **override** server `.env`; changes apply immediately (no restart).
+
+See [Payslip distribution](../PAYSLIP-DISTRIBUTION.md#3-smtp-email-delivery) for full SMTP priority and troubleshooting.
 
 ### Branding
 

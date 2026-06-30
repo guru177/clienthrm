@@ -9,6 +9,7 @@ import { usePlatformAuth } from '@/contexts/PlatformAuthContext';
 import { PlatformAlertDialog, PlatformConfirmDialog } from '@/components/platform-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
@@ -265,8 +266,7 @@ export default function PlatformAccount() {
                         <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-2">
                                 <Label>Password</Label>
-                                <Input
-                                    type="password"
+                                <PasswordInput
                                     value={disablePassword}
                                     onChange={(e) => setDisablePassword(e.target.value)}
                                 />

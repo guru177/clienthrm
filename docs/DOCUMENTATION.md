@@ -413,9 +413,15 @@ Sidebar items map to subscription modules: `dashboard`, `users`, `centers`, `dep
 
 ```powershell
 cd frontend
-npm run electron:dev    # dev + Electron shell
-npm run electron:build  # NSIS installer
+npm install
+npm run electron:dev      # Vite :5174 + Electron shell
+npm run electron:build    # Windows NSIS installer → frontend/release/
 ```
+
+- Uses **HashRouter** in Electron (works with `file://` in packaged builds).
+- Connects automatically to `http://127.0.0.1:3001` (local backend).
+- Chat/biometric WebSockets use the same API host.
+- Optional: copy `.env.electron.example` → `.env` and set `VITE_API_URL` for web builds.
 
 ---
 
@@ -515,6 +521,8 @@ Frontend helper: `storageUrl()` in `lib/storage-url.ts`.
 
 `/admin/biometric` — register devices, map device PIN → user, view punches, live WebSocket feed.
 
+**Setup guide:** [BIOMETRIC-DEVICE-SETUP.md](BIOMETRIC-DEVICE-SETUP.md)
+
 ---
 
 ## 15. Team chat
@@ -537,8 +545,8 @@ Slack-style messaging per organization:
 1. Define **salary components** (earnings/deductions).
 2. Assign **CTC profile** or **salary structure items** per employee.
 3. **Payroll preview** — computes gross, LOP, statutory deductions per month.
-4. **Generate** — creates `payslips` records (draft → generated).
-5. **Payslip PDF** / bulk download / WhatsApp send (where configured).
+4. **Generate** — creates `payslips` records (draft → generated); optional email of A4 PDF.
+5. **Distribute** — My Payslips portal, email, PDF download, bulk ZIP. See **[PAYSLIP-DISTRIBUTION.md](PAYSLIP-DISTRIBUTION.md)**.
 
 ### Key logic
 
@@ -582,27 +590,56 @@ All routes under `/api/platform/*` require platform JWT.
 
 ## 18. Testing
 
+### Tester guide (QA / manual testers)
+
+Plain-language setup, smoke tests, and step-by-step manual scenarios: **[TESTER-GUIDE.md](TESTER-GUIDE.md)**
+
+### Test case documentation
+
+Full case inventory (auto-generated from scripts): **[docs/test-cases/README.md](test-cases/README.md)**
+
+```powershell
+python scripts/generate-test-cases-md.py   # refresh after adding suite.record() cases
+```
+
 ### Full suite (recommended)
 
 ```powershell
-# Backend :3001, tenant frontend :5174, database/database.sqlite
-powershell -NoProfile -File scripts/run-all-tests.ps1
+# Backend :3001, tenant frontend :5174, platform :5175, database/database.sqlite
+powershell -NoProfile -File scripts/run-complete-all-tests.ps1
 ```
+
+**Slimmer baseline** (fewer suites): `scripts/run-all-tests.ps1`
 
 Runs suites in order (biometric before SaaS to avoid attendance date conflicts):
 
 | Step | Script | Checks |
 |------|--------|--------|
-| 1 | `scripts/test-biometric-suite.py` | Device protocol, punch → attendance (22) |
-| 2 | `scripts/test-saas-suite.py` | Platform + tenant isolation (30) |
-| 3 | `backend` `cargo test` | Rust unit tests |
-| 4 | `scripts/flow-test.ps1` | API read flow (50 endpoints) |
-| 5 | `scripts/api-input-flow-test.ps1` | API write flows |
-| 6 | `scripts/attendance-flow-test.ps1` | Clock in/out |
-| 7 | `scripts/frontend-module-check.mjs` | All admin routes (28 modules) |
-| 8 | `scripts/ui-nav-check.mjs` | Browser nav + console/API errors (optional) |
+| 1 | `scripts/test-database-health.py` | SQLite integrity, indexes, WAL (17) |
+| 2 | `scripts/test-biometric-suite.py` | Device protocol, punch → attendance (22) |
+| 3 | `scripts/test-saas-suite.py` | Platform + tenant isolation (30) |
+| 4 | `scripts/test-platform-api-suite.py` | Platform console APIs (34) |
+| 5 | `scripts/test-shift-payroll-suite.py` | Shifts + payroll linkage (13) |
+| 6 | `scripts/test-payroll-attendance-suite.py` | Clock, LOP, preview (18) |
+| 7 | `scripts/test-hrm-core-integration-suite.py` | Shift, salary, leave, workflow (30) |
+| 8 | `scripts/test-workflow-suite.py` | Workflow triggers, actions, audit (13) |
+| 9 | `scripts/test-payroll-compliance-suite.py` | OT/TDS, advanced payroll, unlock (22) |
+| 10 | `scripts/test-all-24-modules.py` | All 25 module catalog API routes (33) |
+| 11 | `backend` `cargo test` | Rust unit tests (29) |
+| 12 | `scripts/flow-test.ps1` | API read flow (50+ endpoints) |
+| 13 | `scripts/api-input-flow-test.ps1` | API write flows |
+| 14 | `scripts/attendance-flow-test.ps1` | Clock in/out |
+| 15 | `scripts/frontend-module-check.mjs` | Admin routes (31 pages) |
+| 16 | `scripts/test-all-24-modules-ui.mjs` | All 25 module UI routes |
+| 17 | `frontend/scripts/ui-input-flow-check.mjs` | Form submit flows |
+| 18 | `scripts/e2e-targeted-flows.mjs` | Forgot-password, payroll preview, workflow |
+| 19 | `scripts/ui-nav-check.mjs` | Browser nav + console/API errors (optional) |
+| 20 | `scripts/platform-module-check.mjs` | Platform console (15 pages) |
+| 21 | `scripts/test-auth-security-suite.py` | JWT audience, IDOR, rate limits (16) — runs last |
 
-**Flags:** `-SkipFrontend`, `-SkipRust`, `-SkipSaas`, `-SkipBrowserNav`, `-IncludeBrowserNav` (fail if Playwright missing).
+**Flags:** `-SkipFrontend`, `-SkipPlatform`, `-SkipRust`, `-SkipBrowserNav`.
+
+**PostgreSQL staging:** set `DATABASE_URL` and run `scripts/run-postgres-staging-tests.ps1` (see [PRODUCTION.md](PRODUCTION.md)).
 
 **Playwright setup** (for step 8):
 

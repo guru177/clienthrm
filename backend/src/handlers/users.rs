@@ -39,7 +39,7 @@ fn load_user_summary(conn: &crate::db::Connection, user_id: i64, org_id: i64) ->
             )
             .ok();
     }
-    let mut stmt = conn
+    let stmt = conn
         .prepare("SELECT r.* FROM roles r JOIN role_user ru ON r.id = ru.role_id WHERE ru.user_id = ?1")
         .ok()?;
     let roles: Vec<crate::models::role::Role> = stmt
@@ -191,7 +191,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     };
 
     let users: Vec<serde_json::Value> = if search.is_some() {
-        let mut stmt = conn.prepare(&sql).unwrap();
+        let stmt = conn.prepare(&sql).unwrap();
         stmt.query_map(crate::params![org_id, &search_param, per_page, offset], |row| {
             User::from_row(row)
         })
@@ -199,7 +199,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         .map(enrich_user)
         .collect()
     } else {
-        let mut stmt = conn
+        let stmt = conn
             .prepare(&format!(
                 "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?2 OFFSET ?3",
                 where_clause
@@ -407,6 +407,17 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
 
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
+
+    if let Some(ref val) = body.name {
+        if let Err(msg) = crate::validation::require_non_empty(val, "Name") {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
+    }
+    if let Some(ref val) = body.email {
+        if let Err(msg) = crate::validation::validate_email(val) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -900,7 +911,7 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name"
     ).unwrap();
 

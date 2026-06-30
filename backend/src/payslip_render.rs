@@ -1,6 +1,9 @@
+//! HTML payslip renderer retained for reference; production uses PDF (`payslip_pdf`).
+#![allow(dead_code)]
+
 use crate::db::Connection;
 
-const MONTH_NAMES: [&str; 12] = [
+pub(crate) const MONTH_NAMES: [&str; 12] = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 ];
@@ -21,6 +24,11 @@ pub struct PayslipRenderData {
     pub hra: f64,
     pub transport: f64,
     pub other: f64,
+    pub ot_hours: f64,
+    pub ot_amount: f64,
+    pub variable_pay: f64,
+    pub reimbursement: f64,
+    pub arrears: f64,
     pub lop: f64,
     pub shift_penalty: f64,
     pub lop_basic: f64,
@@ -59,6 +67,9 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
             "SELECT p.id, p.month, p.year, p.gross_salary, p.total_deductions, p.net_salary, p.status,
                     p.working_days, p.present_days, p.leave_days, p.holiday_days,
                     p.basic_salary, p.hra, p.transport_allowance, p.other_allowances,
+                    COALESCE(p.ot_hours, 0), COALESCE(p.ot_amount, 0),
+                    COALESCE(p.variable_pay_amount, 0), COALESCE(p.reimbursement_amount, 0),
+                    COALESCE(p.arrears_amount, 0),
                     COALESCE(p.lop_deduction, 0), COALESCE(p.shift_penalty, 0),
                     COALESCE(p.lop_basic, 0), COALESCE(p.lop_hra, 0), COALESCE(p.lop_transport, 0),
                     COALESCE(p.pf_deduction, 0), COALESCE(p.esi_deduction, 0), COALESCE(p.tds, 0),
@@ -98,11 +109,16 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
                     r.get_idx::<f64>(23).unwrap_or(0.0),
                     r.get_idx::<f64>(24).unwrap_or(0.0),
                     r.get_idx::<f64>(25).unwrap_or(0.0),
-                    r.get_idx::<String>(26)?,
-                    r.get_idx::<String>(27)?,
-                    r.get_idx::<Option<String>>(28)?,
-                    r.get_idx::<Option<String>>(29)?,
-                    r.get_idx::<Option<String>>(30)?,
+                    r.get_idx::<f64>(26).unwrap_or(0.0),
+                    r.get_idx::<f64>(27).unwrap_or(0.0),
+                    r.get_idx::<f64>(28).unwrap_or(0.0),
+                    r.get_idx::<f64>(29).unwrap_or(0.0),
+                    r.get_idx::<f64>(30).unwrap_or(0.0),
+                    r.get_idx::<String>(31)?,
+                    r.get_idx::<String>(32)?,
+                    r.get_idx::<Option<String>>(33)?,
+                    r.get_idx::<Option<String>>(34)?,
+                    r.get_idx::<Option<String>>(35)?,
                 ))
             },
         )
@@ -124,22 +140,27 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
         hra: base.12,
         transport: base.13,
         other: base.14,
-        lop: base.15,
-        shift_penalty: base.16,
-        lop_basic: base.17,
-        lop_hra: base.18,
-        lop_transport: base.19,
-        pf: base.20,
-        esi: base.21,
-        tds: base.22,
-        prof_tax: base.23,
-        advance: base.24,
-        lw_employee: base.25,
-        adjustments_json: base.26,
-        emp_name: base.27,
-        emp_id: base.28,
-        dept: base.29,
-        designation: base.30,
+        ot_hours: base.15,
+        ot_amount: base.16,
+        variable_pay: base.17,
+        reimbursement: base.18,
+        arrears: base.19,
+        lop: base.20,
+        shift_penalty: base.21,
+        lop_basic: base.22,
+        lop_hra: base.23,
+        lop_transport: base.24,
+        pf: base.25,
+        esi: base.26,
+        tds: base.27,
+        prof_tax: base.28,
+        advance: base.29,
+        lw_employee: base.30,
+        adjustments_json: base.31,
+        emp_name: base.32,
+        emp_id: base.33,
+        dept: base.34,
+        designation: base.35,
         company_name: setting(conn, org_id, "company_name")
             .or_else(|| setting(conn, org_id, "app_name"))
             .unwrap_or_else(|| "Company".into()),
@@ -150,7 +171,7 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
     })
 }
 
-fn fmt_inr(n: f64) -> String {
+pub fn fmt_inr(n: f64) -> String {
     let sign = if n < 0.0 { "-" } else { "" };
     let abs = n.abs();
     let whole = abs.floor() as i64;
@@ -395,11 +416,23 @@ pub fn render_payslip_html(data: &PayslipRenderData, for_print: bool) -> String 
         leave = data.leave,
         holidays = data.holidays,
         earn_rows = format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}{}{}{}",
             row("Basic Salary", data.basic, false),
             row("House Rent Allowance", data.hra, false),
             row("Conveyance / Transport", data.transport, false),
             row("Other Allowances", data.other, false),
+            if data.ot_hours > 0.0 {
+                row(
+                    &format!("Overtime ({:.1} hrs)", data.ot_hours),
+                    data.ot_amount,
+                    false,
+                )
+            } else {
+                row("Overtime", data.ot_amount, false)
+            },
+            row("Variable Pay", data.variable_pay, false),
+            row("Reimbursements", data.reimbursement, false),
+            row("Salary Arrears", data.arrears, false),
         ),
         ded_rows = format!(
             "{}{}{}{}{}{}{}{}{}{}",
@@ -440,7 +473,73 @@ pub fn payslip_filename(data: &PayslipRenderData) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     format!(
-        "Payslip_{}_{}_{}_{}.html",
+        "Payslip_{}_{}_{}_{}.pdf",
         safe_name, month_label, data.year, data.id
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_escape_prevents_xss() {
+        assert!(html_escape("<script>").contains("&lt;"));
+        assert!(!html_escape("<script>").contains('<'));
+    }
+
+    #[test]
+    fn render_includes_overtime_row() {
+        let data = PayslipRenderData {
+            id: 1,
+            month: 6,
+            year: 2026,
+            gross: 50_000.0,
+            total_ded: 5_000.0,
+            net: 45_000.0,
+            status: "generated".into(),
+            working: 22,
+            present: 20,
+            leave: 0,
+            holidays: 0,
+            basic: 20_000.0,
+            hra: 8_000.0,
+            transport: 2_000.0,
+            other: 5_000.0,
+            ot_hours: 10.0,
+            ot_amount: 15_000.0,
+            variable_pay: 0.0,
+            reimbursement: 0.0,
+            arrears: 0.0,
+            lop: 0.0,
+            shift_penalty: 0.0,
+            lop_basic: 0.0,
+            lop_hra: 0.0,
+            lop_transport: 0.0,
+            pf: 0.0,
+            esi: 0.0,
+            tds: 0.0,
+            prof_tax: 0.0,
+            advance: 0.0,
+            lw_employee: 0.0,
+            adjustments_json: "[]".into(),
+            emp_name: "Test User".into(),
+            emp_id: None,
+            dept: None,
+            designation: None,
+            company_name: "Acme".into(),
+            company_address: None,
+            pan_number: None,
+            pf_number: None,
+        };
+        let html = render_payslip_html(&data, false);
+        assert!(html.contains("Overtime"));
+        assert!(html.contains("15,000.00") || html.contains("15000"));
+    }
+
+    #[test]
+    fn fmt_inr_formats_currency() {
+        assert!(fmt_inr(1234.5).contains("₹"));
+        assert!(fmt_inr(1234.5).contains("1,234.50"));
+    }
 }

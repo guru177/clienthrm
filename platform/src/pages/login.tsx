@@ -4,6 +4,7 @@ import { usePlatformAuth, type PlatformAdmin } from '@/contexts/PlatformAuthCont
 import AuthSplitLayout from '@/layouts/auth-split-layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -126,9 +127,8 @@ export default function PlatformLogin() {
                     </div>
                     <div className="space-y-2">
                         <Label htmlFor="platform_password">Password</Label>
-                        <Input
+                        <PasswordInput
                             id="platform_password"
-                            type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required

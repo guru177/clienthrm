@@ -4,6 +4,8 @@
 
 Integrate ZKTeco iClock and BIO-PARK devices for automatic attendance punches. Admin UI for device registration, user PIN mapping, punch log, and live feed.
 
+**Setup guide:** [BIOMETRIC-DEVICE-SETUP.md](../BIOMETRIC-DEVICE-SETUP.md) — step-by-step for admins and IT.
+
 ## Plan module
 
 - **Key:** `biometric`

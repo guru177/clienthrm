@@ -51,7 +51,7 @@ pub async fn team_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespon
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, name, email, password, role, is_active, totp_enabled, totp_secret, last_login_at
          FROM platform_admins ORDER BY id ASC",
     ) {
@@ -373,7 +373,7 @@ pub async fn sessions_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRe
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, jti, ip_address, user_agent, created_at, last_used_at, expires_at, revoked
          FROM platform_sessions WHERE admin_id = ?1 ORDER BY id DESC LIMIT 100",
     ) {

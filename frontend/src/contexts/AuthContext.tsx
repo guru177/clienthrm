@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { apiGet, apiPost, setToken, setRefreshToken, getRefreshToken, clearToken, isAuthenticated } from '@/lib/api';
+import { navigateToLogin } from '@/lib/navigate-login';
 import type { OrgPlanInfo } from '@/lib/plan-modules';
 
 interface User {
@@ -27,11 +28,16 @@ interface AuthContextType {
     planModules: string[];
     settings: Record<string, string>;
     loading: boolean;
-    login: (email: string, password: string, orgSlug?: string) => Promise<string[]>;
+    login: (email: string, password: string, orgSlug?: string) => Promise<LoginResult>;
+    completeTwoFactorLogin: (preAuthToken: string, code?: string, recoveryCode?: string) => Promise<string[]>;
     logout: () => void;
     hasPermission: (slug: string) => boolean;
     refreshUser: () => Promise<void>;
 }
+
+export type LoginResult =
+    | { kind: 'ok'; permissions: string[] }
+    | { kind: 'requires2fa'; preAuthToken: string; email: string };
 
 const AuthContext = createContext<AuthContextType>({
     user: null,
@@ -40,7 +46,8 @@ const AuthContext = createContext<AuthContextType>({
     planModules: [],
     settings: {},
     loading: true,
-    login: async () => [],
+    login: async () => ({ kind: 'ok' as const, permissions: [] }),
+    completeTwoFactorLogin: async () => [],
     logout: () => {},
     hasPermission: () => false,
     refreshUser: async () => {},
@@ -80,15 +87,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
     }
 
-    async function login(email: string, password: string, orgSlug?: string): Promise<string[]> {
+    async function login(email: string, password: string, orgSlug?: string): Promise<LoginResult> {
         const payload: Record<string, string> = { email, password };
         if (orgSlug?.trim()) {
             payload.org_slug = orgSlug.trim();
         }
-        const res = await apiPost<{ token: string; refresh_token?: string; user: User; permissions: string[]; settings: Record<string, string>; plan?: OrgPlanInfo | null }>(
-            '/auth/login',
-            payload,
-        );
+        const res = await apiPost<{
+            token?: string;
+            refresh_token?: string;
+            user?: User;
+            permissions?: string[];
+            settings?: Record<string, string>;
+            plan?: OrgPlanInfo | null;
+            requires_2fa?: boolean;
+            pre_auth_token?: string;
+        }>('/auth/login', payload);
+
+        if (res.data.requires_2fa && res.data.pre_auth_token) {
+            return {
+                kind: 'requires2fa',
+                preAuthToken: res.data.pre_auth_token,
+                email: res.data.user?.email ?? email,
+            };
+        }
+
+        if (!res.data.token || !res.data.user || !res.data.permissions) {
+            throw new Error('Invalid login response');
+        }
+
+        setToken(res.data.token);
+        if (res.data.refresh_token) {
+            setRefreshToken(res.data.refresh_token);
+        }
+        setUser(res.data.user);
+        setPermissions(res.data.permissions);
+        setPlan(res.data.plan ?? null);
+        setSettings(res.data.settings || {});
+        return { kind: 'ok', permissions: res.data.permissions };
+    }
+
+    async function completeTwoFactorLogin(
+        preAuthToken: string,
+        code?: string,
+        recoveryCode?: string,
+    ): Promise<string[]> {
+        const payload: Record<string, string> = { pre_auth_token: preAuthToken };
+        if (recoveryCode?.trim()) {
+            payload.recovery_code = recoveryCode.trim();
+        } else {
+            payload.code = code ?? '';
+        }
+        const res = await apiPost<{
+            token: string;
+            refresh_token?: string;
+            user: User;
+            permissions: string[];
+            settings: Record<string, string>;
+            plan?: OrgPlanInfo | null;
+        }>('/auth/2fa/verify', payload);
         setToken(res.data.token);
         if (res.data.refresh_token) {
             setRefreshToken(res.data.refresh_token);
@@ -112,7 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setPermissions([]);
         setPlan(null);
         setSettings({});
-        window.location.href = '/login';
+        navigateToLogin();
     }
 
     function hasPermission(slug: string): boolean {
@@ -124,7 +180,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const planModules = plan?.modules ?? [];
 
     return (
-        <AuthContext.Provider value={{ user, permissions, plan, planModules, settings, loading, login, logout, hasPermission, refreshUser: loadUser }}>
+        <AuthContext.Provider value={{ user, permissions, plan, planModules, settings, loading, login, completeTwoFactorLogin, logout, hasPermission, refreshUser: loadUser }}>
             {children}
         </AuthContext.Provider>
     );

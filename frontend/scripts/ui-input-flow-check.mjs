@@ -2,7 +2,21 @@
  * Input + submit flow check — exercises forms like a manual tester.
  * Run: node scripts/ui-input-flow-check.mjs
  */
-import { chromium } from 'playwright';
+import { chromium } from '../node_modules/playwright/index.mjs';
+import { execSync } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dismissAnnouncements, loginTenant } from './playwright-helpers.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function uiFlowDates() {
+  const raw = execSync(`python "${path.join(REPO_ROOT, 'scripts', 'test_date_pools.py')}" ${TS} ui_flow`, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  return JSON.parse(raw.trim());
+}
 
 const BASE = 'http://localhost:5174';
 const EMAIL = 'admin@mashuptech.in';
@@ -17,12 +31,22 @@ function record(module, step, status, detail = '') {
   console.log(`${icon} [${module}] ${step}${detail ? ` — ${detail}` : ''}`);
 }
 
+const ORG_SLUG = 'mashuptech';
+
+async function dismissOpenOverlays(page) {
+  await dismissAnnouncements(page);
+}
+
+async function clickActionButton(page, pattern) {
+  await dismissOpenOverlays(page);
+  const byText = page.locator('button').filter({ hasText: pattern }).first();
+  await byText.waitFor({ state: 'visible', timeout: 30000 });
+  await byText.scrollIntoViewIfNeeded();
+  await byText.click();
+}
+
 async function login(page) {
-  await page.goto(`${BASE}/login`, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.fill('input[type="email"], input[name="email"]', EMAIL);
-  await page.fill('input[type="password"], input[name="password"]', PASSWORD);
-  await page.click('button[type="submit"]');
-  await page.waitForURL(/\/admin\/dashboard/, { timeout: 20000 });
+  await loginTenant(page, { base: BASE, email: EMAIL, password: PASSWORD, orgSlug: ORG_SLUG });
   record('Auth', 'Login with email/password', 'OK', '→ Dashboard');
 }
 
@@ -36,6 +60,11 @@ async function pickSelect(page, triggerLabel, optionText) {
   await page.getByRole('option', { name: new RegExp(optionText, 'i') }).first().click();
 }
 
+async function submitDialog(dialog) {
+  await dialog.locator('form').evaluate((form) => form.requestSubmit());
+  await dialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+}
+
 async function waitSuccess(page) {
   await page.waitForTimeout(1200);
   const err = await page.locator('text=React Error').count();
@@ -46,10 +75,13 @@ async function waitSuccess(page) {
 async function flowDepartments(page) {
   const name = `QA Dept ${TS}`;
   await page.goto(`${BASE}/admin/departments`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /add department/i }).click();
-  await page.locator('#name, input[name="name"]').first().fill(name);
-  await page.locator('textarea').first().fill('Automated test department');
-  await page.getByRole('button', { name: /create|save|submit/i }).last().click();
+  await dismissAnnouncements(page);
+  await clickActionButton(page, /add department/i);
+  const dialog = page.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 10000 });
+  await dialog.locator('#name').fill(name);
+  await dialog.locator('#description').fill('Automated test department');
+  await submitDialog(dialog);
   await waitSuccess(page);
   const visible = await page.getByText(name).count();
   record('Departments', 'Create (name + description)', visible > 0 ? 'OK' : 'WARN', visible > 0 ? 'Listed in table' : 'Save OK, row not found');
@@ -59,7 +91,8 @@ async function flowDepartments(page) {
 async function flowDesignations(page) {
   const name = `QA Role ${TS}`;
   await page.goto(`${BASE}/admin/designations`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /add designation/i }).click();
+  await dismissAnnouncements(page);
+  await clickActionButton(page, /add designation/i);
   await page.locator('#name, input[placeholder*="name" i]').first().fill(name);
   await page.getByRole('button', { name: /create|save/i }).last().click();
   await waitSuccess(page);
@@ -70,6 +103,7 @@ async function flowDesignations(page) {
 async function flowCenters(page) {
   const name = `QA Center ${TS}`;
   await page.goto(`${BASE}/admin/centers`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   await page.getByRole('button', { name: /add center|new center|create/i }).first().click();
   await page.locator('input[name="name"]').fill(name);
   await page.locator('input[name="address_line1"]').fill('123 Test Street');
@@ -85,9 +119,10 @@ async function flowCenters(page) {
 // ─── 4. Holidays ───
 async function flowHolidays(page) {
   const name = `QA Holiday ${TS}`;
-  const date = '2099-12-25';
+  const { holiday: date } = uiFlowDates();
   await page.goto(`${BASE}/admin/holidays`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /add holiday/i }).click();
+  await dismissAnnouncements(page);
+  await clickActionButton(page, /add holiday/i);
   await page.locator('#name, input').filter({ has: page.locator('..') }).first();
   const dialog = page.getByRole('dialog');
   await dialog.locator('input').first().fill(name);
@@ -99,13 +134,15 @@ async function flowHolidays(page) {
 
 // ─── 5. Leave request (employee submit) ───
 async function flowLeaveRequest(page) {
+  const { start: leaveStart, end: leaveEnd } = uiFlowDates();
   await page.goto(`${BASE}/admin/leave-requests`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   await page.getByRole('button', { name: /new leave request/i }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('combobox').click();
   await page.getByRole('option', { name: /annual/i }).click();
-  await dialog.locator('input[type="date"]').nth(0).fill('2099-06-10');
-  await dialog.locator('input[type="date"]').nth(1).fill('2099-06-12');
+  await dialog.locator('input[type="date"]').nth(0).fill(leaveStart);
+  await dialog.locator('input[type="date"]').nth(1).fill(leaveEnd);
   await dialog.locator('textarea').fill('QA automated leave flow test');
   await dialog.getByRole('button', { name: /submit|request|save/i }).click();
   await waitSuccess(page);
@@ -116,6 +153,7 @@ async function flowLeaveRequest(page) {
 async function flowTaskCreate(page) {
   const title = `QA Task ${TS}`;
   await page.goto(`${BASE}/admin/tasks/create`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   await page.locator('#title').fill(title);
   await page.locator('#description, textarea').first().fill('Automated task description');
   await page.getByRole('button', { name: /create task/i }).click();
@@ -128,6 +166,7 @@ async function flowTaskCreate(page) {
 async function flowWorkflowCreate(page) {
   const name = `QA Workflow ${TS}`;
   await page.goto(`${BASE}/admin/workflows/create`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   await page.locator('#name, input').first().fill(name);
   const triggers = page.getByRole('combobox');
   if ((await triggers.count()) > 0) {
@@ -144,6 +183,7 @@ async function flowWorkflowCreate(page) {
 async function flowProjectCreate(page) {
   const name = `QA Project ${TS}`;
   await page.goto(`${BASE}/admin/projects/create`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   await page.locator('#name, input').filter({ hasNot: page.locator('[type="hidden"]') }).first().fill(name);
   const desc = page.locator('textarea').first();
   if ((await desc.count()) > 0) await desc.fill('QA project flow');
@@ -155,6 +195,7 @@ async function flowProjectCreate(page) {
 // ─── 9. Profile settings (read + patch field) ───
 async function flowProfile(page) {
   await page.goto(`${BASE}/admin/settings/profile`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   const personalTab = page.getByRole('tab', { name: /personal/i });
   if ((await personalTab.count()) > 0) await personalTab.click();
   const phone = page.locator('#phone, input[name="phone"]').first();
@@ -176,6 +217,7 @@ async function flowProfile(page) {
 // ─── 10. Attendance flow ───
 async function flowAttendance(page) {
   await page.goto(`${BASE}/admin/attendance`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   record('Attendance', 'Load today sessions + stats', 'OK', 'Tabs: Statistics / History');
 
   const clockOut = page.getByRole('button', { name: /^clock out$/i });
@@ -197,6 +239,7 @@ async function flowAttendance(page) {
 // ─── 11. Payroll (select employee UI) ───
 async function flowPayroll(page) {
   await page.goto(`${BASE}/admin/payroll`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   const checkboxes = page.locator('input[type="checkbox"]');
   const count = await checkboxes.count();
   if (count > 1) {
@@ -210,6 +253,7 @@ async function flowPayroll(page) {
 // ─── 12. Dashboard metrics load ───
 async function flowDashboard(page) {
   await page.goto(`${BASE}/admin/dashboard`, { waitUntil: 'networkidle' });
+  await dismissAnnouncements(page);
   const hasEmployees = (await page.getByText(/employee|attendance|payroll/i).count()) > 0;
   record('Dashboard', 'HR metrics charts load', hasEmployees ? 'OK' : 'WARN');
 }
@@ -217,7 +261,8 @@ async function flowDashboard(page) {
 async function main() {
   console.log('=== HRM Input Flow Check ===\n');
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
 
   const apiFails = [];
   page.on('response', (res) => {

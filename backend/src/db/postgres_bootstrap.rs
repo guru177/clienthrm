@@ -74,6 +74,24 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     }
 
     if let Err(e) = conn.execute_batch(&adapt_sql(
+        "DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'password_reset_tokens'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'password_reset_tokens' AND column_name = 'user_id'
+          ) THEN
+            DROP TABLE password_reset_tokens;
+          END IF;
+        END $$;",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL legacy password_reset_tokens cleanup: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
         include_str!("postgres_rust_tables.sql"),
         Backend::Postgres,
     )) {
@@ -81,4 +99,9 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     }
 
     super::postgres_seeds::run_postgres_seeds(&conn);
+    super::scalability::apply_scalability_indexes(&conn);
+    super::scalability::analyze_postgres_stats(&conn);
+    super::scalability::ensure_attendance_summary_materialized_view(&conn);
+    super::partitions::apply_postgres_partitions(&conn);
+    super::tenant_rls::apply_postgres_rls(&conn);
 }

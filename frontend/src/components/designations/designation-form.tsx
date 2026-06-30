@@ -48,23 +48,48 @@ export default function DesignationForm({
     });
 
     useEffect(() => {
-        if (designation) {
-            setFormData({
-                name: designation.name,
-                description: designation.description || '',
-                level: designation.level?.toString() || '',
-                is_active: designation.is_active,
-            });
-        } else {
+        if (!open) {
+            return;
+        }
+
+        if (!designation?.id) {
             setFormData({
                 name: '',
                 description: '',
                 level: '',
                 is_active: true,
             });
+            setErrors({});
+            return;
         }
-        setErrors({});
-    }, [designation, open]);
+
+        let cancelled = false;
+        const loadDesignation = async () => {
+            try {
+                const response = await axios.get(`/admin/designations/${designation.id}`);
+                if (cancelled || !response.data.success) {
+                    return;
+                }
+                const data = response.data.data;
+                setFormData({
+                    name: data.name?.trim() ?? '',
+                    description: data.description || '',
+                    level: data.level?.toString() || '',
+                    is_active: data.is_active ?? true,
+                });
+                setErrors({});
+            } catch (error) {
+                if (!cancelled) {
+                    handleApiError(error);
+                }
+            }
+        };
+
+        void loadDesignation();
+        return () => {
+            cancelled = true;
+        };
+    }, [designation?.id, open]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -97,7 +122,7 @@ export default function DesignationForm({
     };
 
     return (
-        <Dialog open={open} onOpenChange={onClose}>
+        <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
             <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                     <DialogTitle>

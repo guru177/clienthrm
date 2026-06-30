@@ -5,7 +5,6 @@ use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::handlers::platform_audit::audit_from_request;
 use crate::handlers::platform_team::issue_login_session;
-use crate::middleware::auth::generate_token;
 use crate::middleware::platform_auth::{
     generate_platform_pre_auth_token, get_platform_claims_from_request,
 };
@@ -308,7 +307,7 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT u.id, u.name, u.email, u.status, u.is_super_admin, u.organization_id,
                 o.name AS organization_name, o.slug AS organization_slug, u.created_at
          FROM users u
@@ -352,7 +351,7 @@ pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> Htt
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT u.id, u.name, u.email, o.name AS organization_name, o.slug AS organization_slug,
                 p.ip_address, p.latitude, p.longitude, p.city, p.region, p.country,
                 p.accuracy_meters, p.last_active_at
@@ -421,7 +420,7 @@ pub async fn organizations_index(pool: web::Data<DbPool>, req: HttpRequest) -> H
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, name, slug, status, plan, created_at, updated_at
          FROM organizations WHERE status != 'deleted' ORDER BY id DESC",
     ) {
@@ -611,7 +610,7 @@ pub async fn organizations_store(
         }
     };
 
-    let tx_body = (|| -> crate::db::Result<i64> {
+    let tx_body = (|| -> crate::db::Result<(i64, i64)> {
         tx.execute(
             "INSERT INTO organizations (name, slug, status, plan, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4, ?4)",
@@ -627,16 +626,17 @@ pub async fn organizations_store(
              VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, ?5)",
             crate::params![admin_name, admin_email, hashed, org_id, &now],
         )?;
-        Ok(org_id)
+        let user_id = tx.last_insert_rowid();
+        Ok((org_id, user_id))
     })();
 
-    let org_id = match tx_body {
-        Ok(id) => {
+    let (org_id, admin_user_id) = match tx_body {
+        Ok(ids) => {
             if let Err(_) = tx.commit() {
                 return HttpResponse::InternalServerError()
                     .json(ApiError::new("Failed to commit organization"));
             }
-            id
+            ids
         }
         Err(crate::db::DbError::Query(msg))
             if msg.contains("UNIQUE") || msg.contains("unique") =>
@@ -653,6 +653,8 @@ pub async fn organizations_store(
 
     seed_new_organization_defaults(&conn, org_id);
     crate::role_defaults::sync_role_defaults(&conn);
+    let shift_from = now.get(0..10).unwrap_or(&now).to_string();
+    let _ = crate::shift_logic::assign_general_shift_to_user(&conn, admin_user_id, &shift_from);
 
     audit_from_request(
         &conn,
@@ -715,6 +717,9 @@ pub async fn organizations_update(
     if !matches!(status.as_str(), "active" | "suspended" | "trial") {
         return HttpResponse::BadRequest()
             .json(ApiError::new("Status must be active, suspended, or trial"));
+    }
+    if name.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new("Organization name is required"));
     }
     if !crate::plan_limits::plan_slug_exists(&conn, &plan) {
         return HttpResponse::BadRequest().json(ApiError::new(&format!(
@@ -813,7 +818,7 @@ pub async fn organizations_impersonate(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> HttpResponse {
-    let platform_claims = match get_platform_claims_from_request(&req) {
+    let platform_claims = match crate::middleware::platform_auth::require_role(&req, "admin") {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
@@ -866,12 +871,13 @@ pub async fn organizations_impersonate(
     };
 
     let org_slug = load_org_slug(&conn, org_id);
-    let token = match generate_token(
+    let token = match crate::middleware::auth::generate_impersonation_token(
         user.id,
         &user.email,
         org_id,
         &org_slug,
         user.is_super_admin,
+        platform_claims.sub,
         &jwt_secret,
         app_config.jwt_expiration_hours,
     ) {

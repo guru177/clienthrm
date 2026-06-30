@@ -30,8 +30,12 @@ export function resolveApiBase(): string {
         return '/api';
     }
 
-    // Packaged Electron (file://) or explicit desktop shell → direct backend.
+    // Packaged Electron (file://) or explicit desktop shell → configured backend.
     if (isElectronApp() || protocol === 'file:') {
+        const fromDesktop = window.electron?.getApiBase?.();
+        if (typeof fromDesktop === 'string' && fromDesktop.trim()) {
+            return normalizeApiBase(fromDesktop);
+        }
         return 'http://127.0.0.1:3001/api';
     }
 

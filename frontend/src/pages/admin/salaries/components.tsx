@@ -732,7 +732,7 @@ export default function SalaryComponents() {
                                     amount={form.amount}
                                     onCalculationTypeChange={(v) => setForm({ ...form, calculation_type: v })}
                                     onAmountChange={(v) => setForm({ ...form, amount: v })}
-                                    showCtcOption={form.type === 'earning'}
+                                    showCtcOption={false}
                                 />
                             </>
                         )}

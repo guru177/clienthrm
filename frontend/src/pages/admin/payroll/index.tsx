@@ -3,8 +3,9 @@ import {
     Banknote,
     Users, CalendarCheck, Calendar, Star,
     ChevronDown, ChevronRight, Check, Plus, Trash2,
-    Building2, MapPin, LayoutGrid, Loader2, X, Download
+    Building2, MapPin, LayoutGrid, Loader2, X, Download, Mail
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useEffect, useState, useCallback } from 'react';
 import axios from '@/lib/axios';
 
@@ -27,7 +28,7 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import AppLayout from '@/layouts/app-layout';
-import { downloadBulkPayslipsZip, openPayslipPdf } from '@/lib/payslip-pdf';
+import { bulkSendPayslipEmails, downloadBulkPayslipsZip, openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import { usePermissions } from '@/hooks/use-permissions';
 
@@ -57,6 +58,7 @@ interface SalaryStructure {
     esi_deduction?: number;
     prof_tax?: number;
     advance_deduction?: number;
+    suggested_shift_penalty?: number;
     net_salary: number;
 }
 
@@ -75,7 +77,14 @@ interface Employee {
     lop_days?: number;
     absent_days?: number;
     shift_penalty?: number;
+    suggested_shift_penalty?: number;
     penalty_days?: number;
+    ot_hours?: number;
+    ot_amount?: number;
+    variable_pay?: number;
+    reimbursement_amount?: number;
+    arrears_amount?: number;
+    payroll_hold?: boolean;
     has_salary_structure: boolean;
     salary_structure?: SalaryStructure;
     gross_salary?: number;
@@ -104,7 +113,7 @@ type FilterMode = 'all' | 'departments' | 'centers';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n?: number | null) =>
-    n != null ? '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—';
+    n != null && Number.isFinite(n) ? '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—';
 
 const monthNames = [
     'January','February','March','April','May','June',
@@ -128,6 +137,23 @@ function SalaryPopup({
     const addRow = () =>
         setAdjs([...adjs, { type: 'addition', label: '', amount: 0 }]);
 
+    const suggestedPenalty =
+        employee.suggested_shift_penalty ??
+        employee.salary_structure?.suggested_shift_penalty ??
+        0;
+    const penaltyDays = employee.penalty_days ?? 0;
+
+    const addPenaltyDeduction = () => {
+        setAdjs([
+            ...adjs,
+            {
+                type: 'deduction',
+                label: 'Late/Early Penalty',
+                amount: suggestedPenalty > 0 ? Math.round(suggestedPenalty * 100) / 100 : 0,
+            },
+        ]);
+    };
+
     const removeRow = (i: number) =>
         setAdjs(adjs.filter((_, idx) => idx !== i));
 
@@ -137,7 +163,7 @@ function SalaryPopup({
     const ss = employee.salary_structure;
     const totalAdditions = adjs.filter(a => a.type === 'addition').reduce((s, a) => s + (a.amount || 0), 0);
     const totalDeductions = adjs.filter(a => a.type === 'deduction').reduce((s, a) => s + (a.amount || 0), 0);
-    // total_deductions from backend already includes LOP and shift penalties
+    // total_deductions from backend includes LOP and statutory (not auto shift penalties)
     const adjustedNet = ss
         ? Math.max(0, (ss.gross_salary || 0) + totalAdditions - (ss.total_deductions || 0) - totalDeductions)
         : null;
@@ -159,6 +185,12 @@ function SalaryPopup({
 
                 {ss ? (
                     <div className="space-y-5">
+                        {employee.payslip_status === 'generated' && (
+                            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+                                This payslip was already finalized. The figures below are recalculated from current attendance.
+                                Unlock the payslip, then preview and generate again to update the PDF.
+                            </div>
+                        )}
                         {/* Salary Structure */}
                         <div className="grid grid-cols-2 gap-3">
                             {/* Earnings */}
@@ -177,8 +209,8 @@ function SalaryPopup({
                             {/* Deductions */}
                             <div className="rounded-lg border bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
                                 <div className="text-xs font-semibold text-red-700 dark:text-red-400 uppercase tracking-wide">Deductions</div>
-                                {ss.components.filter(c => c.type === 'deduction').map(c => (
-                                    <div key={c.name} className="flex justify-between text-sm">
+                                {ss.components.filter(c => c.type === 'deduction').map((c, i) => (
+                                    <div key={`${c.name}-${i}`} className="flex justify-between text-sm">
                                         <span className="text-muted-foreground">{c.name}</span>
                                         <span className="font-medium">{fmt(c.amount)}</span>
                                     </div>
@@ -193,14 +225,31 @@ function SalaryPopup({
                                         <span>{employee.lop_days ?? employee.absent_days} days</span>
                                     </div>
                                 )}
-                                {(employee.shift_penalty ?? 0) > 0 && (
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-muted-foreground">Late/Early Penalty</span>
-                                        <span>{fmt(employee.shift_penalty)}</span>
+                                {penaltyDays > 0 && (
+                                    <div className="flex justify-between text-xs text-amber-700 dark:text-amber-400">
+                                        <span>Late/early days (info)</span>
+                                        <span>{penaltyDays} day{penaltyDays !== 1 ? 's' : ''}</span>
                                     </div>
                                 )}
                             </div>
                         </div>
+
+                        {penaltyDays > 0 && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-3 py-2.5 text-sm space-y-2">
+                                <p className="text-amber-900 dark:text-amber-100">
+                                    <strong>{penaltyDays}</strong> late/early attendance mark{penaltyDays !== 1 ? 's' : ''} this month.
+                                    Penalties are <strong>not deducted automatically</strong> — add a deduction below if there is no valid excuse.
+                                </p>
+                                {suggestedPenalty > 0 && (
+                                    <p className="text-xs text-muted-foreground">
+                                        Suggested reference amount: {fmt(suggestedPenalty)} (half-day wage × penalty days).
+                                    </p>
+                                )}
+                                <Button size="sm" variant="outline" type="button" onClick={addPenaltyDeduction}>
+                                    Add penalty deduction
+                                </Button>
+                            </div>
+                        )}
 
                         {/* Net Salary Summary */}
                         <div className="flex items-center justify-between rounded-lg bg-primary/5 border border-primary/20 p-4">
@@ -305,6 +354,7 @@ function PreviewPopup({
     canManagePayroll: boolean;
 }) {
     const [generating, setGenerating] = useState(false);
+    const [sendEmails, setSendEmails] = useState(true);
     const [commonAdjs, setCommonAdjs] = useState<CommonAdjustment[]>([]);
     const [adjOpen, setAdjOpen] = useState(false);
 
@@ -315,13 +365,18 @@ function PreviewPopup({
     const updateRow = (i: number, patch: Partial<CommonAdjustment>) =>
         setCommonAdjs(prev => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
 
+    const ready = previews.filter(p => !p.skipped);
+    const skipped = previews.filter(p => p.skipped);
+
     const calcAdjustedNet = (p: any): number => {
-        let net = parseFloat(p.net_salary) || 0;
-        const gross = parseFloat(p.gross_salary) || 0;
+        let net = Number(p.net_salary);
+        if (!Number.isFinite(net)) net = 0;
+        const gross = Number(p.gross_salary);
+        const grossBase = Number.isFinite(gross) ? gross : 0;
         for (const adj of commonAdjs) {
             if (!adj.value) continue;
             const amt = adj.valueType === 'percentage'
-                ? Math.round(gross * adj.value / 100 * 100) / 100
+                ? Math.round(grossBase * adj.value / 100 * 100) / 100
                 : adj.value;
             if (adj.type === 'addition') net += amt;
             else net = Math.max(0, net - amt);
@@ -330,7 +385,7 @@ function PreviewPopup({
     };
 
     const hasActiveAdjs = commonAdjs.some(a => a.value > 0);
-    const total = previews.reduce((sum, p) => sum + calcAdjustedNet(p), 0);
+    const total = ready.reduce((sum, p) => sum + calcAdjustedNet(p), 0);
 
     const handleGenerate = async () => {
         setGenerating(true);
@@ -342,11 +397,34 @@ function PreviewPopup({
             const response = await axios.post('/admin/payroll/generate', {
                 month,
                 year,
-                payslip_ids: previews.filter(p => !p.skipped && p.id).map(p => p.id),
+                payslip_ids: ready.filter(p => p.id).map(p => p.id),
                 common_adjustments: validAdjs,
+                send_emails: sendEmails,
             });
             handleApiResponse(response);
             if (response.data.success) {
+                const email = response.data.data?.email;
+                if (email && sendEmails) {
+                    if (email.queued) {
+                        handleApiResponse({
+                            data: {
+                                success: true,
+                                message: `Payslip emails queued for ${email.count ?? 0} employee(s)`,
+                            },
+                        });
+                    } else {
+                        const sent = email.sent ?? 0;
+                        const skipped = email.skipped ?? 0;
+                        if (sent > 0) {
+                            handleApiResponse({
+                                data: {
+                                    success: true,
+                                    message: `Payslip emails sent to ${sent} employee(s)${skipped > 0 ? ` (${skipped} skipped)` : ''}`,
+                                },
+                            });
+                        }
+                    }
+                }
                 onGenerate();
                 onClose();
             }
@@ -365,7 +443,10 @@ function PreviewPopup({
                         Payroll Preview — {monthNames[month - 1]} {year}
                     </DialogTitle>
                     <p className="text-sm text-muted-foreground">
-                        {previews.length} employee(s) ready for payroll generation
+                        {ready.length} employee(s) ready for payroll generation
+                        {skipped.length > 0 && (
+                            <> · {skipped.length} skipped</>
+                        )}
                     </p>
                 </DialogHeader>
 
@@ -466,61 +547,111 @@ function PreviewPopup({
 
                 {/* Preview Table */}
                 <div className="flex-1 overflow-y-auto border rounded-lg">
+                    {skipped.length > 0 && (
+                        <div className="px-3 py-2 text-xs text-amber-800 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-200 border-b">
+                            {skipped.length} employee(s) cannot be included: missing salary structure, or payslip already generated (unlock first).
+                        </div>
+                    )}
                     <table className="w-full text-sm">
                         <thead className="bg-muted/50 sticky top-0">
                             <tr>
                                 <th className="text-left p-3 font-semibold">Employee</th>
                                 <th className="text-right p-3 font-semibold">Working Days</th>
                                 <th className="text-right p-3 font-semibold">Present</th>
-                                <th className="text-right p-3 font-semibold">Absent</th>
-                                <th className="text-right p-3 font-semibold">Penalty</th>
+                                <th className="text-right p-3 font-semibold">LOP Days</th>
+                                <th className="text-right p-3 font-semibold">Late/Early</th>
                                 <th className="text-right p-3 font-semibold">Gross</th>
                                 <th className="text-right p-3 font-semibold">Deductions</th>
                                 <th className="text-right p-3 font-semibold text-primary">Net Salary</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {previews.map((p, i) => {
+                            {skipped.map((p, i) => (
+                                <tr key={`skip-${p.user_id ?? i}`} className="bg-amber-50/50 dark:bg-amber-950/10">
+                                    <td className="p-3">
+                                        <div className="font-medium">{p.user_name || `Employee #${p.user_id}`}</div>
+                                        <div className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">{p.reason || 'Skipped'}</div>
+                                    </td>
+                                    <td className="p-3 text-right text-muted-foreground" colSpan={6}>—</td>
+                                </tr>
+                            ))}
+                            {ready.map((p, i) => {
                                 const adjNet = calcAdjustedNet(p);
-                                const baseNet = parseFloat(p.net_salary) || 0;
-                                const changed = hasActiveAdjs && Math.abs(adjNet - baseNet) > 0.01;
+                                const baseNet = Number(p.net_salary);
+                                const safeBase = Number.isFinite(baseNet) ? baseNet : 0;
+                                const changed = hasActiveAdjs && Math.abs(adjNet - safeBase) > 0.01;
+                                const gross = Number(p.gross_salary);
+                                const deductions = Number(p.total_deductions);
                                 return (
                                     <tr key={p.id} className={i % 2 === 0 ? 'bg-background' : 'bg-muted/20'}>
                                         <td className="p-3 font-medium">{p.user_name || `Employee #${p.user_id}`}</td>
-                                        <td className="p-3 text-right text-muted-foreground">{p.working_days}</td>
-                                        <td className="p-3 text-right text-muted-foreground">{p.present_days}</td>
+                                        <td className="p-3 text-right text-muted-foreground">{p.working_days ?? '—'}</td>
+                                        <td className="p-3 text-right text-muted-foreground">{p.present_days ?? '—'}</td>
                                         <td className="p-3 text-right text-muted-foreground">{p.absent_days ?? 0}</td>
-                                        <td className="p-3 text-right text-muted-foreground">{fmt(p.shift_penalty ?? 0)}</td>
-                                        <td className="p-3 text-right">{fmt(parseFloat(p.gross_salary))}</td>
-                                        <td className="p-3 text-right text-red-600">{fmt(parseFloat(p.total_deductions))}</td>
+                                        <td className="p-3 text-right text-muted-foreground">
+                                            {(p.penalty_days ?? 0) > 0 ? (
+                                                <span>
+                                                    {p.penalty_days}d
+                                                    {(p.suggested_shift_penalty ?? 0) > 0 && (
+                                                        <span className="block text-xs text-amber-700 dark:text-amber-400">
+                                                            sugg. {fmt(p.suggested_shift_penalty)}
+                                                        </span>
+                                                    )}
+                                                </span>
+                                            ) : (
+                                                '—'
+                                            )}
+                                        </td>
+                                        <td className="p-3 text-right">{fmt(Number.isFinite(gross) ? gross : null)}</td>
+                                        <td className="p-3 text-right text-red-600">{fmt(Number.isFinite(deductions) ? deductions : null)}</td>
                                         <td className="p-3 text-right font-bold text-primary">
                                             {fmt(adjNet)}
                                             {changed && (
                                                 <div className="text-xs font-normal text-muted-foreground line-through">
-                                                    {fmt(baseNet)}
+                                                    {fmt(safeBase)}
                                                 </div>
                                             )}
                                         </td>
                                     </tr>
                                 );
                             })}
+                            {ready.length === 0 && skipped.length === 0 && (
+                                <tr>
+                                    <td colSpan={8} className="p-6 text-center text-muted-foreground">No preview data.</td>
+                                </tr>
+                            )}
                         </tbody>
+                        {ready.length > 0 && (
                         <tfoot className="bg-muted/50 border-t">
                             <tr>
                                 <td className="p-3 font-bold" colSpan={7}>Total Payroll</td>
                                 <td className="p-3 text-right font-bold text-xl text-primary">{fmt(total)}</td>
                             </tr>
                         </tfoot>
+                        )}
                     </table>
                 </div>
 
-                <div className="flex justify-between items-center pt-2 border-t">
-                    <Button variant="outline" onClick={onClose}>Cancel</Button>
-                    <Button onClick={handleGenerate} disabled={generating || !canManagePayroll} size="lg">
+                <div className="flex justify-between items-center pt-2 border-t gap-4">
+                    <div className="flex items-center gap-4">
+                        <Button variant="outline" onClick={onClose}>Cancel</Button>
+                        {canManagePayroll && ready.length > 0 && (
+                            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                                <Checkbox
+                                    checked={sendEmails}
+                                    onCheckedChange={(v) => setSendEmails(v === true)}
+                                />
+                                <span>Email payslip to employees after generate</span>
+                            </label>
+                        )}
+                    </div>
+                    <Button onClick={handleGenerate} disabled={generating || !canManagePayroll || ready.length === 0} size="lg">
                         {generating ? (
                             <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating...</>
                         ) : canManagePayroll ? (
-                            <>Generate Payroll ({previews.length} employees)</>
+                            ready.length > 0
+                                ? <>Generate Payroll ({ready.length} employees)</>
+                                : <>No employees ready</>
                         ) : (
                             <>Generate Payroll (permission required)</>
                         )}
@@ -592,7 +723,12 @@ function EmployeeListPanel({
                             {emp.department_name || 'No Dept'}
                             {emp.has_salary_structure && (
                                 <> · {emp.present_days}/{emp.working_days}d
-                                {(emp.absent_days ?? 0) > 0 && <> · {emp.absent_days} absent</>}
+                                {(emp.lop_days ?? emp.absent_days ?? 0) > 0 && (
+                                    <> · {emp.lop_days ?? emp.absent_days} LOP</>
+                                )}
+                                {(emp.penalty_days ?? 0) > 0 && (
+                                    <> · {emp.penalty_days} late/early</>
+                                )}
                                 </>
                             )}
                         </div>
@@ -743,6 +879,7 @@ export default function PayrollPage() {
     const [proceeding, setProceeding] = useState(false);
     const [downloadingPayslipId, setDownloadingPayslipId] = useState<number | null>(null);
     const [bulkDownloading, setBulkDownloading] = useState(false);
+    const [bulkEmailing, setBulkEmailing] = useState(false);
 
     // Fetch stats
     const fetchStats = useCallback(async () => {
@@ -861,6 +998,22 @@ export default function PayrollPage() {
         }
     };
 
+    const handleBulkEmail = async () => {
+        setBulkEmailing(true);
+        try {
+            const res = await bulkSendPayslipEmails({
+                month,
+                year,
+                payslipIds: generatedPayslipIds.length > 0 ? generatedPayslipIds : undefined,
+            });
+            handleApiResponse(res);
+        } catch (e) {
+            handleApiError(e);
+        } finally {
+            setBulkEmailing(false);
+        }
+    };
+
     const handleProceed = async () => {
         if (checkedIds.size === 0) return;
         setProceeding(true);
@@ -920,6 +1073,20 @@ export default function PayrollPage() {
                             </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-3">
+                            <Button asChild variant="outline" className="bg-white/60 border-white/60 z-10">
+                                <Link to="/admin/payroll/advanced">Advanced payroll</Link>
+                            </Button>
+                            {canManagePayroll && (stats?.total ?? 0) > 0 && (
+                                <Button
+                                    variant="outline"
+                                    className="bg-white/60 border-white/60 z-10"
+                                    disabled={bulkEmailing}
+                                    onClick={() => void handleBulkEmail()}
+                                >
+                                    <Mail className="h-4 w-4 mr-2" />
+                                    {bulkEmailing ? 'Sending emails…' : `Email All Payslips (${stats?.total ?? 0})`}
+                                </Button>
+                            )}
                             {canManagePayroll && (stats?.total ?? 0) > 0 && (
                                 <Button
                                     variant="outline"

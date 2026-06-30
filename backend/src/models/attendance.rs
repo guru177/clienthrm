@@ -51,6 +51,12 @@ pub struct ClockInRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct AttendanceStatsQuery {
+    /// Filter stats to one capture source: `app`, `biometric`, or `manual`.
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AttendanceListQuery {
     pub search: Option<String>,
     pub status: Option<String>,
@@ -58,6 +64,9 @@ pub struct AttendanceListQuery {
     pub per_page: Option<i64>,
     /// When true, only return open sessions (clocked in, not yet clocked out).
     pub only_open: Option<bool>,
+    pub user_id: Option<i64>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
 }
 
 /// Admin edit of an existing attendance record (regularization).
@@ -80,6 +89,21 @@ pub struct CreateAttendanceRequest {
     pub clock_out: Option<String>,
     pub status: Option<String>,
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkManualEntry {
+    pub user_id: i64,
+    pub clock_in: Option<String>,
+    pub clock_out: Option<String>,
+    pub status: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkManualAttendanceRequest {
+    pub date: String,
+    pub entries: Vec<BulkManualEntry>,
 }
 
 impl Attendance {

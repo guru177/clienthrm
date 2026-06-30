@@ -18,7 +18,7 @@ pub fn load_user_permissions(
     if is_super_admin {
         return vec!["*".to_string()];
     }
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT DISTINCT p.slug FROM permissions p
          JOIN permission_role pr ON p.id = pr.permission_id
          JOIN role_user ru ON pr.role_id = ru.role_id
@@ -46,6 +46,10 @@ fn permission_satisfied(permissions: &[String], slug: &str) -> bool {
     }
     if slug == "approve-leave-requests" || slug == "reject-leave-requests" {
         return has_permission(permissions, "manage-leave-requests");
+    }
+    if slug == "mark-attendance" {
+        return has_permission(permissions, "manage-attendance")
+            || has_permission(permissions, "mark-attendance");
     }
     false
 }
@@ -210,6 +214,9 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     {
         return Some("clock-inout");
     }
+    if path.starts_with("/api/admin/attendance/manual") {
+        return Some("mark-attendance");
+    }
     if path.starts_with("/api/admin/biometric") {
         return Some(if *method == Method::GET {
             "view-attendance"
@@ -268,6 +275,7 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
         || path.starts_with("/api/admin/payroll")
         || path.starts_with("/api/admin/payslips")
         || path.contains("/payslips/bulk-download")
+        || path.contains("/payslips/bulk-send-email")
     {
         if path == "/api/admin/me/payslips" && *method == Method::GET {
             return Some("view-my-payslips");

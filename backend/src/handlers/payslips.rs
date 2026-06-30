@@ -64,7 +64,6 @@ async fn employee_payslips_list_inner(
     );
     let mut params: Vec<crate::db::ParamValue> =
         vec![crate::db::into_param_value(user_id), crate::db::into_param_value(org_id)];
-        vec![crate::db::into_param_value(user_id), crate::db::into_param_value(org_id)];
 
     if let Some(year) = query.year {
         sql.push_str(" AND p.year=?");
@@ -76,7 +75,7 @@ async fn employee_payslips_list_inner(
     }
     sql.push_str(" ORDER BY p.year DESC, p.month DESC");
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{}", e))),
     };
@@ -244,6 +243,78 @@ pub async fn send_whatsapp(
     }
 }
 
+/// POST /api/admin/payslips/{id}/send-email
+pub async fn send_email(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let payslip_id = path.into_inner();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    match actix_web::web::block(move || crate::payslip_email::send_payslip_email(&conn, org_id, payslip_id)).await {
+        Ok(Ok(())) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": "Payslip email sent",
+            "payslip_id": payslip_id,
+        }))),
+        Ok(Err(e)) => HttpResponse::BadGateway().json(ApiError::new(&e)),
+        Err(e) => HttpResponse::BadGateway().json(ApiError::new(&format!("Email task failed: {e}"))),
+    }
+}
+
+/// POST /api/admin/payslips/bulk-send-email — email all selected or month payslips
+pub async fn bulk_send_email(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<BulkPayslipDownloadRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let ids = collect_payslip_ids(&conn, org_id, &body);
+    if ids.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "No generated payslips found to email",
+        ));
+    }
+
+    let count = ids.len();
+    let pool_bg = pool.clone();
+    tokio::spawn(async move {
+        let Ok(conn) = pool_bg.get_for_tenant(org_id) else {
+            log::error!("Bulk payslip email: database unavailable");
+            return;
+        };
+        let result = crate::payslip_email::bulk_send_payslip_emails(&conn, org_id, &ids);
+        log::info!(
+            "Bulk payslip email complete: sent={} skipped={} errors={}",
+            result.sent,
+            result.skipped,
+            result.errors.len()
+        );
+    });
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "message": format!("Queued email for {count} payslip(s)"),
+        "queued": true,
+        "count": count,
+    })))
+}
+
 fn collect_payslip_ids(
     conn: &crate::db::Connection,
     org_id: i64,
@@ -253,7 +324,7 @@ fn collect_payslip_ids(
         return ids.clone();
     }
     if let (Some(month), Some(year)) = (body.month, body.year) {
-        let mut stmt = match conn.prepare(
+        let stmt = match conn.prepare(
             "SELECT p.id FROM payslips p
              JOIN users u ON u.id = p.user_id AND u.organization_id = ?1
              WHERE p.month = ?2 AND p.year = ?3 AND p.status = 'generated'
@@ -268,7 +339,7 @@ fn collect_payslip_ids(
     Vec::new()
 }
 
-/// GET /api/admin/payslips/{id}/pdf — printable payslip HTML (Save as PDF)
+/// GET /api/admin/payslips/{id}/pdf — A4 payslip PDF
 pub async fn payslip_pdf(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -319,15 +390,18 @@ pub async fn payslip_pdf(
     }
 
     let filename = crate::payslip_render::payslip_filename(&data);
-    let html = crate::payslip_render::render_payslip_html(&data, true);
+    let pdf = match crate::payslip_pdf::render_payslip_pdf(&data) {
+        Ok(bytes) => bytes,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&e)),
+    };
 
     HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
+        .content_type("application/pdf")
         .insert_header(("Content-Disposition", format!("inline; filename=\"{filename}\"")))
-        .body(html)
+        .body(pdf)
 }
 
-/// POST /api/admin/payslips/bulk-download — ZIP of printable payslip HTML files
+/// POST /api/admin/payslips/bulk-download — ZIP of A4 payslip PDFs
 pub async fn bulk_download(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -360,11 +434,14 @@ pub async fn bulk_download(
                 continue;
             };
             let filename = crate::payslip_render::payslip_filename(&data);
-            let html = crate::payslip_render::render_payslip_html(&data, true);
+            let pdf = match crate::payslip_pdf::render_payslip_pdf(&data) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
             if zip.start_file(filename, options).is_err() {
                 continue;
             }
-            let _ = zip.write_all(html.as_bytes());
+            let _ = zip.write_all(&pdf);
         }
 
         if zip.finish().is_err() {

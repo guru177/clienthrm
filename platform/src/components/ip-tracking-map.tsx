@@ -1,10 +1,12 @@
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useEffect, useState } from 'react';
+import { ExternalLink } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
 import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+import { googleStreetViewUrl } from '@/lib/street-view-url';
 
 export interface LiveAdminMarker {
     id: number;
@@ -112,7 +114,9 @@ export default function IpTrackingMap({ markers }: { markers: LiveAdminMarker[] 
             />
             <PlaceLabelsLayer />
             <FitBounds markers={markers} />
-            {located.map((admin) => (
+            {located.map((admin) => {
+                const streetViewUrl = googleStreetViewUrl(admin.latitude, admin.longitude);
+                return (
                 <Marker key={admin.id} position={[admin.latitude!, admin.longitude!]}>
                     <Tooltip
                         direction="top"
@@ -126,17 +130,29 @@ export default function IpTrackingMap({ markers }: { markers: LiveAdminMarker[] 
                         </div>
                     </Tooltip>
                     <Popup>
-                        <div className="space-y-1 text-sm">
+                        <div className="space-y-2 text-sm">
                             <p className="font-semibold">{admin.name}</p>
                             <p>{admin.organization_name}</p>
                             <p className="text-xs text-slate-600">{admin.email}</p>
                             {admin.ip_address && (
                                 <p className="font-mono text-xs">{admin.ip_address}</p>
                             )}
+                            {streetViewUrl && (
+                                <a
+                                    href={streetViewUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-white px-2.5 py-1.5 text-xs font-medium text-[#036bd3] hover:bg-[#f8fbff]"
+                                >
+                                    Open Street View
+                                    <ExternalLink className="h-3 w-3" />
+                                </a>
+                            )}
                         </div>
                     </Popup>
                 </Marker>
-            ))}
+                );
+            })}
         </MapContainer>
     );
 }

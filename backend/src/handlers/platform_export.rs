@@ -2,7 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 
 use crate::db::DbPool;
 use crate::handlers::platform_audit::audit_from_request;
-use crate::middleware::platform_auth::{get_platform_claims_from_request, require_role};
+use crate::middleware::platform_auth::require_role;
 use crate::models::{ApiError, ApiResponse};
 
 /// GET /api/platform/organizations/{id}/export — JSON backup of tenant data

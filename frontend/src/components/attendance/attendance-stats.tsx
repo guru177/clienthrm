@@ -1,19 +1,41 @@
 import { Clock, Users, TrendingUp, AlertCircle } from 'lucide-react';
 
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import type { AttendanceStatsData } from '@/hooks/use-attendance-stats';
 
 interface AttendanceStatsProps {
-    stats?: {
-        total_days: number;
-        present_days: number;
-        absent_days: number;
-        late_days: number;
-        early_exit_days: number;
-        total_hours: number;
-    };
+    stats?: AttendanceStatsData | null;
+    loading?: boolean;
+    /** e.g. "App attendance", "Biometric attendance" */
+    title?: string;
+    /** Override scope label; defaults from stats.scope */
+    scopeLabel?: string;
 }
 
-export default function AttendanceStats({ stats }: AttendanceStatsProps) {
+const SOURCE_LABELS: Record<string, string> = {
+    all: 'All sources',
+    app: 'App / face clock-in',
+    biometric: 'Biometric device',
+    manual: 'Manual HR entry',
+};
+
+export default function AttendanceStats({
+    stats,
+    loading = false,
+    title = 'Attendance statistics',
+    scopeLabel,
+}: AttendanceStatsProps) {
+    if (loading) {
+        return (
+            <Card>
+                <CardContent className="flex min-h-[120px] items-center justify-center pt-6">
+                    <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                </CardContent>
+            </Card>
+        );
+    }
+
     if (!stats) {
         return (
             <Card>
@@ -23,6 +45,11 @@ export default function AttendanceStats({ stats }: AttendanceStatsProps) {
             </Card>
         );
     }
+
+    const isSelf = stats.scope === 'self';
+    const resolvedScope =
+        scopeLabel ?? (isSelf ? 'My attendance (this month)' : 'Organization-wide (this month)');
+    const sourceKey = stats.source ?? 'all';
 
     const statCards = [
         {
@@ -38,7 +65,7 @@ export default function AttendanceStats({ stats }: AttendanceStatsProps) {
             color: 'bg-green-100 text-green-600',
         },
         {
-            label: 'Absent',
+            label: isSelf ? 'Absent (month)' : 'Absent today',
             value: stats.absent_days ?? 0,
             icon: AlertCircle,
             color: 'bg-red-100 text-red-600',
@@ -64,27 +91,44 @@ export default function AttendanceStats({ stats }: AttendanceStatsProps) {
     ];
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {statCards.map((stat) => {
-                const Icon = stat.icon;
-                return (
-                    <Card key={stat.label}>
-                        <CardHeader className="pb-3">
-                            <div className="flex items-center justify-between">
-                                <CardTitle className="text-sm font-medium">
-                                    {stat.label}
-                                </CardTitle>
-                                <div className={`p-2 rounded-lg ${stat.color}`}>
-                                    <Icon className="h-4 w-4" />
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold">{title}</h2>
+                <Badge variant={isSelf ? 'secondary' : 'default'}>{resolvedScope}</Badge>
+                {sourceKey !== 'all' && (
+                    <Badge variant="outline">{SOURCE_LABELS[sourceKey] ?? sourceKey}</Badge>
+                )}
+            </div>
+
+            {!isSelf && stats.by_source && sourceKey === 'all' && (
+                <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
+                    <span>By source:</span>
+                    <Badge variant="outline">App {stats.by_source.app}</Badge>
+                    <Badge variant="outline">Biometric {stats.by_source.biometric}</Badge>
+                    <Badge variant="outline">Manual {stats.by_source.manual}</Badge>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {statCards.map((stat) => {
+                    const Icon = stat.icon;
+                    return (
+                        <Card key={stat.label}>
+                            <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between">
+                                    <CardTitle className="text-sm font-medium">{stat.label}</CardTitle>
+                                    <div className={`rounded-lg p-2 ${stat.color}`}>
+                                        <Icon className="h-4 w-4" />
+                                    </div>
                                 </div>
-                            </div>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold">{stat.value}</div>
-                        </CardContent>
-                    </Card>
-                );
-            })}
+                            </CardHeader>
+                            <CardContent>
+                                <div className="text-2xl font-bold">{stat.value}</div>
+                            </CardContent>
+                        </Card>
+                    );
+                })}
+            </div>
         </div>
     );
 }

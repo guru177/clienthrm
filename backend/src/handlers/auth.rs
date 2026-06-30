@@ -18,7 +18,7 @@ fn load_tenant_settings(
     org_id: i64,
 ) -> std::collections::HashMap<String, String> {
     let mut settings = std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(stmt) = conn.prepare(
         "SELECT key, value FROM app_settings WHERE organization_id = ?1",
     ) {
         for (key, value) in stmt.query_map([org_id], |row| {
@@ -52,9 +52,34 @@ pub async fn login(
         return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
     }
 
-    let conn = match pool.get() {
+    let pool = pool.get_ref().clone();
+    let jwt_secret = jwt_secret.into_inner();
+    let app_config = app_config.into_inner();
+    let body = body.into_inner();
+    let client_ip = crate::presence::client_ip(&req);
+
+    match crate::db::runtime::run_db(&pool, move |pool| {
+        login_with_pool(pool, &jwt_secret, &app_config, &body, &client_ip)
+    })
+    .await
+    {
+        Ok(resp) => resp.into_response(),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+fn login_with_pool(
+    pool: &DbPool,
+    jwt_secret: &Arc<String>,
+    app_config: &Arc<AppConfig>,
+    body: &LoginRequest,
+    client_ip: &str,
+) -> crate::db::runtime::BlockJson {
+    use crate::db::runtime::BlockJson;
+
+    let conn = match pool.get_platform() {
         Ok(c) => c,
-        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+        Err(_) => return BlockJson::error(500, "Database error"),
     };
 
     let explicit_slug = body
@@ -64,10 +89,9 @@ pub async fn login(
         .filter(|s| !s.is_empty());
 
     let user = if let Some(slug) = explicit_slug {
-        // Slug supplied → scope strictly to that organization.
         let org_id = match resolve_organization_id(&conn, Some(slug)) {
             Ok(id) => id,
-            Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+            Err(msg) => return BlockJson::error(400, &msg),
         };
         match conn.query_row(
             "SELECT * FROM users WHERE email = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
@@ -75,12 +99,9 @@ pub async fn login(
             User::from_row,
         ) {
             Ok(u) => u,
-            Err(_) => return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials")),
+            Err(_) => return BlockJson::error(401, "Invalid credentials"),
         }
     } else {
-        // No slug (the web login form sends only email + password) → look the user up
-        // across all active organizations. When the same email exists in multiple orgs,
-        // the one whose password verifies wins.
         let candidates = conn.query_map(
             "SELECT u.* FROM users u
              JOIN organizations o ON o.id = u.organization_id
@@ -88,13 +109,22 @@ pub async fn login(
             crate::params![body.email],
             User::from_row,
         );
-        let matched = candidates.into_iter().find(|u| {
-            let hash = u.password.replace("$2y$", "$2b$");
-            bcrypt::verify(&body.password, &hash).unwrap_or(false)
-        });
-        match matched {
-            Some(u) => u,
-            None => return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials")),
+        let valid: Vec<User> = candidates
+            .into_iter()
+            .filter(|u| {
+                let hash = u.password.replace("$2y$", "$2b$");
+                bcrypt::verify(&body.password, &hash).unwrap_or(false)
+            })
+            .collect();
+        match valid.len() {
+            0 => return BlockJson::error(401, "Invalid credentials"),
+            1 => valid.into_iter().next().unwrap(),
+            _ => {
+                return BlockJson::error(
+                    409,
+                    "Multiple accounts match this email. Sign in with your organization slug.",
+                );
+            }
         }
     };
 
@@ -104,34 +134,74 @@ pub async fn login(
     let password_valid = bcrypt::verify(&body.password, &stored_hash).unwrap_or(false);
 
     if !password_valid {
-        return HttpResponse::Unauthorized().json(ApiError::new("Invalid credentials"));
+        return BlockJson::error(401, "Invalid credentials");
     }
 
     if let Err(msg) = crate::subscription_period::ensure_org_subscription_enforced(&conn, org_id) {
-        return HttpResponse::Forbidden().json(ApiError::new(&msg));
+        return BlockJson::error(403, &msg);
     }
 
+    let totp_enabled: bool = conn
+        .query_row(
+            "SELECT COALESCE(totp_enabled, 0) FROM users WHERE id = ?1",
+            [user.id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
+    if totp_enabled {
+        let pre_token = match crate::middleware::auth::generate_tenant_pre_auth_token(
+            user.id,
+            &user.email,
+            jwt_secret,
+        ) {
+            Ok(t) => t,
+            Err(_) => return BlockJson::error(500, "Failed to issue 2FA challenge"),
+        };
+        return BlockJson::ok(serde_json::json!({
+            "requires_2fa": true,
+            "pre_auth_token": pre_token,
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+            }
+        }));
+    }
+
+    complete_login_after_auth(&conn, &user, jwt_secret, app_config, client_ip)
+}
+
+/// Issue tenant session after password (and optional 2FA) verification.
+pub fn complete_login_after_auth(
+    conn: &crate::db::Connection,
+    user: &User,
+    jwt_secret: &Arc<String>,
+    app_config: &Arc<AppConfig>,
+    client_ip: &str,
+) -> crate::db::runtime::BlockJson {
+    use crate::db::runtime::BlockJson;
+
+    let org_id = user.organization_id;
     let (permissions, plan) = crate::plan_limits::resolve_effective_permissions(
-        &conn,
+        conn,
         org_id,
-        crate::middleware::rbac::load_user_permissions(&conn, user.id, user.is_super_admin),
+        crate::middleware::rbac::load_user_permissions(conn, user.id, user.is_super_admin),
     );
 
-    let org_slug = load_org_slug(&conn, user.organization_id);
+    let org_slug = load_org_slug(conn, user.organization_id);
     let token = match generate_token(
         user.id,
         &user.email,
         user.organization_id,
         &org_slug,
         user.is_super_admin,
-        &jwt_secret,
+        jwt_secret,
         app_config.jwt_expiration_hours,
     ) {
         Ok(t) => t,
-        Err(_) => {
-            return HttpResponse::InternalServerError()
-                .json(ApiError::new("Failed to generate token"))
-        }
+        Err(_) => return BlockJson::error(500, "Failed to generate token"),
     };
 
     let refresh_token = uuid::Uuid::new_v4().to_string();
@@ -145,12 +215,11 @@ pub async fn login(
     );
 
     if user.is_super_admin {
-        let ip = crate::presence::client_ip(&req);
         let _ = crate::presence::upsert_user_presence(
-            &conn,
+            conn,
             user.id,
             org_id,
-            &ip,
+            client_ip,
             None,
             None,
             None,
@@ -159,10 +228,10 @@ pub async fn login(
         );
     }
 
-    let roles = load_user_roles(&conn, user.id);
+    let roles = load_user_roles(conn, user.id);
     let mut summary = user.to_summary();
     summary.roles = Some(roles);
-    attach_org_to_summary(&conn, &mut summary);
+    attach_org_to_summary(conn, &mut summary);
 
     if let Some(dept_id) = summary.department_id {
         summary.department = conn
@@ -183,7 +252,7 @@ pub async fn login(
             .ok();
     }
 
-    let settings = load_tenant_settings(&conn, org_id);
+    let settings = load_tenant_settings(conn, org_id);
 
     #[derive(serde::Serialize)]
     struct LoginResponseExt {
@@ -195,14 +264,14 @@ pub async fn login(
         plan: Option<crate::plan_limits::OrgPlanInfo>,
     }
 
-    HttpResponse::Ok().json(ApiResponse::success(LoginResponseExt {
+    BlockJson::ok(LoginResponseExt {
         token,
         refresh_token,
         user: summary,
         permissions,
         settings,
         plan,
-    }))
+    })
 }
 
 /// GET /api/auth/me — returns current user info
@@ -485,6 +554,43 @@ fn admin_email_available(conn: &crate::db::Connection, email: &str) -> bool {
     .is_err()
 }
 
+fn company_email_available(conn: &crate::db::Connection, email: &str) -> bool {
+    let normalized = email.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    conn.query_row(
+        "SELECT 1 FROM organizations WHERE LOWER(TRIM(company_email)) = ?1 LIMIT 1",
+        crate::params![normalized],
+        |_| Ok(()),
+    )
+    .is_err()
+}
+
+fn validate_signup_emails(
+    conn: &crate::db::Connection,
+    company_email: &str,
+    admin_email: &str,
+) -> Result<(), HttpResponse> {
+    if let Err(msg) = crate::validation::validate_email(company_email) {
+        return Err(HttpResponse::BadRequest().json(ApiError::new(&msg)));
+    }
+    if let Err(msg) = crate::validation::validate_email(admin_email) {
+        return Err(HttpResponse::BadRequest().json(ApiError::new(&msg)));
+    }
+    if !company_email_available(conn, company_email) {
+        return Err(HttpResponse::Conflict().json(ApiError::new(
+            "This company email is already registered to another organization. Use a different email or sign in.",
+        )));
+    }
+    if !admin_email_available(conn, admin_email) {
+        return Err(HttpResponse::Conflict().json(ApiError::new(
+            "An account with this work email already exists. Sign in or use a different email.",
+        )));
+    }
+    Ok(())
+}
+
 fn validate_signup_payload(
     conn: &crate::db::Connection,
     payload: &SignupOtpPayload,
@@ -511,10 +617,8 @@ fn validate_signup_payload(
         return Err(HttpResponse::BadRequest()
             .json(ApiError::new("Valid admin email and password (min 8 chars) required")));
     }
-    if !admin_email_available(conn, admin_email) {
-        return Err(HttpResponse::Conflict().json(ApiError::new(
-            "An account with this work email already exists. Sign in or use a different email.",
-        )));
+    if let Err(resp) = validate_signup_emails(conn, payload.company_email.trim(), admin_email) {
+        return Err(resp);
     }
 
     if payload.company_email.trim().is_empty()
@@ -563,13 +667,11 @@ fn validate_signup_fields(
         return Err(HttpResponse::BadRequest().json(ApiError::new("Passwords do not match")));
     }
 
-    if !admin_email_available(conn, admin_email) {
-        return Err(HttpResponse::Conflict().json(ApiError::new(
-            "An account with this work email already exists. Sign in or use a different email.",
-        )));
+    let company_email = body.company_email.trim();
+    if let Err(resp) = validate_signup_emails(conn, company_email, admin_email) {
+        return Err(resp);
     }
 
-    let company_email = body.company_email.trim();
     let company_phone = body.company_phone.trim();
     let contact_person = body.contact_person.trim();
     let country = body.country.trim();
@@ -714,6 +816,8 @@ fn create_organization_from_payload(
 
     let user_id = conn.last_insert_rowid();
     seed_new_organization_defaults(conn, org_id);
+    let shift_from = now.get(0..10).unwrap_or(&now).to_string();
+    let _ = crate::shift_logic::assign_general_shift_to_user(conn, user_id, &shift_from);
     seed_signup_app_settings(
         conn,
         org_id,
@@ -760,7 +864,26 @@ pub async fn check_signup_availability(
         }
     }
 
+    if let Some(email) = body
+        .company_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Err(msg) = crate::validation::validate_email(email) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
+        if !company_email_available(&conn, email) {
+            return HttpResponse::Conflict().json(ApiError::new(
+                "This company email is already registered to another organization. Use a different email or sign in.",
+            ));
+        }
+    }
+
     if let Some(email) = body.admin_email.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Err(msg) = crate::validation::validate_email(email) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
         if !admin_email_available(&conn, email) {
             return HttpResponse::Conflict().json(ApiError::new(
                 "An account with this work email already exists. Sign in or use a different email.",
@@ -928,4 +1051,254 @@ fn load_user_roles(
     };
 
     stmt.query_map([user_id], crate::models::role::Role::from_row)
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+    pub org_slug: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ResetPasswordRequest {
+    pub email: Option<String>,
+    pub token: Option<String>,
+    pub verification_id: Option<String>,
+    pub password: String,
+    pub password_confirmation: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VerifyPasswordResetOtpRequest {
+    pub verification_id: String,
+    pub otp: String,
+}
+
+const FORGOT_PASSWORD_OTP_MESSAGE: &str = "If an account exists, a verification code has been sent.";
+
+fn active_users_for_email(
+    conn: &crate::db::Connection,
+    email: &str,
+    org_id: Option<i64>,
+) -> Vec<(i64, i64)> {
+    if let Some(org_id) = org_id {
+        return conn.query_map(
+            "SELECT u.id, u.organization_id FROM users u
+             JOIN organizations o ON o.id = u.organization_id
+             WHERE u.email = ?1 AND u.organization_id = ?2
+               AND u.deleted_at IS NULL AND o.status = 'active'",
+            crate::params![email, org_id],
+            |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?)),
+        );
+    }
+
+    conn.query_map(
+        "SELECT u.id, u.organization_id FROM users u
+         JOIN organizations o ON o.id = u.organization_id
+         WHERE u.email = ?1 AND u.deleted_at IS NULL AND o.status = 'active'",
+        crate::params![email],
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?)),
+    )
+}
+
+async fn issue_password_reset_otp(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    org_id: i64,
+    email: &str,
+) -> Result<(String, String), String> {
+    let otp = crate::signup_otp::generate_otp();
+    let verification_id =
+        crate::password_reset_otp::store_challenge(conn, user_id, org_id, email, &otp)?;
+    let org_name = load_organization(conn, org_id)
+        .map(|o| o.name)
+        .unwrap_or_else(|| "your organization".to_string());
+    crate::password_reset_otp::send_otp_email(conn, org_id, email, &otp, &org_name).await?;
+    let masked = crate::password_reset_otp::mask_email(email);
+    Ok((verification_id, masked))
+}
+
+/// POST /api/auth/forgot-password
+pub async fn forgot_password(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<ForgotPasswordRequest>,
+) -> HttpResponse {
+    let email = body.email.trim();
+    if email.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new("Email is required"));
+    }
+
+    if let Err(msg) = crate::rate_limit::limit_password_reset(&req, email) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    let explicit_slug = body
+        .org_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let org_id = if let Some(slug) = explicit_slug {
+        match resolve_organization_id(&conn, Some(slug)) {
+            Ok(id) => Some(id),
+            Err(msg) => {
+                return HttpResponse::BadRequest().json(ApiError::new(&msg));
+            }
+        }
+    } else {
+        None
+    };
+
+    let matches = active_users_for_email(&conn, email, org_id);
+
+    if matches.len() > 1 && org_id.is_none() {
+        return HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": FORGOT_PASSWORD_OTP_MESSAGE,
+            "requires_org_slug": true,
+        })));
+    }
+
+    let Some((user_id, matched_org_id)) = matches.into_iter().next() else {
+        if org_id.is_some() {
+            return HttpResponse::NotFound().json(ApiError::new(
+                "No account found with this email in this organization.",
+            ));
+        }
+        return HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": FORGOT_PASSWORD_OTP_MESSAGE,
+        })));
+    };
+
+    match issue_password_reset_otp(&conn, user_id, matched_org_id, email).await {
+        Ok((verification_id, masked_email)) => {
+            let mut data = serde_json::json!({
+                "message": format!("Verification code sent to {masked_email}."),
+                "verification_id": verification_id,
+                "masked_email": masked_email,
+                "account_found": true,
+            });
+            if crate::password_reset_otp::debug_enabled() {
+                data["debug_note"] = serde_json::json!("Check backend logs for OTP when SMTP debug is enabled");
+            }
+            HttpResponse::Ok().json(ApiResponse::success(data))
+        }
+        Err(e) => {
+            log::warn!("password reset OTP email failed for {}: {}", email, e);
+            // Do not reveal SMTP failures to clients (anti-enumeration + SEC-11).
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "message": FORGOT_PASSWORD_OTP_MESSAGE,
+            })))
+        }
+    }
+}
+
+/// POST /api/auth/verify-password-reset-otp
+pub async fn verify_password_reset_otp(
+    pool: web::Data<DbPool>,
+    body: web::Json<VerifyPasswordResetOtpRequest>,
+) -> HttpResponse {
+    let verification_id = body.verification_id.trim();
+    let otp = body.otp.trim();
+    if verification_id.is_empty() || otp.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new("Verification id and code are required"));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    match crate::password_reset_otp::verify_otp(&conn, verification_id, otp) {
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "verified": true,
+            "verification_id": verification_id,
+        }))),
+        Err(msg) => HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    }
+}
+
+/// POST /api/auth/reset-password
+pub async fn reset_password(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<ResetPasswordRequest>,
+) -> HttpResponse {
+    let email = body.email.as_deref().unwrap_or("").trim();
+    let verification_id = body.verification_id.as_deref().unwrap_or("").trim();
+    let token = body.token.as_deref().unwrap_or("").trim();
+
+    let rate_key = if !verification_id.is_empty() {
+        verification_id
+    } else if !email.is_empty() {
+        email
+    } else {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Verification session or reset token is required",
+        ));
+    };
+
+    if let Err(msg) = crate::rate_limit::limit_password_reset(&req, rate_key) {
+        return HttpResponse::TooManyRequests().json(ApiError::new(&msg));
+    }
+
+    if body.password.len() < 8 {
+        return HttpResponse::BadRequest().json(ApiError::new("Password must be at least 8 characters"));
+    }
+    if body.password != body.password_confirmation {
+        return HttpResponse::BadRequest().json(ApiError::new("Password confirmation does not match"));
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
+    };
+
+    let user_id = if !verification_id.is_empty() {
+        match crate::password_reset_otp::consume_verified_challenge(&conn, verification_id) {
+            Ok(id) => id,
+            Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+        }
+    } else if !email.is_empty() && !token.is_empty() {
+        match crate::password_reset::consume_token(&conn, email, token) {
+            Ok(id) => id,
+            Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+        }
+    } else {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "Verification session or reset token is required",
+        ));
+    };
+
+    let new_hash = match bcrypt::hash(&body.password, bcrypt::DEFAULT_COST) {
+        Ok(h) => h,
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to hash password"))
+        }
+    };
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if conn
+        .execute(
+            "UPDATE users SET password = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+            crate::params![&new_hash, &now, user_id],
+        )
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().json(ApiError::new("Failed to update password"));
+    }
+
+    let _ = conn.execute(
+        "UPDATE jwt_refresh_tokens SET revoked = 1 WHERE user_id = ?1 AND revoked = 0",
+        [user_id],
+    );
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "message": "Password updated successfully",
+    })))
 }

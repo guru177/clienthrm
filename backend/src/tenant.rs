@@ -4,25 +4,21 @@ use crate::models::organization::{OrganizationSummary, DEFAULT_ORG_ID};
 use crate::models::user::JwtClaims;
 
 pub fn org_id_from_claims(claims: &JwtClaims) -> i64 {
-    if claims.organization_id > 0 {
-        claims.organization_id
-    } else {
-        DEFAULT_ORG_ID
-    }
+    claims.organization_id
 }
 
-/// Resolve tenant from optional slug. Empty / missing / "default" → org 1.
+/// Resolve tenant from slug. Empty / missing / "default" is rejected — callers must supply org_slug.
 pub fn resolve_organization_id(
     conn: &Connection,
     org_slug: Option<&str>,
 ) -> Result<i64, String> {
     let slug = org_slug.unwrap_or("").trim();
     if slug.is_empty() || slug.eq_ignore_ascii_case("default") {
-        return Ok(DEFAULT_ORG_ID);
+        return Err("Organization slug is required".to_string());
     }
     conn.query_row(
         "SELECT id FROM organizations WHERE slug = ?1 AND status = 'active'",
-        [slug],
+        crate::params![slug],
         |r| r.get_idx::<i64>(0),
     )
     .map_err(|_| "Organization not found".to_string())

@@ -1,12 +1,14 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import axios from '@/lib/axios';
 import { storageUrl } from '@/lib/storage-url';
-import { Clock, LogIn, LogOut, Calendar, Timer } from 'lucide-react';
+import { Clock, LogIn, LogOut, Calendar, Timer, UserCheck } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 import AttendanceStats from '@/components/attendance/attendance-stats';
 import AttendanceTable from '@/components/attendance/attendance-table';
+import DailyAttendanceRegister from '@/components/attendance/daily-attendance-register';
+import EmployeeAttendanceLog from '@/components/attendance/employee-attendance-log';
 import ClockInFaceDialog, {
     type ClockInVerificationPayload,
 } from '@/components/attendance/clock-in-face-dialog';
@@ -17,14 +19,21 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import { usePermissions } from '@/hooks/use-permissions';
+import { useAttendanceStats } from '@/hooks/use-attendance-stats';
+import { isModuleAllowed } from '@/lib/plan-modules';
 import { type SharedData } from '@/types';
 
 export default function AttendancePage() {
-    const { user } = useAuth();
+    const { user, planModules } = useAuth();
     const { hasPermission } = usePermissions();
+    const canManage = hasPermission('manage-attendance');
     const navigate = useNavigate();
+    const canClockIn = hasPermission('clock-inout');
+    const canMarkManual =
+        isModuleAllowed(planModules, 'manual_attendance') &&
+        (hasPermission('mark-attendance') || hasPermission('manage-attendance'));
     const [todayData, setTodayData] = useState<any>(null);
-    const [stats, setStats] = useState<any>(null);
+    const { stats, loading: statsLoading, reload: reloadStats } = useAttendanceStats('all');
     const [loading, setLoading] = useState(true);
     const [clockingIn, setClockingIn] = useState(false);
     const [clockingOut, setClockingOut] = useState(false);
@@ -58,13 +67,9 @@ export default function AttendancePage() {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [todayRes, statsRes] = await Promise.all([
-                axios.get('/admin/attendance/today'),
-                axios.get('/admin/attendance/stats'),
-            ]);
-
+            const todayRes = await axios.get('/admin/attendance/today');
             setTodayData(todayRes.data.data);
-            setStats(statsRes.data.data);
+            await reloadStats();
         } catch (error) {
             handleApiError(error);
         } finally {
@@ -170,11 +175,21 @@ export default function AttendancePage() {
                             Track your daily clock-in and clock-out times
                         </p>
                     </div>
-                    {hasPermission('view-leave-requests') && (
-                        <Button variant="outline" onClick={() => navigate('/admin/leave-requests')}>
-                            Leave Requests
-                        </Button>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                        {hasPermission('view-leave-requests') && (
+                            <Button variant="outline" onClick={() => navigate('/admin/leave-requests')}>
+                                Leave Requests
+                            </Button>
+                        )}
+                        {canMarkManual && (
+                            <Button variant="outline" asChild>
+                                <Link to="/admin/manual-attendance">
+                                    <UserCheck className="mr-2 h-4 w-4" />
+                                    Mark attendance
+                                </Link>
+                            </Button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Today's Attendance Card */}
@@ -324,6 +339,7 @@ export default function AttendancePage() {
                             </div>
 
                             {/* Action Buttons */}
+                            {canClockIn && (
                             <div className="flex gap-3">
                                 <Button
                                     onClick={() => setClockInOpen(true)}
@@ -349,19 +365,49 @@ export default function AttendancePage() {
                                     {clockingOut ? 'Clocking Out...' : 'Clock Out'}
                                 </Button>
                             </div>
+                            )}
                         </div>
                     </CardContent>
                 </Card>
 
                 {/* Tabs */}
                 <Tabs defaultValue="statistics" className="w-full">
-                    <TabsList className="grid w-full grid-cols-2">
+                    <TabsList className="grid w-full grid-cols-2 lg:grid-cols-4 h-auto">
                         <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                        <TabsTrigger value="daily">Daily Register</TabsTrigger>
+                        <TabsTrigger value="employee-log">Employee Log</TabsTrigger>
                         <TabsTrigger value="history">History</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="statistics" className="space-y-4">
-                        <AttendanceStats stats={stats} />
+                        <AttendanceStats
+                            stats={stats}
+                            loading={statsLoading}
+                            title="Attendance statistics"
+                        />
+                        {!canManage && (
+                            <p className="text-sm text-muted-foreground">
+                                You see only your own attendance. HR managers with{' '}
+                                <code className="rounded bg-muted px-1">manage-attendance</code> see
+                                organization totals.
+                            </p>
+                        )}
+                    </TabsContent>
+
+                    <TabsContent value="daily" className="space-y-4">
+                        {canManage ? (
+                            <DailyAttendanceRegister />
+                        ) : (
+                            <Card>
+                                <CardContent className="py-8 text-center text-muted-foreground">
+                                    Daily register is available to attendance managers.
+                                </CardContent>
+                            </Card>
+                        )}
+                    </TabsContent>
+
+                    <TabsContent value="employee-log" className="space-y-4">
+                        <EmployeeAttendanceLog />
                     </TabsContent>
 
                     <TabsContent value="history" className="space-y-4">

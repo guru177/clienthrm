@@ -1,8 +1,7 @@
 use crate::db::Connection;
 use crate::models::organization::SignupRequest;
 use lettre::message::MultiPart;
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, SmtpTransport, Transport};
+use lettre::Message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -210,38 +209,22 @@ fn mask_destination(channel: &str, destination: &str) -> String {
 }
 
 pub async fn send_email_otp(to: &str, otp: &str) -> Result<(), String> {
-    let smtp_host = std::env::var("SMTP_HOST").unwrap_or_default();
-    if smtp_host.is_empty() {
-        if signup_otp_debug_enabled() {
-            log::warn!("SMTP_HOST unset — signup OTP email not sent (debug mode)");
-            return Ok(());
+    let smtp = match crate::smtp_config::resolve_from_env() {
+        Some(c) => c,
+        None => {
+            if signup_otp_debug_enabled() {
+                log::warn!("SMTP unset — signup OTP email not sent (debug mode)");
+                return Ok(());
+            }
+            return Err("Email OTP is not configured (set SMTP in .env)".to_string());
         }
-        return Err("Email OTP is not configured (set SMTP_HOST in backend .env)".to_string());
-    }
-
-    let smtp_user = std::env::var("SMTP_USER").unwrap_or_default();
-    let smtp_pass = std::env::var("SMTP_PASSWORD")
-        .or_else(|_| std::env::var("SMTP_PASS"))
-        .unwrap_or_default();
-    let smtp_port = std::env::var("SMTP_PORT")
-        .unwrap_or_else(|_| "587".to_string())
-        .parse::<u16>()
-        .unwrap_or(587);
-    let smtp_from = std::env::var("SMTP_FROM")
-        .unwrap_or_else(|_| smtp_user.clone())
-        .trim()
-        .to_string();
-    let from_addr = if smtp_from.is_empty() {
-        "no-reply@hrm.local".to_string()
-    } else {
-        smtp_from
     };
 
     let (plain_body, html_body) =
         crate::signup_otp_email::render_signup_otp_email(otp, to);
 
     let email_message = Message::builder()
-        .from(from_addr.parse().map_err(|_| "Invalid SMTP_FROM".to_string())?)
+        .from(smtp.from_mailbox().map_err(|_| "Invalid SMTP_FROM".to_string())?)
         .to(to.parse().map_err(|_| "Invalid email address".to_string())?)
         .subject(format!(
             "{} — Your verification code",
@@ -250,22 +233,11 @@ pub async fn send_email_otp(to: &str, otp: &str) -> Result<(), String> {
         .multipart(MultiPart::alternative_plain_html(plain_body, html_body))
         .map_err(|_| "Failed to build email".to_string())?;
 
-    let creds = Credentials::new(smtp_user, smtp_pass);
-    let mailer = SmtpTransport::starttls_relay(&smtp_host)
-        .map_err(|e| format!("SMTP relay error: {e}"))?
-        .credentials(creds)
-        .port(smtp_port)
-        .build();
-
-    web_send(mailer, email_message).await
-}
-
-async fn web_send(mailer: SmtpTransport, email_message: Message) -> Result<(), String> {
-    let result = actix_web::web::block(move || mailer.send(&email_message)).await;
+    let result = actix_web::web::block(move || smtp.send(&email_message)).await;
     match result {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(format!("SMTP send failed: {e}")),
-        Err(_) => Err("Failed to execute SMTP task".to_string()),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(format!("Email task failed: {e}")),
     }
 }
 

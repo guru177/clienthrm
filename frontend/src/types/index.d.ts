@@ -1,13 +1,34 @@
 import { LucideIcon } from 'lucide-react';
 
+export interface DesktopUpdateEvent {
+    status:
+        | 'checking'
+        | 'available'
+        | 'not-available'
+        | 'download-progress'
+        | 'downloaded'
+        | 'error';
+    version?: string;
+    releaseNotes?: string;
+    percent?: number;
+    message?: string;
+}
+
 export interface ElectronApi {
     isElectron?: boolean;
+    getApiBase?: () => string;
+    getAppVersion?: () => Promise<string>;
+    setApiBase?: (url: string) => Promise<boolean>;
+    checkForUpdates?: () => Promise<unknown>;
+    downloadUpdate?: () => Promise<unknown>;
+    installUpdate?: () => Promise<unknown>;
     showNotification?: (options: {
         title: string;
         body: string;
         tag?: string;
     }) => Promise<boolean>;
     onNotificationClick?: (callback: (payload: { tag?: string }) => void) => () => void;
+    onDesktopUpdate?: (callback: (payload: DesktopUpdateEvent) => void) => () => void;
     openExternal?: (url: string) => Promise<boolean>;
     send?: (channel: string, data: unknown) => void;
     receive?: (channel: string, func: (...args: unknown[]) => void) => void;
@@ -72,10 +93,10 @@ export interface User {
     email: string;
     avatar?: string;
     photo?: string;
-    email_verified_at: string | null;
+    email_verified_at?: string | null;
     two_factor_enabled?: boolean;
     roles?: Role[];
-    created_at: string;
-    updated_at: string;
+    created_at?: string;
+    updated_at?: string;
     [key: string]: any;
 }

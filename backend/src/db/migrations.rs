@@ -41,6 +41,72 @@ fn add_organization_id_column(conn: &rusqlite::Connection, table: &str) {
     }
 }
 
+fn migrate_payslip_generated_status(conn: &rusqlite::Connection) {
+    if !table_exists(conn, "payslips") {
+        return;
+    }
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='payslips'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    if sql.contains("'generated'") {
+        return;
+    }
+    log::info!("Migrating payslips.status CHECK to allow 'generated'");
+    let _ = conn.execute_batch(
+        "
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE payslips_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            working_days INTEGER NOT NULL DEFAULT 0,
+            present_days INTEGER NOT NULL DEFAULT 0,
+            leave_days INTEGER NOT NULL DEFAULT 0,
+            holiday_days INTEGER NOT NULL DEFAULT 0,
+            basic_salary NUMERIC NOT NULL DEFAULT 0,
+            hra NUMERIC NOT NULL DEFAULT 0,
+            transport_allowance NUMERIC NOT NULL DEFAULT 0,
+            other_allowances NUMERIC NOT NULL DEFAULT 0,
+            gross_salary NUMERIC NOT NULL DEFAULT 0,
+            lop_deduction NUMERIC NOT NULL DEFAULT 0,
+            pf_deduction NUMERIC NOT NULL DEFAULT 0,
+            esi_deduction NUMERIC NOT NULL DEFAULT 0,
+            tds NUMERIC NOT NULL DEFAULT 0,
+            total_deductions NUMERIC NOT NULL DEFAULT 0,
+            net_salary NUMERIC NOT NULL DEFAULT 0,
+            status VARCHAR CHECK (status IN ('draft', 'generated', 'approved', 'paid')) NOT NULL DEFAULT 'draft',
+            generated_at DATETIME,
+            created_at DATETIME,
+            updated_at DATETIME,
+            adjustments TEXT,
+            download_token VARCHAR,
+            token_expires_at DATETIME,
+            shift_penalty REAL DEFAULT 0,
+            lop_basic REAL DEFAULT 0,
+            lop_hra REAL DEFAULT 0,
+            lop_transport REAL DEFAULT 0,
+            lop_other REAL DEFAULT 0,
+            prof_tax REAL DEFAULT 0,
+            advance_deduction REAL DEFAULT 0,
+            lw_employee REAL DEFAULT 0,
+            payroll_detail TEXT,
+            organization_id INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO payslips_new SELECT * FROM payslips;
+        DROP TABLE payslips;
+        ALTER TABLE payslips_new RENAME TO payslips;
+        CREATE UNIQUE INDEX IF NOT EXISTS payslips_user_id_month_year_unique ON payslips(user_id, month, year);
+        CREATE UNIQUE INDEX IF NOT EXISTS payslips_download_token_unique ON payslips(download_token);
+        PRAGMA foreign_keys=ON;
+        ",
+    );
+}
+
 fn migrate_app_settings_org_scope(conn: &rusqlite::Connection) {
     if !table_exists(conn, "app_settings") {
         return;
@@ -71,6 +137,25 @@ fn migrate_app_settings_org_scope(conn: &rusqlite::Connection) {
         ",
     );
     log::info!("Migrated app_settings to organization-scoped keys");
+}
+
+fn add_integer_column_if_missing(conn: &rusqlite::Connection, table: &str, column: &str, default: i64) {
+    if !table_exists(conn, table) || column_exists(conn, table, column) {
+        return;
+    }
+    let sql = format!(
+        "ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}"
+    );
+    if let Err(e) = conn.execute(&sql, []) {
+        log::warn!("Could not add {column} to {table}: {e}");
+    } else {
+        log::info!("Added {column} to {table}");
+    }
+}
+
+fn migrate_department_status_columns(conn: &rusqlite::Connection) {
+    add_integer_column_if_missing(conn, "departments", "is_active", 1);
+    add_integer_column_if_missing(conn, "designations", "is_active", 1);
 }
 
 fn add_text_column_if_missing(conn: &rusqlite::Connection, table: &str, column: &str) {
@@ -828,6 +913,14 @@ pub fn run_sqlite_migrations(pool: &DbPool) {
     crate::subscription_period::backfill_org_subscriptions(&db);
     crate::plan_limits::seed_all_permissions(&db);
     crate::role_defaults::sync_role_defaults(&db);
+    migrate_payslip_generated_status(conn);
+    migrate_password_reset_tokens(conn);
+    migrate_advanced_payroll(conn);
+    migrate_user_totp(conn);
+    migrate_leave_type_quota_days(conn);
+    migrate_platform_release_desktop_installer(conn);
+    migrate_department_status_columns(conn);
+    crate::db::scalability::apply_scalability_indexes(&db);
 
     log::info!("✅ Database migrations completed");
 }
@@ -1418,7 +1511,7 @@ fn migrate_chat_module(conn: &rusqlite::Connection) {
         for org_id in org_ids {
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO app_settings (organization_id, key, value, type, description, created_at, updated_at)
-                 VALUES (?1, 'shift_penalty_half_day_factor', '0.5', 'number', 'Half-day wage factor per late/early attendance mark', datetime('now'), datetime('now'))",
+                 VALUES (?1, 'shift_penalty_half_day_factor', '0.5', 'number', 'Reference factor for suggested late/early penalty (manual deduction at payroll)', datetime('now'), datetime('now'))",
                 [org_id],
             );
             let _ = conn.execute(
@@ -1473,4 +1566,290 @@ fn migrate_chat_module(conn: &rusqlite::Connection) {
         ",
     );
 
+}
+
+/// Replace legacy Laravel `password_reset_tokens` (email/token PK) with Rust self-service schema.
+fn migrate_password_reset_tokens(conn: &rusqlite::Connection) {
+    if table_exists(conn, "password_reset_tokens")
+        && !column_exists(conn, "password_reset_tokens", "user_id")
+    {
+        log::info!("Replacing legacy password_reset_tokens table for self-service reset");
+        let _ = conn.execute("DROP TABLE password_reset_tokens", []);
+    }
+
+    let _ = conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);
+        CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at);
+
+        CREATE TABLE IF NOT EXISTS password_reset_otp_challenges (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            email TEXT NOT NULL,
+            otp_hash TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT NOT NULL,
+            verified_at TEXT,
+            reset_expires_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_reset_otp_user ON password_reset_otp_challenges(user_id);
+        CREATE INDEX IF NOT EXISTS idx_password_reset_otp_expires ON password_reset_otp_challenges(expires_at);
+        ",
+    );
+}
+
+/// Advanced payroll: OT, variable pay, reimbursements, runs, TDS, pay groups, bank details.
+fn migrate_advanced_payroll(conn: &rusqlite::Connection) {
+    for (table, col, ddl) in [
+        ("users", "payroll_hold", "ALTER TABLE users ADD COLUMN payroll_hold INTEGER NOT NULL DEFAULT 0"),
+        ("users", "payroll_hold_reason", "ALTER TABLE users ADD COLUMN payroll_hold_reason TEXT"),
+        ("users", "payroll_hold_until", "ALTER TABLE users ADD COLUMN payroll_hold_until TEXT"),
+        ("users", "pay_group_id", "ALTER TABLE users ADD COLUMN pay_group_id INTEGER"),
+        ("users", "bank_account", "ALTER TABLE users ADD COLUMN bank_account TEXT"),
+        ("users", "bank_ifsc", "ALTER TABLE users ADD COLUMN bank_ifsc TEXT"),
+        ("users", "bank_account_holder", "ALTER TABLE users ADD COLUMN bank_account_holder TEXT"),
+        ("users", "work_state", "ALTER TABLE users ADD COLUMN work_state TEXT"),
+        ("users", "tax_regime", "ALTER TABLE users ADD COLUMN tax_regime TEXT DEFAULT 'new'"),
+        ("payslips", "payroll_run_id", "ALTER TABLE payslips ADD COLUMN payroll_run_id INTEGER"),
+        ("payslips", "payment_status", "ALTER TABLE payslips ADD COLUMN payment_status TEXT DEFAULT 'pending'"),
+        ("payslips", "ot_hours", "ALTER TABLE payslips ADD COLUMN ot_hours REAL DEFAULT 0"),
+        ("payslips", "ot_amount", "ALTER TABLE payslips ADD COLUMN ot_amount REAL DEFAULT 0"),
+        ("payslips", "variable_pay_amount", "ALTER TABLE payslips ADD COLUMN variable_pay_amount REAL DEFAULT 0"),
+        ("payslips", "reimbursement_amount", "ALTER TABLE payslips ADD COLUMN reimbursement_amount REAL DEFAULT 0"),
+        ("payslips", "arrears_amount", "ALTER TABLE payslips ADD COLUMN arrears_amount REAL DEFAULT 0"),
+        ("payslips", "employer_cost_json", "ALTER TABLE payslips ADD COLUMN employer_cost_json TEXT"),
+    ] {
+        if table_exists(conn, table) && !column_exists(conn, table, col) {
+            let _ = conn.execute(ddl, []);
+        }
+    }
+
+    let _ = conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS payroll_variable_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            item_type TEXT NOT NULL,
+            label TEXT NOT NULL,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'approved',
+            notes TEXT,
+            created_by INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_payroll_var_org_period ON payroll_variable_items(organization_id, year, month);
+        CREATE INDEX IF NOT EXISTS idx_payroll_var_user ON payroll_variable_items(user_id, year, month);
+
+        CREATE TABLE IF NOT EXISTS reimbursement_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            salary_component_id INTEGER,
+            claim_month INTEGER NOT NULL,
+            claim_year INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            amount REAL NOT NULL,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            review_notes TEXT,
+            payroll_month INTEGER,
+            payroll_year INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reimb_claim_user ON reimbursement_claims(user_id, status);
+        CREATE INDEX IF NOT EXISTS idx_reimb_claim_org ON reimbursement_claims(organization_id, claim_year, claim_month);
+
+        CREATE TABLE IF NOT EXISTS payroll_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            run_type TEXT NOT NULL DEFAULT 'monthly',
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            pay_group_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'draft',
+            prepared_by INTEGER,
+            reviewed_by INTEGER,
+            approved_by INTEGER,
+            released_by INTEGER,
+            prepared_at TEXT,
+            reviewed_at TEXT,
+            approved_at TEXT,
+            released_at TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_payroll_runs_org ON payroll_runs(organization_id, year, month);
+
+        CREATE TABLE IF NOT EXISTS payroll_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            payroll_run_id INTEGER,
+            actor_user_id INTEGER,
+            action TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS employee_tax_declarations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            financial_year TEXT NOT NULL,
+            regime TEXT NOT NULL DEFAULT 'new',
+            declarations_json TEXT NOT NULL DEFAULT '{}',
+            hra_rent_paid REAL DEFAULT 0,
+            hra_metro INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, financial_year)
+        );
+
+        CREATE TABLE IF NOT EXISTS pt_slabs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            state_code TEXT NOT NULL,
+            state_name TEXT NOT NULL,
+            min_gross REAL NOT NULL DEFAULT 0,
+            max_gross REAL,
+            monthly_tax REAL NOT NULL,
+            effective_from TEXT,
+            UNIQUE(state_code, min_gross)
+        );
+
+        CREATE TABLE IF NOT EXISTS pay_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS employee_exit_settlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            exit_date TEXT NOT NULL,
+            leave_encashment REAL DEFAULT 0,
+            gratuity_estimate REAL DEFAULT 0,
+            notice_pay REAL DEFAULT 0,
+            other_earnings REAL DEFAULT 0,
+            recoveries REAL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            payroll_run_id INTEGER,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    );
+
+    // Seed default PT slabs for common Indian states (flat monthly amounts simplified)
+    let pt_seed: &[(&str, &str, f64, Option<f64>, f64)] = &[
+        ("KA", "Karnataka", 0.0, Some(15000.0), 200.0),
+        ("KA", "Karnataka", 15000.0, None, 200.0),
+        ("MH", "Maharashtra", 0.0, Some(7500.0), 0.0),
+        ("MH", "Maharashtra", 7500.0, Some(10000.0), 175.0),
+        ("MH", "Maharashtra", 10000.0, None, 200.0),
+        ("TN", "Tamil Nadu", 0.0, Some(21000.0), 0.0),
+        ("TN", "Tamil Nadu", 21000.0, None, 200.0),
+        ("DL", "Delhi", 0.0, None, 0.0),
+    ];
+    for (code, name, min_g, max_g, tax) in pt_seed {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO pt_slabs (state_code, state_name, min_gross, max_gross, monthly_tax)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![code, name, min_g, max_g, tax],
+        );
+    }
+
+    let payroll_perms = [
+        ("Approve Payroll", "approve-payroll", "Approve payroll runs before generation", "Payroll"),
+    ];
+    for (name, slug, desc, perm_group) in payroll_perms {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO permissions (name, slug, description, \"group\", created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+            rusqlite::params![name, slug, desc, perm_group],
+        );
+    }
+
+    let settings = [
+        ("ot_rate_multiplier", "1.5", "Overtime rate multiplier on hourly wage"),
+        ("ot_holiday_multiplier", "2.0", "Overtime multiplier on holidays"),
+        ("ot_basis", "basic", "OT wage basis: basic or gross"),
+        ("payroll_require_approval", "0", "Require approval before payroll generate (0/1)"),
+        ("payroll_reminder_day", "25", "Day of month to remind HR if payroll not run"),
+    ];
+    for (key, value, desc) in settings {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO app_settings (organization_id, key, value, description, created_at, updated_at)
+             SELECT o.id, ?1, ?2, ?3, datetime('now'), datetime('now') FROM organizations o
+             WHERE NOT EXISTS (
+               SELECT 1 FROM app_settings a WHERE a.organization_id = o.id AND a.key = ?1
+             )",
+            rusqlite::params![key, value, desc],
+        );
+    }
+
+    log::info!("Advanced payroll migration applied");
+}
+
+fn migrate_user_totp(conn: &rusqlite::Connection) {
+    if !table_exists(conn, "users") {
+        return;
+    }
+    if !column_exists(conn, "users", "totp_secret") {
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT", []);
+    }
+    if !column_exists(conn, "users", "totp_enabled") {
+        let _ = conn.execute(
+            "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+    if !column_exists(conn, "users", "totp_recovery_codes") {
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_recovery_codes TEXT", []);
+    }
+}
+
+fn migrate_leave_type_quota_days(conn: &rusqlite::Connection) {
+    if !table_exists(conn, "leave_types") {
+        return;
+    }
+    if !column_exists(conn, "leave_types", "quota_days") {
+        let _ = conn.execute("ALTER TABLE leave_types ADD COLUMN quota_days INTEGER", []);
+        log::info!("Added quota_days to leave_types");
+    }
+}
+
+fn migrate_platform_release_desktop_installer(conn: &rusqlite::Connection) {
+    if !table_exists(conn, "platform_releases") {
+        return;
+    }
+    if !column_exists(conn, "platform_releases", "desktop_installer") {
+        let _ = conn.execute(
+            "ALTER TABLE platform_releases ADD COLUMN desktop_installer TEXT",
+            [],
+        );
+        log::info!("Added desktop_installer to platform_releases");
+    }
 }

@@ -7,6 +7,7 @@ import { setToken, setRefreshToken, apiPost } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 
 import { Label } from '@/components/ui/label';
 
@@ -224,12 +225,18 @@ export default function Signup() {
         return null;
     }
 
-    async function checkAvailability(payload: { org_slug?: string; admin_email?: string }) {
+    async function checkAvailability(payload: {
+        org_slug?: string;
+        company_email?: string;
+        admin_email?: string;
+    }) {
         await apiPost<{ available: boolean }>('/public/signup/check-availability', payload);
     }
 
     const duplicateEmailError =
-        error.includes('work email already exists') || error.includes('already exists. Sign in');
+        error.includes('work email already exists') ||
+        error.includes('company email is already registered') ||
+        error.includes('already exists. Sign in');
 
 
 
@@ -248,7 +255,10 @@ export default function Signup() {
         const normalizedSlug = normalizeOrgSlug(form.orgSlug);
         setCheckingAvailability(true);
         try {
-            await checkAvailability({ org_slug: normalizedSlug });
+            await checkAvailability({
+                org_slug: normalizedSlug,
+                company_email: form.companyEmail.trim(),
+            });
             setForm((prev) => ({ ...prev, orgSlug: normalizedSlug }));
             setStep(2);
         } catch (err: unknown) {
@@ -785,11 +795,9 @@ export default function Signup() {
 
                             <Label htmlFor="admin_password">Password</Label>
 
-                            <Input
+                            <PasswordInput
 
                                 id="admin_password"
-
-                                type="password"
 
                                 value={form.adminPassword}
 
@@ -809,11 +817,9 @@ export default function Signup() {
 
                             <Label htmlFor="confirm_password">Confirm password</Label>
 
-                            <Input
+                            <PasswordInput
 
                                 id="confirm_password"
-
-                                type="password"
 
                                 value={form.confirmPassword}
 

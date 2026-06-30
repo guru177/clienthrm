@@ -5,7 +5,7 @@ use crate::middleware::auth::get_claims_from_request_or_query;
 use crate::models::ApiError;
 use crate::storage::{
     can_access_storage_file, default_profile_avatar_svg, is_announcement_banner,
-    is_user_profile_photo, mime_for_path, resolve_storage_file,
+    is_org_notification_banner, is_user_profile_photo, mime_for_path, resolve_storage_file,
 };
 use crate::tenant::verify_tenant_session;
 
@@ -70,7 +70,7 @@ pub async fn platform_serve(req: HttpRequest, path: web::Path<String>) -> HttpRe
     };
 
     let relative = path.into_inner();
-    if !is_announcement_banner(&relative) {
+    if !is_announcement_banner(&relative) && !is_org_notification_banner(&relative) {
         return HttpResponse::Forbidden().json(ApiError::new("Not allowed to access this file"));
     }
 

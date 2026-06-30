@@ -1,0 +1,5 @@
+{
+  "apiBase": "https://hrm.example.com",
+  "tenantAppUrl": "https://hrm.example.com",
+  "platformAppUrl": "https://platform.example.com"
+}

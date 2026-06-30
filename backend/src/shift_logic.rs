@@ -212,6 +212,7 @@ pub fn user_is_scheduled_working_day(conn: &Connection, user_id: i64, date: &str
             return false;
         }
         if daily_shift.is_some() {
+            // Explicit daily roster entry with a shift = scheduled to work that calendar day.
             return true;
         }
     }
@@ -355,7 +356,7 @@ fn consolidate_duplicate_general_shifts_for_org(conn: &crate::db::Connection, or
     let dup_ids: Vec<i64> = match conn.prepare(
         "SELECT id FROM shift_templates WHERE organization_id = ?1 AND LOWER(name) = 'general' AND id != ?2",
     ) {
-        Ok(mut stmt) => stmt
+        Ok(stmt) => stmt
             .query_map(crate::params![org_id, default_id], |row| row.get_idx::<i64>(0)),
         Err(_) => return,
     };
@@ -381,7 +382,7 @@ fn consolidate_duplicate_general_shifts_for_org(conn: &crate::db::Connection, or
 pub fn backfill_general_shift_assignments(conn: &crate::db::Connection) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT u.id, COALESCE(NULLIF(u.date_of_joining, ''), substr(u.created_at, 1, 10), ?1)
          FROM users u
          WHERE u.deleted_at IS NULL
@@ -537,6 +538,32 @@ pub fn is_early_departure(
     }
 }
 
+/// Late flag respecting roster day-off (no penalty on scheduled off-days).
+pub fn late_for_shift(shift: &ShiftConfig, clock_in: &str) -> bool {
+    if shift.is_day_off {
+        return false;
+    }
+    is_late_arrival(
+        clock_in,
+        &shift.start_time,
+        &shift.end_time,
+        shift.grace_in_minutes,
+    )
+}
+
+/// Early-exit flag respecting roster day-off.
+pub fn early_for_shift(shift: &ShiftConfig, clock_out: &str) -> bool {
+    if shift.is_day_off {
+        return false;
+    }
+    is_early_departure(
+        clock_out,
+        &shift.start_time,
+        &shift.end_time,
+        shift.grace_out_minutes,
+    )
+}
+
 /// Close open sessions before a new clock-in (manual or biometric).
 pub fn close_open_sessions(
     conn: &crate::db::Connection,
@@ -546,7 +573,7 @@ pub fn close_open_sessions(
     updated_at: &str,
     shift: &ShiftConfig,
 ) {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, clock_in FROM attendance WHERE user_id=?1 AND date=?2 AND clock_out IS NULL AND deleted_at IS NULL",
     ) {
         Ok(s) => s,

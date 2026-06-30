@@ -102,7 +102,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT st.id, st.name, st.start_time, st.end_time, st.grace_in_minutes, st.grace_out_minutes,
                 st.is_active, st.is_default, COALESCE(st.working_days_mask, 31) AS working_days_mask,
                 st.created_at, st.updated_at,
@@ -484,7 +484,7 @@ pub async fn roster(
     let mut all_users: Vec<(i64, String, Option<String>, Option<String>)> = match conn.prepare(
         "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name",
     ) {
-        Ok(mut stmt) => stmt
+        Ok(stmt) => stmt
             .query_map([org_id], |row| {
                 Ok((
                     row.get_idx::<i64>(0)?,
@@ -621,7 +621,7 @@ pub async fn daily_roster_show(
 
     let mut overrides: std::collections::HashMap<(i64, String), (Option<i64>, bool, Option<String>)> =
         std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(stmt) = conn.prepare(
         "SELECT sdr.user_id, sdr.roster_date, sdr.shift_template_id, COALESCE(sdr.is_day_off, 0), st.name
          FROM shift_daily_roster sdr
          JOIN users u ON u.id = sdr.user_id

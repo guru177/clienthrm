@@ -29,6 +29,8 @@ pub struct PayrollGenerateRequest {
     pub year: i32,
     pub payslip_ids: Vec<i64>,
     pub common_adjustments: Option<Vec<serde_json::Value>>,
+    /// When true, email each successfully generated payslip to the employee.
+    pub send_emails: Option<bool>,
 }
 
 fn fetch_user_base(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> Option<serde_json::Value> {
@@ -52,22 +54,58 @@ fn fetch_user_base(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> O
     .ok()
 }
 
+/// Sync unprocessed biometric punches for the payroll month (includes +1 day for overnight clock-outs).
+pub fn prepare_attendance_for_payroll(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    month: i32,
+    year: i32,
+) {
+    let cal_days = payroll_logic::calendar_days_in_month(month, year);
+    let start = format!("{}-{:02}-01", year, month);
+    let end = format!("{}-{:02}-{}", year, month, cal_days);
+    let end_extended = chrono::NaiveDate::parse_from_str(&end, "%Y-%m-%d")
+        .map(|d| (d + chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+        .unwrap_or(end);
+    crate::handlers::biometric::sync_org_biometric_punches_between(conn, org_id, &start, &end_extended);
+}
+
 pub fn build_employee_payroll(
     conn: &crate::db::Connection,
     user_id: i64,
     org_id: i64,
     month: i32,
     year: i32,
+    month_ctx: Option<&crate::payroll_month_context::MonthContext>,
 ) -> Option<serde_json::Value> {
     let mut emp = fetch_user_base(conn, user_id, org_id)?;
-    let working_days = payroll_logic::working_days_for_user(conn, user_id, month, year);
-    let present_days = payroll_logic::employee_present_business_days(conn, user_id, month, year);
-    let leave_days = payroll_logic::employee_leave_business_days(conn, user_id, month, year);
-    let paid_holidays = payroll_logic::paid_holidays_for_user(conn, user_id, month, year);
+    let (working_days, present_days, leave_days, paid_holidays) =
+        if let Some(ctx) = month_ctx {
+            let (a_start, a_end) = ctx.active_range(user_id);
+            let working = if a_end < a_start {
+                0
+            } else {
+                ctx.working_days_between(user_id, a_start, a_end)
+            };
+            let present = ctx.present_dates(user_id, a_start, a_end).len() as i64;
+            let leave = ctx.approved_leave_dates(user_id, a_start, a_end).len() as i64;
+            let holidays = ctx.paid_holiday_dates(user_id, a_start, a_end).len() as i64;
+            (working, present, leave, holidays)
+        } else {
+            (
+                payroll_logic::working_days_for_user(conn, user_id, month, year),
+                payroll_logic::employee_present_business_days(conn, user_id, month, year),
+                payroll_logic::employee_leave_business_days(conn, user_id, month, year),
+                payroll_logic::paid_holidays_for_user(conn, user_id, month, year),
+            )
+        };
     let cal_days = payroll_logic::calendar_days_in_month(month, year);
     let month_end = format!("{}-{:02}-{}", year, month, cal_days);
 
-    let obj = emp.as_object_mut().unwrap();
+    let obj = match emp.as_object_mut() {
+        Some(o) => o,
+        None => return Some(emp),
+    };
     obj.insert("working_days".to_string(), serde_json::json!(working_days));
     obj.insert("calendar_days".to_string(), serde_json::json!(cal_days));
     obj.insert("present_days".to_string(), serde_json::json!(present_days));
@@ -89,8 +127,19 @@ pub fn build_employee_payroll(
         serde_json::json!(salary.effective_from),
     );
     let lop_base = salary.lop_gross();
-    let (lop, lop_breakdown) =
-        payroll_logic::lop_amount_for_user_month(conn, user_id, month, year, working_days);
+    let (lop, lop_breakdown) = if let Some(ctx) = month_ctx {
+        let lop_days = ctx.total_lop_days(user_id);
+        let working_divisor = working_days.max(1) as f64;
+        if lop_days <= 0.0 {
+            (0.0, payroll_logic::LopBreakdown::default())
+        } else {
+            let breakdown =
+                payroll_logic::component_lop_breakdown(&salary, lop_days, working_divisor);
+            (breakdown.total, breakdown)
+        }
+    } else {
+        payroll_logic::lop_amount_for_user_month(conn, user_id, month, year, working_days)
+    };
     let lop_days = lop_breakdown.days;
 
     let basic_after_lop = crate::salary_split::round2((salary.basic - lop_breakdown.basic).max(0.0));
@@ -116,12 +165,47 @@ pub fn build_employee_payroll(
     let statutory_cfg = crate::statutory_logic::load_statutory_config(conn, org_id);
     let advance = crate::statutory_logic::advance_emi_for_month(conn, user_id);
 
+    let (penalty_days, suggested_shift_penalty) =
+        crate::salary_logic::suggested_shift_penalty_for_month(
+            conn,
+            user_id,
+            org_id,
+            month,
+            year,
+            lop_base,
+            working_days,
+        );
+    // Penalties are applied manually at payroll generation (excuses / HR discretion).
+    let shift_penalty = 0.0;
+
+    let ot = crate::overtime_logic::overtime_for_user_month(
+        conn,
+        user_id,
+        org_id,
+        month,
+        year,
+        salary.basic,
+        gross,
+        working_days,
+    );
+    let (variable_pay, variable_items) =
+        crate::payroll_extras::sum_variable_pay(conn, user_id, org_id, month, year);
+    let reimbursement =
+        crate::payroll_extras::sum_approved_reimbursements(conn, user_id, org_id, month, year);
+    let arrears = crate::arrears_logic::arrears_for_user(conn, user_id, org_id, month, year);
+    let extra_earnings = ot.amount + variable_pay + reimbursement + arrears.amount;
+    let gross_with_extras = crate::salary_split::round2(gross + extra_earnings);
+    let gross_after_lop_with_extras =
+        crate::salary_split::round2(gross_after_lop + extra_earnings);
+
+    let (on_hold, hold_reason) = crate::payroll_extras::is_payroll_hold(conn, user_id);
+
     let deduction_lines = if use_component_deductions {
         crate::salary_split::build_payroll_deduction_lines(
             &comp,
             &statutory_cfg,
             basic_after_lop,
-            gross_after_lop,
+            gross_after_lop_with_extras,
             advance,
             pf_applicable,
             esi_applicable,
@@ -130,7 +214,7 @@ pub fn build_employee_payroll(
         Vec::new()
     };
 
-    let statutory = if use_component_deductions {
+    let mut statutory = if use_component_deductions {
         crate::salary_split::statutory_result_from_lines(&deduction_lines)
     } else {
         crate::statutory_logic::StatutoryResult {
@@ -141,6 +225,37 @@ pub fn build_employee_payroll(
             ..Default::default()
         }
     };
+
+    let work_state: String = conn
+        .query_row(
+            "SELECT COALESCE(work_state, work_location, '') FROM users WHERE id = ?1",
+            [user_id],
+            |r| r.get_idx::<String>(0),
+        )
+        .unwrap_or_default();
+    if !work_state.is_empty() {
+        let pt = crate::tds_logic::pt_for_state(conn, &work_state, gross_after_lop_with_extras);
+        if pt > 0.0 {
+            statutory.prof_tax = pt;
+        }
+    }
+    let tds_calc = crate::tds_logic::compute_monthly_tds(
+        conn,
+        user_id,
+        month,
+        year,
+        gross_after_lop_with_extras,
+        basic_after_lop,
+    );
+    if tds_calc.monthly_tds > 0.0 {
+        statutory.other_deductions = tds_calc.monthly_tds;
+    }
+    statutory.total_employee = statutory.pf_employee
+        + statutory.esi_employee
+        + statutory.prof_tax
+        + statutory.lw_employee
+        + statutory.advance
+        + statutory.other_deductions;
 
     let total_deductions = if use_component_deductions {
         statutory.total_employee + lop
@@ -182,34 +297,70 @@ pub fn build_employee_payroll(
         }
     }
 
-    let (penalty_days, shift_penalty) = crate::salary_logic::shift_penalty_for_month(
-        conn,
-        user_id,
-        org_id,
-        month,
-        year,
-        lop_base,
-        working_days,
-    );
-    if shift_penalty > 0.0 {
+    if ot.amount > 0.0 {
         comp_list.push(serde_json::json!({
-            "name": "Late/Early Penalty",
+            "name": "Overtime",
+            "type": "earning",
+            "amount": ot.amount,
+            "hours": ot.hours,
+        }));
+    }
+    for item in &variable_items {
+        comp_list.push(serde_json::json!({
+            "name": item.get("label").and_then(|v| v.as_str()).unwrap_or("Variable Pay"),
+            "type": "earning",
+            "amount": item.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        }));
+    }
+    if reimbursement > 0.0 {
+        comp_list.push(serde_json::json!({
+            "name": "Reimbursements",
+            "type": "earning",
+            "amount": reimbursement,
+        }));
+    }
+    if arrears.amount > 0.0 {
+        comp_list.push(serde_json::json!({
+            "name": "Salary Arrears",
+            "type": "earning",
+            "amount": arrears.amount,
+        }));
+    }
+    if tds_calc.monthly_tds > 0.0 {
+        comp_list.push(serde_json::json!({
+            "name": "TDS",
             "type": "deduction",
-            "amount": shift_penalty,
+            "amount": tds_calc.monthly_tds,
         }));
     }
 
-    let total_deductions_with_penalty = total_deductions + shift_penalty;
-    let net = (gross - total_deductions_with_penalty).max(0.0);
+    let net = if on_hold {
+        0.0
+    } else {
+        (gross_with_extras - total_deductions).max(0.0)
+    };
+
+    let _employer_cost_json = serde_json::json!({
+        "employer_pf": statutory.pf_employer,
+        "employer_esi": statutory.esi_employer,
+        "employer_total": statutory.total_employer,
+        "gross_with_extras": gross_with_extras,
+    });
 
     let payroll_detail = serde_json::json!({
         "lop_breakdown": lop_breakdown,
         "statutory": statutory,
-        "gross_after_lop": gross_after_lop,
+        "gross_after_lop": gross_after_lop_with_extras,
         "basic_after_lop": basic_after_lop,
         "use_statutory": use_ctc_profile,
         "use_component_deductions": use_component_deductions,
         "source": salary.source,
+        "overtime": ot,
+        "variable_items": variable_items,
+        "arrears": arrears,
+        "tds": tds_calc,
+        "on_hold": on_hold,
+        "hold_reason": hold_reason,
     });
 
     obj.insert("has_salary_structure".to_string(), serde_json::json!(true));
@@ -217,22 +368,39 @@ pub fn build_employee_payroll(
     obj.insert("absent_days".to_string(), serde_json::json!(lop_days));
     obj.insert("lop_days".to_string(), serde_json::json!(lop_days));
     obj.insert("penalty_days".to_string(), serde_json::json!(penalty_days));
+    obj.insert(
+        "suggested_shift_penalty".to_string(),
+        serde_json::json!(suggested_shift_penalty),
+    );
     obj.insert("shift_penalty".to_string(), serde_json::json!(shift_penalty));
-    obj.insert("gross_salary".to_string(), serde_json::json!(gross));
-    obj.insert("gross_after_lop".to_string(), serde_json::json!(gross_after_lop));
+    obj.insert("gross_salary".to_string(), serde_json::json!(gross_with_extras));
+    obj.insert("gross_after_lop".to_string(), serde_json::json!(gross_after_lop_with_extras));
+    obj.insert("ot_hours".to_string(), serde_json::json!(ot.hours));
+    obj.insert("ot_amount".to_string(), serde_json::json!(ot.amount));
+    obj.insert("variable_pay".to_string(), serde_json::json!(variable_pay));
+    obj.insert("reimbursement_amount".to_string(), serde_json::json!(reimbursement));
+    obj.insert("arrears_amount".to_string(), serde_json::json!(arrears.amount));
+    obj.insert("payroll_hold".to_string(), serde_json::json!(on_hold));
+    obj.insert("payroll_hold_reason".to_string(), serde_json::json!(hold_reason));
     obj.insert("lop_gross".to_string(), serde_json::json!(lop_base));
     obj.insert("net_salary".to_string(), serde_json::json!(net));
     obj.insert("payroll_detail".to_string(), payroll_detail.clone());
     obj.insert(
         "salary_structure".to_string(),
         serde_json::json!({
-            "gross_salary": gross,
-            "gross_after_lop": gross_after_lop,
-            "total_deductions": total_deductions_with_penalty,
+            "gross_salary": gross_with_extras,
+            "gross_after_lop": gross_after_lop_with_extras,
+            "total_deductions": total_deductions,
             "lop_deduction": lop,
             "lop_breakdown": lop_breakdown,
             "shift_penalty": shift_penalty,
+            "suggested_shift_penalty": suggested_shift_penalty,
             "penalty_days": penalty_days,
+            "ot_hours": ot.hours,
+            "ot_amount": ot.amount,
+            "variable_pay": variable_pay,
+            "reimbursement_amount": reimbursement,
+            "arrears_amount": arrears.amount,
             "pf_deduction": if use_component_deductions { statutory.pf_employee } else { salary.pf },
             "esi_deduction": if use_component_deductions { statutory.esi_employee } else { salary.esi },
             "prof_tax": statutory.prof_tax,
@@ -261,17 +429,18 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let mut stmt = conn
-        .prepare(
-            "SELECT p.* FROM payslips p
+    let stmt = match conn.prepare(
+        "SELECT p.* FROM payslips p
              INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?1
              ORDER BY p.year DESC, p.month DESC LIMIT 100",
-        )
-        .unwrap();
+    ) {
+        Ok(s) => s,
+        Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<crate::models::payslip::Payslip>::new())),
+    };
     let items: Vec<crate::models::payslip::Payslip> = stmt
         .query_map([org_id], crate::models::payslip::Payslip::from_row);
     HttpResponse::Ok().json(ApiResponse::success(items))
@@ -291,7 +460,7 @@ pub async fn stats(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -353,7 +522,7 @@ pub async fn employees(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -381,19 +550,41 @@ pub async fn employees(
         params.push(crate::db::into_param_value(org_id));
     }
 
-    let mut stmt = conn.prepare(&sql).unwrap();
+    let stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<serde_json::Value>::new())),
+    };
     let user_ids: Vec<i64> = stmt
         .query_map(&params, |row| row.get_idx::<i64>(0));
 
+    prepare_attendance_for_payroll(&conn, org_id, month, year);
+
+    let month_ctx =
+        crate::payroll_month_context::MonthContext::prefetch(&conn, org_id, &user_ids, month, year);
+
     let items: Vec<serde_json::Value> = user_ids
         .into_iter()
-        .filter_map(|uid| build_employee_payroll(&conn, uid, org_id, month, year))
+        .filter_map(|uid| {
+            build_employee_payroll(&conn, uid, org_id, month, year, Some(&month_ctx))
+        })
         .collect();
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
 /// Recompute draft payslip figures from current attendance/leave/salary data.
+fn payslip_extras_from_emp(emp: &serde_json::Value) -> (f64, f64, f64, f64, f64) {
+    (
+        emp.get("ot_hours").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        emp.get("ot_amount").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        emp.get("variable_pay").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        emp.get("reimbursement_amount")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        emp.get("arrears_amount").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    )
+}
+
 fn refresh_draft_payslip(
     conn: &crate::db::Connection,
     payslip_id: i64,
@@ -404,7 +595,7 @@ fn refresh_draft_payslip(
     existing_adj: &str,
     now: &str,
 ) -> Result<(), String> {
-    let Some(emp) = build_employee_payroll(conn, user_id, org_id, month, year) else {
+    let Some(emp) = build_employee_payroll(conn, user_id, org_id, month, year, None) else {
         return Err("Could not rebuild payroll data".into());
     };
     if !emp
@@ -462,6 +653,7 @@ fn refresh_draft_payslip(
         .get("payroll_detail")
         .map(|v| v.to_string())
         .unwrap_or_else(|| "{}".into());
+    let (ot_hours, ot_amount, variable_pay, reimbursement, arrears) = payslip_extras_from_emp(&emp);
 
     let cal_days = payroll_logic::calendar_days_in_month(month, year);
     let month_end = format!("{}-{:02}-{}", year, month, cal_days);
@@ -484,9 +676,10 @@ fn refresh_draft_payslip(
              lop_deduction=?10, lop_basic=?11, lop_hra=?12, lop_transport=?13, lop_other=?14,
              shift_penalty=?15, pf_deduction=?16, esi_deduction=?17, tds=?18, prof_tax=?19,
              advance_deduction=?20, lw_employee=?21, total_deductions=?22, net_salary=?23,
-             payroll_detail=?24, updated_at=?25
-             WHERE id=?26 AND status='draft'
-               AND user_id IN (SELECT id FROM users WHERE organization_id = ?27)",
+             payroll_detail=?24, ot_hours=?25, ot_amount=?26, variable_pay_amount=?27,
+             reimbursement_amount=?28, arrears_amount=?29, updated_at=?30
+             WHERE id=?31 AND status='draft'
+               AND user_id IN (SELECT id FROM users WHERE organization_id = ?32)",
             crate::params![
                 working_days,
                 present_days,
@@ -512,6 +705,11 @@ fn refresh_draft_payslip(
                 total_deductions,
                 net,
                 payroll_detail,
+                ot_hours,
+                ot_amount,
+                variable_pay,
+                reimbursement,
+                arrears,
                 now,
                 payslip_id,
                 org_id,
@@ -535,7 +733,7 @@ pub async fn preview(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -544,8 +742,25 @@ pub async fn preview(
     let adj_map = payroll_logic::parse_employee_adjustments(&body.adjustments);
     let mut previews = Vec::new();
 
+    prepare_attendance_for_payroll(&conn, org_id, body.month, body.year);
+
+    let month_ctx = crate::payroll_month_context::MonthContext::prefetch(
+        &conn,
+        org_id,
+        &body.employee_ids,
+        body.month,
+        body.year,
+    );
+
     for user_id in &body.employee_ids {
-        let Some(emp) = build_employee_payroll(&conn, *user_id, org_id, body.month, body.year) else {
+        let Some(emp) = build_employee_payroll(
+            &conn,
+            *user_id,
+            org_id,
+            body.month,
+            body.year,
+            Some(&month_ctx),
+        ) else {
             continue;
         };
 
@@ -602,6 +817,7 @@ pub async fn preview(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         let payroll_detail = emp.get("payroll_detail").map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
+        let (ot_hours, ot_amount, variable_pay, reimbursement, arrears) = payslip_extras_from_emp(&emp);
 
         let cal_days = payroll_logic::calendar_days_in_month(body.month, body.year);
         let month_end = format!("{}-{:02}-{}", body.year, body.month, cal_days);
@@ -625,8 +841,11 @@ pub async fn preview(
 
         let existing: Option<(i64, String)> = conn
             .query_row(
-                "SELECT id, status FROM payslips WHERE user_id=?1 AND month=?2 AND year=?3",
-                crate::params![user_id, body.month, body.year],
+                "SELECT p.id, p.status FROM payslips p
+                 INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?4
+                 WHERE p.user_id=?1 AND p.month=?2 AND p.year=?3
+                 ORDER BY p.id DESC LIMIT 1",
+                crate::params![user_id, body.month, body.year, org_id],
                 |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
             ).ok();
 
@@ -650,34 +869,57 @@ pub async fn preview(
                  lop_deduction=?10, lop_basic=?11, lop_hra=?12, lop_transport=?13, lop_other=?14,
                  shift_penalty=?15, pf_deduction=?16, esi_deduction=?17, tds=?18, prof_tax=?19,
                  advance_deduction=?20, lw_employee=?21, total_deductions=?22, net_salary=?23,
-                 adjustments=?24, payroll_detail=?25, status='draft', updated_at=?26
-                 WHERE id=?27 AND status='draft'
-                   AND user_id IN (SELECT id FROM users WHERE organization_id = ?28)",
+                 adjustments=?24, payroll_detail=?25, ot_hours=?26, ot_amount=?27, variable_pay_amount=?28,
+                 reimbursement_amount=?29, arrears_amount=?30, status='draft', updated_at=?31
+                 WHERE id=?32 AND status='draft'
+                   AND user_id IN (SELECT id FROM users WHERE organization_id = ?33)",
                 crate::params![
                     working_days, present_days, leave_days, paid_holidays,
                     basic, hra, transport, other, gross, lop, lop_basic, lop_hra, lop_transport, lop_other,
                     shift_penalty, pf, esi, tds, prof_tax, advance, lw_employee,
-                    total_deductions, net, adj_json, payroll_detail, &now, pid, org_id,
+                    total_deductions, net, adj_json, payroll_detail,
+                    ot_hours, ot_amount, variable_pay, reimbursement, arrears,
+                    &now, pid, org_id,
                 ],
             );
             pid
         } else {
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO payslips (user_id, month, year, working_days, present_days, leave_days, holiday_days,
                  basic_salary, hra, transport_allowance, other_allowances, gross_salary, lop_deduction,
                  lop_basic, lop_hra, lop_transport, lop_other, shift_penalty, pf_deduction, esi_deduction, tds,
                  prof_tax, advance_deduction, lw_employee, total_deductions, net_salary, adjustments, payroll_detail,
-                 status, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,'draft',?28,?28)",
+                 ot_hours, ot_amount, variable_pay_amount, reimbursement_amount, arrears_amount,
+                 organization_id, status, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,'draft',?35,?35)",
                 crate::params![
                     user_id, body.month, body.year, working_days, present_days, leave_days,
                     paid_holidays, basic, hra, transport, other, gross, lop, lop_basic, lop_hra, lop_transport, lop_other,
                     shift_penalty, pf, esi, tds, prof_tax, advance, lw_employee,
-                    total_deductions, net, adj_json, payroll_detail, &now,
+                    total_deductions, net, adj_json, payroll_detail,
+                    ot_hours, ot_amount, variable_pay, reimbursement, arrears,
+                    org_id, &now,
                 ],
-            );
-            conn.last_insert_rowid()
+            ) {
+                log::error!("Failed to insert draft payslip for user_id={user_id}: {e}");
+                continue;
+            }
+            match conn.query_row(
+                "SELECT p.id FROM payslips p
+                 INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?4
+                 WHERE p.user_id = ?1 AND p.month = ?2 AND p.year = ?3
+                 ORDER BY p.id DESC LIMIT 1",
+                crate::params![user_id, body.month, body.year, org_id],
+                |row| row.get_idx::<i64>(0),
+            ) {
+                Ok(id) => id,
+                Err(_) => continue,
+            }
         };
+
+        if payslip_id <= 0 {
+            continue;
+        }
 
         previews.push(serde_json::json!({
             "id": payslip_id,
@@ -687,7 +929,13 @@ pub async fn preview(
             "present_days": present_days,
             "leave_days": leave_days,
             "absent_days": emp.get("absent_days").and_then(|v| v.as_i64()).unwrap_or(0),
+            "penalty_days": emp.get("penalty_days").and_then(|v| v.as_i64()).unwrap_or(0),
             "shift_penalty": shift_penalty,
+            "suggested_shift_penalty": emp
+                .get("suggested_shift_penalty")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            "lop_gross": emp.get("lop_gross").and_then(|v| v.as_f64()).unwrap_or(0.0),
             "gross_salary": gross,
             "total_deductions": total_deductions,
             "net_salary": net,
@@ -708,7 +956,7 @@ pub async fn generate(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -717,9 +965,32 @@ pub async fn generate(
     let mut generated = 0i64;
     let mut skipped = 0i64;
     let mut results = Vec::new();
+    let mut generated_ids: Vec<i64> = Vec::new();
 
     let month = body.month;
     let year = body.year;
+
+    if crate::payroll_extras::payroll_require_approval(&conn, org_id) {
+        let run_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM payroll_runs WHERE organization_id = ?1 AND month = ?2 AND year = ?3
+                 ORDER BY id DESC LIMIT 1",
+                crate::params![org_id, month, year],
+                |r| r.get_idx::<String>(0),
+            )
+            .ok();
+        let approved = run_status
+            .as_deref()
+            .map(crate::payroll_extras::run_status_allows_generate)
+            .unwrap_or(false);
+        if !approved {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Payroll run must be approved before generation. Create a run and approve it first.",
+            ));
+        }
+    }
+
+    prepare_attendance_for_payroll(&conn, org_id, month, year);
 
     for payslip_id in &body.payslip_ids {
         let row: Option<(f64, f64, f64, String, i64, f64)> = conn
@@ -733,7 +1004,48 @@ pub async fn generate(
                 |r| Ok((r.get_idx::<f64>(0)?, r.get_idx::<f64>(1)?, r.get_idx::<f64>(2)?, r.get_idx::<String>(3)?, r.get_idx::<i64>(4)?, r.get_idx::<f64>(5)?)),
             ).ok();
 
-        let Some((gross, mut net, mut total_deductions, existing_adj, user_id, advance)) = row else {
+        let Some((_, _, _, existing_adj, user_id, advance)) = row else {
+            skipped += 1;
+            results.push(serde_json::json!({"id": payslip_id, "status": "not_found"}));
+            continue;
+        };
+
+        if refresh_draft_payslip(
+            &conn,
+            *payslip_id,
+            user_id,
+            org_id,
+            month,
+            year,
+            &existing_adj,
+            &now,
+        )
+        .is_err()
+        {
+            skipped += 1;
+            results.push(serde_json::json!({"id": payslip_id, "status": "refresh_failed"}));
+            continue;
+        }
+
+        let refreshed: Option<(f64, f64, f64, String)> = conn
+            .query_row(
+                "SELECT p.gross_salary, p.net_salary, p.total_deductions, COALESCE(p.adjustments,'[]')
+                 FROM payslips p
+                 INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?2
+                 WHERE p.id = ?1 AND p.status = 'draft' AND p.month = ?3 AND p.year = ?4",
+                crate::params![payslip_id, org_id, month, year],
+                |r| {
+                    Ok((
+                        r.get_idx::<f64>(0)?,
+                        r.get_idx::<f64>(1)?,
+                        r.get_idx::<f64>(2)?,
+                        r.get_idx::<String>(3)?,
+                    ))
+                },
+            )
+            .ok();
+
+        let Some((gross, mut net, mut total_deductions, existing_adj)) = refreshed else {
             skipped += 1;
             results.push(serde_json::json!({"id": payslip_id, "status": "not_found"}));
             continue;
@@ -784,6 +1096,7 @@ pub async fn generate(
         );
         if updated.unwrap_or(0) > 0 {
             generated += 1;
+            generated_ids.push(*payslip_id);
             results.push(serde_json::json!({"id": payslip_id, "status": "generated", "net_salary": net}));
         } else {
             if advance_deducted {
@@ -796,11 +1109,36 @@ pub async fn generate(
         }
     }
 
+    let email_result = if body.send_emails.unwrap_or(false) && !generated_ids.is_empty() {
+        let pool_bg = pool.clone();
+        let ids = generated_ids.clone();
+        tokio::spawn(async move {
+            let Ok(conn) = pool_bg.get_for_tenant(org_id) else {
+                log::error!("Payslip email background task: database unavailable");
+                return;
+            };
+            let batch = crate::payslip_email::bulk_send_payslip_emails(&conn, org_id, &ids);
+            log::info!(
+                "Payslip email batch complete: sent={} skipped={} errors={}",
+                batch.sent,
+                batch.skipped,
+                batch.errors.len()
+            );
+        });
+        Some(serde_json::json!({
+            "queued": true,
+            "count": generated_ids.len(),
+        }))
+    } else {
+        None
+    };
+
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "message": format!("Generated {} payslips ({} skipped)", generated, skipped),
         "generated": generated,
         "skipped": skipped,
         "results": results,
+        "email": email_result,
     })))
 }
 
@@ -815,7 +1153,7 @@ pub async fn unlock_payslip(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };

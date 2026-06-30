@@ -183,7 +183,7 @@ pub(crate) fn store_incoming_punch(
         return false;
     }
 
-    let punch_type = resolve_effective_punch_type(conn, user_id, sn, pin, status, &timestamp);
+    let punch_type = resolve_effective_punch_type(conn, user_id, sn, pin, status, &timestamp, verify);
     if punch_type != status {
         log::info!(
             "  🔄 Resolved punch type {} → {} for PIN={} (device sent status={})",
@@ -428,6 +428,7 @@ pub fn resolve_effective_punch_type(
     device_pin: &str,
     device_status: i64,
     timestamp: &str,
+    verify_method: i64,
 ) -> i64 {
     let date = if timestamp.len() >= 10 {
         &timestamp[..10]
@@ -440,14 +441,12 @@ pub fn resolve_effective_punch_type(
         if find_open_attendance_session(conn, uid, date).is_some() {
             return 1;
         }
-        // No open session — next punch must be check-in even if device says checkout.
-        if device_status == 1 {
-            log::info!(
-                "  🔄 Device sent checkout (status=1) but no open session for user_id={} — treating as check-in",
-                uid
-            );
+        // Face scanners often send status=1 on every scan after the first checkout.
+        if device_status == 1 && verify_method != 0 {
+            return 0;
         }
-        return 0;
+        // Fingerprint/card checkout with no open session — leave as orphan (unprocessed).
+        return device_status;
     }
 
     // Unmapped: alternate from last punch; ignore sticky device checkout when last was out.
@@ -478,7 +477,7 @@ pub fn next_punch_type(conn: &crate::db::Connection, device_serial: &str, device
     }
 }
 
-/// Resolve a stored punch into attendance and mark it processed.
+/// Resolve a stored punch into attendance; returns true when the punch is consumed.
 pub fn process_punch_to_attendance(
     conn: &crate::db::Connection,
     punch_id: i64,
@@ -486,22 +485,65 @@ pub fn process_punch_to_attendance(
     timestamp: &str,
     status: i64,
 ) {
-    resolve_punch_to_attendance(conn, user_id, timestamp, status);
-    let _ = conn.execute(
-        "UPDATE biometric_punches SET is_processed=1 WHERE id=?1",
-        [punch_id],
-    );
+    if resolve_punch_to_attendance(conn, user_id, timestamp, status) {
+        let _ = conn.execute(
+            "UPDATE biometric_punches SET is_processed=1 WHERE id=?1",
+            [punch_id],
+        );
+    }
 }
 
-fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, timestamp: &str, status: i64) {
+/// Sync unprocessed biometric punches for an org within an inclusive date range.
+pub fn sync_org_biometric_punches_between(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    start_date: &str,
+    end_date: &str,
+) -> i64 {
+    let stmt = match conn.prepare(
+        "SELECT bp.id, bp.punch_time, bp.punch_type, bp.user_id
+         FROM biometric_punches bp
+         INNER JOIN biometric_devices bd ON bd.serial_number = bp.device_serial
+         WHERE bd.organization_id = ?1
+           AND bp.is_processed = 0
+           AND bp.user_id IS NOT NULL
+           AND substr(bp.punch_time, 1, 10) >= ?2
+           AND substr(bp.punch_time, 1, 10) <= ?3
+         ORDER BY bp.punch_time ASC, bp.id ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let punches: Vec<(i64, String, i64, i64)> = stmt.query_map(
+        crate::params![org_id, start_date, end_date],
+        |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<i64>(2)?,
+                row.get_idx::<i64>(3)?,
+            ))
+        },
+    );
+
+    let mut count = 0i64;
+    for (punch_id, timestamp, punch_type, user_id) in punches {
+        process_punch_to_attendance(conn, punch_id, user_id, &timestamp, punch_type);
+        count += 1;
+    }
+    count
+}
+
+fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, timestamp: &str, status: i64) -> bool {
     use crate::attendance_logic::{close_open_session_before_clock_in, find_open_attendance_session};
     use crate::shift_logic::{
-        calc_duration_minutes, is_early_departure, is_late_arrival, resolve_shift_for_user,
+        calc_duration_minutes, early_for_shift, late_for_shift, resolve_shift_for_user,
     };
 
     // Extract date from timestamp (e.g., "2026-06-03 09:15:22" → "2026-06-03")
-    let date = if timestamp.len() >= 10 { &timestamp[..10] } else { return; };
-    let time = if timestamp.len() >= 19 { &timestamp[11..19] } else { return; };
+    let date = if timestamp.len() >= 10 { &timestamp[..10] } else { return false; };
+    let time = if timestamp.len() >= 19 { &timestamp[11..19] } else { return false; };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let shift = resolve_shift_for_user(conn, user_id, date);
 
@@ -526,12 +568,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
             )
             .unwrap_or_default();
         let duration = calc_duration_minutes(&clock_in, time);
-        let early = is_early_departure(
-            time,
-            &session_shift.start_time,
-            &session_shift.end_time,
-            session_shift.grace_out_minutes,
-        );
+        let early = early_for_shift(&session_shift, time);
         let _ = conn.execute(
             "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
             crate::params![time, duration, if early { 1 } else { 0 }, &now, att_id],
@@ -547,11 +584,12 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 timestamp,
                 att_id
             );
+            true
         }
         // Check-in with open session from prior day — close it, then start new session
         (0, Some((att_id, _, _))) => {
             close_open_session_before_clock_in(conn, user_id, date, time, &now, &shift);
-            let is_late = is_late_arrival(time, &shift.start_time, &shift.end_time, shift.grace_in_minutes);
+            let is_late = late_for_shift(&shift, time);
             insert_clock_in(is_late);
             log::info!(
                 "  ✅ Clock-IN (new session) for user_id={} at {} closed={} shift={:?} late={}",
@@ -561,11 +599,13 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 shift.template_name,
                 is_late
             );
+            true
         }
         (0, None) => {
-            let is_late = is_late_arrival(time, &shift.start_time, &shift.end_time, shift.grace_in_minutes);
+            let is_late = late_for_shift(&shift, time);
             insert_clock_in(is_late);
             log::info!("  ✅ Clock-IN created for user_id={} at {}", user_id, timestamp);
+            true
         }
         // Explicit check-out with an open session (including overnight from prior day)
         (1, Some((att_id, session_date, _))) => {
@@ -576,6 +616,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 timestamp,
                 session_date
             );
+            true
         }
         (1, None) => {
             log::warn!(
@@ -583,6 +624,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 user_id,
                 timestamp
             );
+            true
         }
         // Non check-in punch while session is open → clock out (device sometimes sends status 2+)
         (_, Some((att_id, session_date, _))) => {
@@ -594,6 +636,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 timestamp,
                 session_date
             );
+            true
         }
         (_, None) => {
             log::warn!(
@@ -602,6 +645,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                 user_id,
                 timestamp
             );
+            false
         }
     }
 }
@@ -616,7 +660,7 @@ pub async fn devices_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT * FROM biometric_devices WHERE organization_id = ?1 ORDER BY created_at DESC"
     ).unwrap();
     let items: Vec<BiometricDevice> = stmt.query_map([org_id], BiometricDevice::from_row);
@@ -687,29 +731,57 @@ pub async fn punches_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let mut stmt = conn.prepare(
+    let view_org = crate::handlers::attendance::can_view_org_attendance(&conn, &claims, org_id);
+    let user_filter = if view_org {
+        String::new()
+    } else {
+        " AND bp.user_id = ?2".to_string()
+    };
+    let sql = format!(
         "SELECT bp.*, u.name as user_name FROM biometric_punches bp
          LEFT JOIN users u ON bp.user_id = u.id AND u.organization_id = ?1
          WHERE bp.device_serial IN (
             SELECT serial_number FROM biometric_devices WHERE organization_id = ?1
-         )
+         ){user_filter}
          ORDER BY datetime(bp.punch_time) DESC, bp.id DESC LIMIT 500"
-    ).unwrap();
+    );
 
-    let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
-        Ok(serde_json::json!({
-            "id": row.get::<i64>("id")?,
-            "device_serial": row.get::<String>("device_serial")?,
-            "device_pin": row.get::<String>("device_pin")?,
-            "punch_time": row.get::<String>("punch_time")?,
-            "punch_type": row.get::<i64>("punch_type")?,
-            "verify_method": row.get::<i64>("verify_method")?,
-            "user_id": row.get::<Option<i64>>("user_id")?,
-            "user_name": row.get::<Option<String>>("user_name").unwrap_or(None),
-            "is_processed": row.get::<i64>("is_processed")?,
-            "created_at": row.get::<Option<String>>("created_at")?,
-        }))
-    });
+    let stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{}", e))),
+    };
+
+    let items: Vec<serde_json::Value> = if view_org {
+        stmt.query_map([org_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<i64>("id")?,
+                "device_serial": row.get::<String>("device_serial")?,
+                "device_pin": row.get::<String>("device_pin")?,
+                "punch_time": row.get::<String>("punch_time")?,
+                "punch_type": row.get::<i64>("punch_type")?,
+                "verify_method": row.get::<i64>("verify_method")?,
+                "user_id": row.get::<Option<i64>>("user_id")?,
+                "user_name": row.get::<Option<String>>("user_name").unwrap_or(None),
+                "is_processed": row.get::<i64>("is_processed")?,
+                "created_at": row.get::<Option<String>>("created_at")?,
+            }))
+        })
+    } else {
+        stmt.query_map(crate::params![org_id, claims.sub], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<i64>("id")?,
+                "device_serial": row.get::<String>("device_serial")?,
+                "device_pin": row.get::<String>("device_pin")?,
+                "punch_time": row.get::<String>("punch_time")?,
+                "punch_type": row.get::<i64>("punch_type")?,
+                "verify_method": row.get::<i64>("verify_method")?,
+                "user_id": row.get::<Option<i64>>("user_id")?,
+                "user_name": row.get::<Option<String>>("user_name").unwrap_or(None),
+                "is_processed": row.get::<i64>("is_processed")?,
+                "created_at": row.get::<Option<String>>("created_at")?,
+            }))
+        })
+    };
 
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
@@ -720,7 +792,7 @@ pub async fn mapping_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT bm.*, u.name as user_name FROM biometric_user_map bm
          INNER JOIN users u ON bm.user_id = u.id AND u.organization_id = ?1
          INNER JOIN biometric_devices bd ON bd.serial_number = bm.device_serial AND bd.organization_id = ?1
@@ -813,7 +885,25 @@ pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
+    let view_org = crate::handlers::attendance::can_view_org_attendance(&conn, &claims, org_id);
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    if !view_org {
+        let today_punches: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM biometric_punches bp
+             WHERE bp.user_id = ?1 AND bp.punch_time LIKE ?2 || '%'
+               AND bp.device_serial IN (
+                   SELECT serial_number FROM biometric_devices WHERE organization_id = ?3
+               )",
+            crate::params![claims.sub, &today, org_id],
+            |r| r.get_idx::<i64>(0),
+        ).unwrap_or(0);
+
+        return HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "scope": "self",
+            "today_punches": today_punches,
+        })));
+    }
 
     let total_devices: i64 = conn.query_row(
         "SELECT COUNT(*) FROM biometric_devices WHERE organization_id = ?1",
@@ -862,6 +952,7 @@ pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
     ).ok().flatten();
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "scope": "org",
         "total_devices": total_devices,
         "active_devices": active_devices,
         "today_punches": today_punches,
@@ -980,7 +1071,7 @@ fn retroactive_resolve(conn: &crate::db::Connection, device_serial: &str, device
     );
 
     // Get all unprocessed punches for this user, ordered by time
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, punch_time, punch_type FROM biometric_punches
          WHERE device_serial=?1 AND device_pin=?2 AND is_processed=0
          ORDER BY punch_time ASC"
@@ -996,8 +1087,7 @@ fn retroactive_resolve(conn: &crate::db::Connection, device_serial: &str, device
 
     let mut count: i64 = 0;
     for (punch_id, timestamp, status) in &punches {
-        resolve_punch_to_attendance(conn, user_id, timestamp, *status);
-        let _ = conn.execute("UPDATE biometric_punches SET is_processed=1 WHERE id=?1", [punch_id]);
+        process_punch_to_attendance(conn, *punch_id, user_id, timestamp, *status);
         count += 1;
     }
 

@@ -16,7 +16,7 @@ fn list_careers(conn: &crate::db::Connection, org_id: i64) -> Vec<serde_json::Va
     let sql = format!(
         "SELECT {CAREER_COLUMNS} FROM careers WHERE organization_id = ?1 ORDER BY created_at DESC"
     );
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -69,14 +69,20 @@ pub async fn store(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let title = match crate::validation::require_non_empty(&body.title, "Title") {
+        Ok(t) => t,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let slug = body
         .slug
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| unique_career_slug(&conn, &body.title, org_id, None));
+        .unwrap_or_else(|| unique_career_slug(&conn, &title, org_id, None));
     let job_type = body.resolved_job_type();
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
+    let location = crate::validation::normalize_optional(body.location.clone()).unwrap_or_default();
+    let description = crate::validation::normalize_optional(body.description.clone()).unwrap_or_default();
     let requirements = json_list_to_db(&body.requirements);
     let responsibilities = json_list_to_db(&body.responsibilities);
 
@@ -84,12 +90,12 @@ pub async fn store(
         "INSERT INTO careers (title, slug, location, job_type, experience_required, description, requirements, responsibilities, salary_range, is_active, organization_id, posted_at, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12)",
         crate::params![
-            body.title.trim(),
+            title,
             slug,
-            body.location,
+            location,
             job_type,
             body.experience_required,
-            body.description,
+            description,
             requirements,
             responsibilities,
             body.salary_range,
@@ -133,12 +139,16 @@ pub async fn update(
         return HttpResponse::NotFound().json(ApiError::new("Career not found"));
     };
 
+    let title = match crate::validation::require_non_empty(&body.title, "Title") {
+        Ok(t) => t,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let slug = body
         .slug
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| unique_career_slug(&conn, &body.title, org_id, Some(career_id)));
+        .unwrap_or_else(|| unique_career_slug(&conn, &title, org_id, Some(career_id)));
     let slug = if slug == existing_slug {
         existing_slug
     } else {
@@ -146,6 +156,8 @@ pub async fn update(
     };
     let job_type = body.resolved_job_type();
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
+    let location = crate::validation::normalize_optional(body.location.clone()).unwrap_or_default();
+    let description = crate::validation::normalize_optional(body.description.clone()).unwrap_or_default();
     let requirements = json_list_to_db(&body.requirements);
     let responsibilities = json_list_to_db(&body.responsibilities);
 
@@ -154,12 +166,12 @@ pub async fn update(
          description=?6, requirements=?7, responsibilities=?8, salary_range=?9, is_active=?10, updated_at=?11
          WHERE id=?12 AND organization_id = ?13",
         crate::params![
-            body.title.trim(),
+            title,
             slug,
-            body.location,
+            location,
             job_type,
             body.experience_required,
-            body.description,
+            description,
             requirements,
             responsibilities,
             body.salary_range,
@@ -269,14 +281,14 @@ pub async fn public_list(
     };
     let org_id = match resolve_organization_id(&conn, query.org_slug.as_deref()) {
         Ok(id) => id,
-        Err(e) => return HttpResponse::NotFound().json(ApiError::new(&e)),
+        Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
     };
     let sql = format!(
         "SELECT {CAREER_COLUMNS} FROM careers
          WHERE organization_id = ?1 AND is_active = 1
          ORDER BY COALESCE(posted_at, created_at) DESC, id DESC"
     );
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };

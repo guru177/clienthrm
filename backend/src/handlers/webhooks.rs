@@ -13,15 +13,18 @@ type HmacSha256 = Hmac<Sha256>;
 /// `payload.payment.entity.notes.invoice_id` is set.
 pub async fn razorpay_webhook(pool: web::Data<DbPool>, req: HttpRequest, body: web::Bytes) -> HttpResponse {
     let secret = std::env::var("RAZORPAY_WEBHOOK_SECRET").unwrap_or_default();
-    if !secret.is_empty() {
-        let signature = req
-            .headers()
-            .get("X-Razorpay-Signature")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !verify_razorpay_signature(body.as_ref(), signature, &secret) {
-            return HttpResponse::Unauthorized().json(ApiError::new("Invalid webhook signature"));
-        }
+    if secret.is_empty() {
+        return HttpResponse::ServiceUnavailable().json(ApiError::new(
+            "Razorpay webhook is disabled: RAZORPAY_WEBHOOK_SECRET is not configured",
+        ));
+    }
+    let signature = req
+        .headers()
+        .get("X-Razorpay-Signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_razorpay_signature(body.as_ref(), signature, &secret) {
+        return HttpResponse::Unauthorized().json(ApiError::new("Invalid webhook signature"));
     }
 
     let json: serde_json::Value = match serde_json::from_slice(&body) {
@@ -71,4 +74,20 @@ fn verify_razorpay_signature(body: &[u8], signature: &str, secret: &str) -> bool
     mac.update(body);
     let expected = hex::encode(mac.finalize().into_bytes());
     expected == signature
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn razorpay_signature_roundtrip() {
+        let body = br#"{"event":"payment.captured"}"#;
+        let secret = "test-webhook-secret";
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        assert!(verify_razorpay_signature(body, &sig, secret));
+        assert!(!verify_razorpay_signature(body, "bad", secret));
+    }
 }

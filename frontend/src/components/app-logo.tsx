@@ -1,11 +1,12 @@
 import AppLogoIcon from './app-logo-icon';
 import { useAuth } from '@/contexts/AuthContext';
 import { storageUrl } from '@/lib/storage-url';
+import { staticAssetUrl } from '@/lib/static-asset';
 
 export default function AppLogo() {
     const { settings } = useAuth();
     const appName = settings?.app_name || "Raintech HRM";
-    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : "/images/logo.webp";
+    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : staticAssetUrl('images/logo.webp');
 
     return (
         <>

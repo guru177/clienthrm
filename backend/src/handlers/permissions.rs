@@ -11,7 +11,7 @@ use crate::tenant::org_id_from_claims;
 use std::collections::{HashMap, HashSet};
 
 fn plan_filtered_permissions(conn: &crate::db::Connection, org_id: i64) -> Vec<Permission> {
-    let mut stmt = match conn.prepare("SELECT * FROM permissions ORDER BY \"group\", name") {
+    let stmt = match conn.prepare("SELECT * FROM permissions ORDER BY \"group\", name") {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };

@@ -2,7 +2,7 @@
 
 Use this checklist before releases. Test org: `mashuptech` · Admin: `admin@mashuptech.in` / `password`
 
-**Automated baseline:** `powershell -NoProfile -File scripts/run-all-tests.ps1`
+**Automated baseline:** `powershell -NoProfile -File scripts/run-complete-all-tests.ps1`
 
 ---
 
@@ -18,6 +18,7 @@ Use this checklist before releases. Test org: `mashuptech` · Admin: `admin@mash
 | 1.6 | Unauthorized route | User without permission → restricted URL | `/unauthorized` | ☐ |
 | 1.7 | Profile settings | `/admin/settings/profile` | Loads, save phone/name | ☐ |
 | 1.8 | Password change | `/admin/settings/password` | Updates password | ☐ |
+| 1.9 | Forgot-password OTP | `/forgot-password` → email → OTP → new password | Resets without link; wrong OTP rejected | ☐ |
 
 ---
 
@@ -103,6 +104,8 @@ Use this checklist before releases. Test org: `mashuptech` · Admin: `admin@mash
 | 8.5 | Payslip PDF | PDF downloads/opens | ☐ |
 | 8.6 | My payslips | Employee sees own payslips only | ☐ |
 | 8.7 | Unlock payslip (admin) | Employee can view after unlock | ☐ |
+| 8.8 | Advanced payroll | `/admin/payroll/advanced` — runs, variable pay, reimbursements, exports | Tabs load; APIs return 200 | ☐ |
+| 8.9 | Stale payslip refresh | Unlock → preview → generate → PDF | PDF net matches salary popup (incl. OT/TDS) | ☐ |
 
 ---
 
@@ -125,6 +128,7 @@ Use this checklist before releases. Test org: `mashuptech` · Admin: `admin@mash
 | 10.3 | Leave triggers workflow | Action runs on approve | ☐ |
 | 10.4 | Task CRUD | Create, edit status, assign | ☐ |
 | 10.5 | Project CRUD | Create, edit, link tasks | ☐ |
+| 10.6 | Workflow execution audit | Approve leave with active workflow | Task created; no cross-org assignee | ☐ |
 
 ---
 
@@ -213,6 +217,25 @@ Use this checklist before releases. Test org: `mashuptech` · Admin: `admin@mash
 | 18.2 | Email OTP | OTP received / debug in dev | ☐ |
 | 18.3 | Complete signup | New org + admin created | ☐ |
 | 18.4 | Duplicate email | Rejected with clear error | ☐ |
+
+---
+
+## 19. Security & pen-test sign-off (release / quarterly)
+
+Run `python scripts/test-auth-security-suite.py` on a **disposable sandbox** only.
+
+| # | Test | Expected | Pass |
+|---|------|----------|------|
+| 19.1 | JWT audience separation | Platform token cannot call `/api/admin/*` | ☐ |
+| 19.2 | Tenant isolation (IDOR) | Cross-org payslip/user IDs return 404/403 | ☐ |
+| 19.3 | Path traversal | `../` in file paths blocked | ☐ |
+| 19.4 | Rate limiting | Repeated failed logins throttled (429) | ☐ |
+| 19.5 | Forgot-password OTP | Wrong OTP / wrong org slug do not reset password | ☐ |
+| 19.6 | Biometric ports | `:7788` / `:5010` not proxied to admin API | ☐ |
+| 19.7 | Webhook HMAC | Razorpay webhook rejects bad signature (prod secret set) | ☐ |
+| 19.8 | Manual OWASP review | No Critical / High findings open | ☐ |
+
+**Platform smoke:** login → tenant list → export (no PII leak in logs).
 
 ---
 

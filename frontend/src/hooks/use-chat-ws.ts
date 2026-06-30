@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { wsUrl } from '@/lib/ws-base';
 
 type ChatWsHandler = (event: Record<string, unknown>) => void;
 
@@ -32,8 +33,7 @@ function connect() {
         return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/api/admin/chat/ws?token=${encodeURIComponent(token)}`;
+    const url = wsUrl(`/api/admin/chat/ws?token=${encodeURIComponent(token)}`);
     const ws = new WebSocket(url);
     sharedWs = ws;
 

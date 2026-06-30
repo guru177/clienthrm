@@ -79,7 +79,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let mut stmt = match conn.prepare("SELECT * FROM centers WHERE organization_id = ?1 ORDER BY name") {
+    let stmt = match conn.prepare("SELECT * FROM centers WHERE organization_id = ?1 ORDER BY name") {
         Ok(s) => s,
         Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<Center>::new()))
     };

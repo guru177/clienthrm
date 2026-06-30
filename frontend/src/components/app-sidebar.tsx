@@ -2,7 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import {
     Award, BarChart3, Bell, Briefcase, Building, CalendarCheck, ClipboardList, Clock,
     DollarSign, FileText, Fingerprint, Folder, IndianRupee, LayoutGrid, LifeBuoy, MapPin, TrendingUp, Users, UsersRound,
-    Wallet, Workflow, Calendar, FileCheck, ClipboardCheck, Settings, MessagesSquare, Receipt,
+    Wallet, Workflow, Calendar, FileCheck, ClipboardCheck, Settings, MessagesSquare, Receipt, UserCheck,
 } from 'lucide-react';
 
 import { NavFooter } from '@/components/nav-footer';
@@ -40,6 +40,7 @@ const mainNavItems: NavEntry[] = [
         ],
     },
     { title: 'Biometric Devices', href: '/admin/biometric', icon: Fingerprint, permission: 'view-attendance', module: 'biometric' },
+    { title: 'Manual Attendance', href: '/admin/manual-attendance', icon: UserCheck, permissions: ['mark-attendance', 'manage-attendance'], module: 'manual_attendance' },
     { title: 'Leave Requests', href: '/admin/leave-requests', icon: FileCheck, permission: 'view-leave-requests', module: 'leave' },
     { title: 'Manage Leave', href: '/admin/leave-requests/manage', icon: ClipboardCheck, permissions: ['manage-leave-requests', 'approve-leave-requests', 'reject-leave-requests'], module: 'leave_manage' },
     { title: 'Holidays', href: '/admin/holidays', icon: Calendar, permission: 'view-holidays', module: 'holidays' },

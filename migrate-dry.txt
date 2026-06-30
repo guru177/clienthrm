@@ -1,0 +1,917 @@
+﻿Found 89 tables in database/database.sqlite
+
+-- organizations
+CREATE TABLE organizations (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'active',
+            plan TEXT NOT NULL DEFAULT 'trial',
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , company_email TEXT, company_phone TEXT, country TEXT, timezone TEXT, plan_started_at TEXT, plan_expires_at TEXT, contact_person TEXT);
+
+-- users
+CREATE TABLE "users" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "email" varchar not null, "email_verified_at" TIMESTAMP, "password" varchar not null, "remember_token" varchar, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "two_factor_secret" text, "two_factor_recovery_codes" text, "two_factor_confirmed_at" TIMESTAMP, "phone" varchar, "avatar" varchar, "bio" text, "date_of_birth" date, "gender" varchar, "address" varchar, "city" varchar, "state" varchar, "country" varchar, "postal_code" varchar, "department" varchar, "position" varchar, "manager_id" integer, "join_date" date, "salary" NUMERIC, "employment_type" varchar not null default ('full-time'), "status" varchar not null default ('active'), "timezone" varchar not null default ('UTC'), "last_login_at" TIMESTAMP, "last_login_ip" varchar, "preferences" text, "notifications_settings" text, "deleted_at" TIMESTAMP, "photo" varchar, "designation" varchar, "reporting_manager_id" integer, "account_number" varchar, "ifsc_code" varchar, "bank_name" varchar, "pan_number" varchar, "esi_number" varchar, "pf_number" varchar, "aadhar_number" varchar, "date_of_joining" date, "date_of_exit" date, "department_id" integer, "designation_id" integer, "employee_id" varchar, "is_super_admin" SMALLINT not null default '0', "onboarded" SMALLINT not null default '0', "work_location" varchar, "account_type" varchar, organization_id INTEGER NOT NULL DEFAULT 1, payroll_hold INTEGER NOT NULL DEFAULT 0, payroll_hold_reason TEXT, payroll_hold_until TEXT, pay_group_id INTEGER, bank_account TEXT, bank_ifsc TEXT, bank_account_holder TEXT, work_state TEXT, tax_regime TEXT DEFAULT 'new', totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_recovery_codes TEXT)))));
+
+-- roles
+CREATE TABLE "roles" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "slug" varchar not null, "description" varchar, "is_default" SMALLINT not null default '0', "created_at" TIMESTAMP, "updated_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- permissions
+CREATE TABLE "permissions" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "slug" varchar not null, "description" varchar, "group" varchar, "created_at" TIMESTAMP, "updated_at" TIMESTAMP);
+
+-- subscription_plans
+CREATE TABLE subscription_plans (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            price_label TEXT NOT NULL DEFAULT 'Free',
+            billing_period TEXT NOT NULL DEFAULT 'month',
+            max_users INTEGER NOT NULL DEFAULT 10,
+            modules TEXT NOT NULL DEFAULT '[]',
+            features TEXT NOT NULL DEFAULT '[]',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- biometric_devices
+CREATE TABLE biometric_devices (
+            id SERIAL PRIMARY KEY,
+            serial_number TEXT NOT NULL UNIQUE,
+            name TEXT DEFAULT 'BIO-PARK D01',
+            model TEXT DEFAULT 'D01',
+            ip_address TEXT,
+            location TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            last_heartbeat TEXT,
+            firmware_version TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- app_settings
+CREATE TABLE "app_settings" (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL DEFAULT 1),
+            key TEXT NOT NULL,
+            value TEXT,
+            type TEXT NOT NULL DEFAULT 'text',
+            description TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE(organization_id, key)
+        );
+
+-- attendance
+CREATE TABLE "attendance" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "date" date not null, "clock_in" time, "clock_out" time, "duration_minutes" integer, "is_late" SMALLINT not null default ('0'), "is_early_exit" SMALLINT not null default ('0'), "notes" text, "status" varchar not null default ('present'), "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP, "clock_in_location" text, "clock_in_face_match_score" NUMERIC, "clock_in_face_verified" SMALLINT not null default ('0'), source TEXT DEFAULT 'manual', organization_id INTEGER NOT NULL DEFAULT 1));
+
+-- biometric_commands
+CREATE TABLE biometric_commands (
+            id SERIAL PRIMARY KEY,
+            device_serial TEXT NOT NULL,
+            command TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            executed_at TEXT
+        );
+
+-- biometric_punches
+CREATE TABLE biometric_punches (
+            id SERIAL PRIMARY KEY,
+            device_serial TEXT NOT NULL,
+            device_pin TEXT NOT NULL,
+            punch_time TEXT NOT NULL,
+            punch_type INTEGER NOT NULL DEFAULT 0,
+            verify_method INTEGER DEFAULT 0,
+            user_id INTEGER),
+            is_processed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- biometric_user_map
+CREATE TABLE biometric_user_map (
+            id SERIAL PRIMARY KEY,
+            device_serial TEXT NOT NULL,
+            device_pin TEXT NOT NULL,
+            user_id INTEGER NOT NULL),
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP), organization_id INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(device_serial, device_pin)
+        );
+
+-- cache
+CREATE TABLE "cache" ("key" varchar not null, "value" text not null, "expiration" integer not null, primary key ("key"));
+
+-- cache_locks
+CREATE TABLE "cache_locks" ("key" varchar not null, "owner" varchar not null, "expiration" integer not null, primary key ("key"));
+
+-- campaigns
+CREATE TABLE campaigns (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            is_public INTEGER NOT NULL DEFAULT 0,
+            success_message TEXT,
+            redirect_url TEXT,
+            form_fields TEXT,
+            created_by INTEGER),
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- careers
+CREATE TABLE "careers" ("id" SERIAL PRIMARY KEY not null, "title" varchar not null, "slug" varchar not null, "location" varchar not null, "job_type" varchar not null, "experience_required" varchar, "description" text not null, "requirements" text, "responsibilities" text, "salary_range" varchar, "is_active" SMALLINT not null default '1', "posted_at" TIMESTAMP, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- centers
+CREATE TABLE centers (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            code TEXT,
+            address TEXT,
+            city TEXT,
+            state TEXT,
+            country TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- chat_message_attachments
+CREATE TABLE chat_message_attachments (
+            id SERIAL PRIMARY KEY,
+            message_id INTEGER),
+            uploaded_by INTEGER NOT NULL),
+            file_name TEXT NOT NULL,
+            file_url TEXT NOT NULL,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            mime_type TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- chat_message_reactions
+CREATE TABLE chat_message_reactions (
+            id SERIAL PRIMARY KEY,
+            message_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            emoji TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE(message_id, user_id, emoji)
+        );
+
+-- chat_messages
+CREATE TABLE chat_messages (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            space_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            parent_id INTEGER),
+            content TEXT NOT NULL DEFAULT '',
+            mentions_json TEXT NOT NULL DEFAULT '[]',
+            is_edited INTEGER NOT NULL DEFAULT 0,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- chat_pinned_messages
+CREATE TABLE chat_pinned_messages (
+            id SERIAL PRIMARY KEY,
+            space_id INTEGER NOT NULL),
+            message_id INTEGER NOT NULL),
+            pinned_by INTEGER NOT NULL),
+            pinned_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE(space_id, message_id)
+        );
+
+-- chat_space_members
+CREATE TABLE chat_space_members (
+            id SERIAL PRIMARY KEY,
+            space_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            role TEXT NOT NULL DEFAULT 'member',
+            last_read_at TEXT,
+            is_muted INTEGER NOT NULL DEFAULT 0,
+            joined_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE(space_id, user_id)
+        );
+
+-- chat_spaces
+CREATE TABLE chat_spaces (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            kind TEXT NOT NULL CHECK(kind IN ('channel', 'dm')),
+            name TEXT,
+            slug TEXT,
+            description TEXT,
+            topic TEXT,
+            is_private INTEGER NOT NULL DEFAULT 0,
+            dm_hash TEXT,
+            created_by INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        , department_id INTEGER));
+
+-- chat_starred_messages
+CREATE TABLE chat_starred_messages (
+            user_id INTEGER NOT NULL),
+            message_id INTEGER NOT NULL),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            PRIMARY KEY (user_id, message_id)
+        );
+
+-- contacts
+CREATE TABLE contacts (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            company TEXT,
+            position TEXT,
+            type TEXT NOT NULL DEFAULT 'individual',
+            status TEXT NOT NULL DEFAULT 'active',
+            notes TEXT,
+            created_by INTEGER),
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- deals
+CREATE TABLE deals (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            stage TEXT NOT NULL DEFAULT 'lead',
+            value REAL,
+            currency TEXT NOT NULL DEFAULT 'INR',
+            probability INTEGER NOT NULL DEFAULT 0,
+            expected_close_date TEXT,
+            actual_close_date TEXT,
+            loss_reason TEXT,
+            notes TEXT,
+            company_id INTEGER,
+            contact_id INTEGER),
+            project_id INTEGER),
+            campaign_id INTEGER),
+            lead_id INTEGER),
+            assigned_to INTEGER),
+            created_by INTEGER),
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- departments
+CREATE TABLE "departments" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "slug" varchar not null, "description" text, "is_active" SMALLINT not null default '1', "created_at" TIMESTAMP, "updated_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- designations
+CREATE TABLE "designations" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "slug" varchar not null, "description" text, "level" varchar, "is_active" SMALLINT not null default '1', "created_at" TIMESTAMP, "updated_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- email_accounts
+CREATE TABLE "email_accounts" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "name" varchar not null, "email" varchar not null, "type" varchar check ("type" in ('imap', 'pop3', 'smtp')) not null default 'imap', "incoming_host" varchar, "incoming_port" integer, "incoming_encryption" varchar check ("incoming_encryption" in ('none', 'ssl', 'tls')) not null default 'ssl', "incoming_username" varchar, "incoming_password" text, "outgoing_host" varchar, "outgoing_port" integer not null default '587', "outgoing_encryption" varchar check ("outgoing_encryption" in ('none', 'ssl', 'tls')) not null default 'tls', "outgoing_username" varchar, "outgoing_password" text, "is_default" SMALLINT not null default '0', "is_active" SMALLINT not null default '1', "auto_sync" SMALLINT not null default '1', "sync_interval" integer not null default '5', "last_synced_at" TIMESTAMP, "folders" text, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP));
+
+-- email_attachments
+CREATE TABLE "email_attachments" ("id" SERIAL PRIMARY KEY not null, "email_message_id" integer not null, "filename" varchar not null, "original_filename" varchar not null, "mime_type" varchar not null, "size" integer not null, "path" varchar not null, "disk" varchar not null default 'local', "is_inline" SMALLINT not null default '0', "content_id" varchar, "created_at" TIMESTAMP, "updated_at" TIMESTAMP));
+
+-- email_messages
+CREATE TABLE "email_messages" ("id" SERIAL PRIMARY KEY not null, "email_account_id" integer not null, "user_id" integer not null, "message_id" varchar not null, "thread_id" varchar, "in_reply_to" varchar, "references" text, "from_email" varchar not null, "from_name" varchar, "to" text, "cc" text, "bcc" text, "subject" varchar, "body_html" text, "body_text" text, "folder" varchar check ("folder" in ('inbox', 'sent', 'drafts', 'trash', 'spam', 'archive')) not null default 'inbox', "is_read" SMALLINT not null default '0', "is_starred" SMALLINT not null default '0', "is_draft" SMALLINT not null default '0', "has_attachments" SMALLINT not null default '0', "size" integer not null default '0', "related_type" varchar not null, "related_id" integer not null, "opens_count" integer not null default '0', "first_opened_at" TIMESTAMP, "last_opened_at" TIMESTAMP, "click_tracking" text, "sent_at" TIMESTAMP, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP)));
+
+-- email_templates
+CREATE TABLE "email_templates" ("id" SERIAL PRIMARY KEY not null, "user_id" integer, "name" varchar not null, "slug" varchar not null, "subject" varchar not null, "body_html" text not null, "body_text" text, "category" varchar check ("category" in ('sales', 'marketing', 'support', 'general')) not null default 'general', "description" text, "variables" text, "is_active" SMALLINT not null default '1', "is_shared" SMALLINT not null default '0', "usage_count" integer not null default '0', "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP));
+
+-- employee_advances
+CREATE TABLE employee_advances (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            amount REAL NOT NULL,
+            balance REAL NOT NULL,
+            monthly_emi REAL NOT NULL DEFAULT 0,
+            description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1));
+
+-- employee_exit_settlements
+CREATE TABLE employee_exit_settlements (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            exit_date TEXT NOT NULL,
+            leave_encashment REAL DEFAULT 0,
+            gratuity_estimate REAL DEFAULT 0,
+            notice_pay REAL DEFAULT 0,
+            other_earnings REAL DEFAULT 0,
+            recoveries REAL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            payroll_run_id INTEGER,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+-- employee_salary_profiles
+CREATE TABLE employee_salary_profiles (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            yearly_ctc REAL NOT NULL DEFAULT 0,
+            template_id INTEGER),
+            pf_applicable INTEGER NOT NULL DEFAULT 1,
+            esi_applicable INTEGER NOT NULL DEFAULT 1,
+            effective_from TEXT NOT NULL,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- employee_tax_declarations
+CREATE TABLE employee_tax_declarations (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            financial_year TEXT NOT NULL,
+            regime TEXT NOT NULL DEFAULT 'new',
+            declarations_json TEXT NOT NULL DEFAULT '{}',
+            hra_rent_paid REAL DEFAULT 0,
+            hra_metro INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, financial_year)
+        );
+
+-- failed_jobs
+CREATE TABLE "failed_jobs" ("id" SERIAL PRIMARY KEY not null, "uuid" varchar not null, "connection" text not null, "queue" text not null, "payload" text not null, "exception" text not null, "failed_at" TIMESTAMP not null default CURRENT_TIMESTAMP);
+
+-- fcm_tokens
+CREATE TABLE "fcm_tokens" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "token" varchar not null, "device_name" varchar, "last_used_at" TIMESTAMP, "created_at" TIMESTAMP, "updated_at" TIMESTAMP));
+
+-- holidays
+CREATE TABLE "holidays" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "date" date not null, "is_paid" SMALLINT not null default '1', "description" text, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- job_applications
+CREATE TABLE "job_applications" ("id" SERIAL PRIMARY KEY not null, "career_id" integer not null, "name" varchar not null, "email" varchar not null, "phone" varchar not null, "resume" varchar not null, "cover_letter" text, "linkedin_url" varchar, "portfolio_url" varchar, "experience_years" integer, "current_company" varchar, "current_position" varchar, "expected_salary" varchar, "notice_period" varchar, "status" varchar not null default ('pending'), "notes" text, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "tracking_number" varchar not null, "status_message" text, "interview_date" TIMESTAMP, "interview_location" varchar, "dob" date, "interview_center_id" varchar, ats_score INTEGER, ats_feedback TEXT, parsed_skills TEXT, source TEXT DEFAULT 'Manual', applied_position TEXT, organization_id INTEGER NOT NULL DEFAULT 1));
+
+-- job_batches
+CREATE TABLE "job_batches" ("id" varchar not null, "name" varchar not null, "total_jobs" integer not null, "pending_jobs" integer not null, "failed_jobs" integer not null, "failed_job_ids" text not null, "options" text, "cancelled_at" integer, "created_at" integer not null, "finished_at" integer, primary key ("id"));
+
+-- jobs
+CREATE TABLE "jobs" ("id" SERIAL PRIMARY KEY not null, "queue" varchar not null, "payload" text not null, "attempts" integer not null, "reserved_at" integer, "available_at" integer not null, "created_at" integer not null);
+
+-- jwt_refresh_tokens
+CREATE TABLE jwt_refresh_tokens (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            token TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            revoked INTEGER NOT NULL DEFAULT 0
+        );
+
+-- leads
+CREATE TABLE leads (
+            id SERIAL PRIMARY KEY,
+            first_name TEXT NOT NULL,
+            last_name TEXT,
+            email TEXT,
+            phone TEXT,
+            mobile TEXT,
+            status TEXT NOT NULL DEFAULT 'new',
+            source TEXT,
+            campaign_id INTEGER),
+            assigned_to INTEGER),
+            notes TEXT,
+            custom_fields TEXT,
+            converted_contact_id INTEGER,
+            converted_at TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- leave_credits
+CREATE TABLE leave_credits (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            days INTEGER NOT NULL DEFAULT 1,
+            reason TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            work_date TEXT,
+            year INTEGER NOT NULL,
+            created_by INTEGER),
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            deleted_at TEXT
+        );
+
+-- leave_requests
+CREATE TABLE "leave_requests" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "leave_type" varchar not null, "start_date" date not null, "end_date" date not null, "days_count" integer not null, "reason" text not null, "status" varchar check ("status" in ('pending', 'approved', 'rejected')) not null default 'pending', "approved_by" integer, "approved_at" TIMESTAMP, "rejection_reason" text, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP, "remarks" text, organization_id INTEGER NOT NULL DEFAULT 1)));
+
+-- leave_types
+CREATE TABLE "leave_types" (
+                id SERIAL PRIMARY KEY,
+                slug TEXT NOT NULL,
+                name TEXT NOT NULL,
+                payment_type TEXT NOT NULL DEFAULT 'paid' CHECK (payment_type IN ('paid', 'unpaid', 'half_day')),
+                counts_toward_quota INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                organization_id INTEGER NOT NULL DEFAULT 1),
+                created_at TEXT,
+                updated_at TEXT, quota_days INTEGER,
+                UNIQUE(organization_id, slug)
+            );
+
+-- migrations
+CREATE TABLE "migrations" ("id" SERIAL PRIMARY KEY not null, "migration" varchar not null, "batch" integer not null);
+
+-- org_notification_reads
+CREATE TABLE org_notification_reads (
+            id SERIAL PRIMARY KEY,
+            notification_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            read_at TEXT,
+            dismissed_at TEXT,
+            UNIQUE(notification_id, user_id)
+        );
+
+-- org_notifications
+CREATE TABLE org_notifications (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            audience TEXT NOT NULL CHECK(audience IN ('all', 'department', 'designation')),
+            target_id INTEGER,
+            created_by INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        , image_url TEXT);
+
+-- password_reset_otp_challenges
+CREATE TABLE password_reset_otp_challenges (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            organization_id INTEGER NOT NULL),
+            email TEXT NOT NULL,
+            otp_hash TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT NOT NULL,
+            verified_at TEXT,
+            reset_expires_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
+-- password_reset_tokens
+CREATE TABLE password_reset_tokens (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            token_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            used_at TEXT
+        );
+
+-- pay_groups
+CREATE TABLE pay_groups (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            name TEXT NOT NULL,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+-- payroll_audit_log
+CREATE TABLE payroll_audit_log (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            payroll_run_id INTEGER,
+            actor_user_id INTEGER,
+            action TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL
+        );
+
+-- payroll_runs
+CREATE TABLE payroll_runs (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            run_type TEXT NOT NULL DEFAULT 'monthly',
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            pay_group_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'draft',
+            prepared_by INTEGER,
+            reviewed_by INTEGER,
+            approved_by INTEGER,
+            released_by INTEGER,
+            prepared_at TEXT,
+            reviewed_at TEXT,
+            approved_at TEXT,
+            released_at TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+-- payroll_variable_items
+CREATE TABLE payroll_variable_items (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            item_type TEXT NOT NULL,
+            label TEXT NOT NULL,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'approved',
+            notes TEXT,
+            created_by INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+-- payslips
+CREATE TABLE "payslips" (
+            id SERIAL PRIMARY KEY NOT NULL,
+            user_id INTEGER NOT NULL),
+            month INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            working_days INTEGER NOT NULL DEFAULT 0,
+            present_days INTEGER NOT NULL DEFAULT 0,
+            leave_days INTEGER NOT NULL DEFAULT 0,
+            holiday_days INTEGER NOT NULL DEFAULT 0,
+            basic_salary NUMERIC NOT NULL DEFAULT 0,
+            hra NUMERIC NOT NULL DEFAULT 0,
+            transport_allowance NUMERIC NOT NULL DEFAULT 0,
+            other_allowances NUMERIC NOT NULL DEFAULT 0,
+            gross_salary NUMERIC NOT NULL DEFAULT 0,
+            lop_deduction NUMERIC NOT NULL DEFAULT 0,
+            pf_deduction NUMERIC NOT NULL DEFAULT 0,
+            esi_deduction NUMERIC NOT NULL DEFAULT 0,
+            tds NUMERIC NOT NULL DEFAULT 0,
+            total_deductions NUMERIC NOT NULL DEFAULT 0,
+            net_salary NUMERIC NOT NULL DEFAULT 0,
+            status VARCHAR CHECK (status IN ('draft', 'generated', 'approved', 'paid')) NOT NULL DEFAULT 'draft',
+            generated_at TIMESTAMP,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            adjustments TEXT,
+            download_token VARCHAR,
+            token_expires_at TIMESTAMP,
+            shift_penalty REAL DEFAULT 0,
+            lop_basic REAL DEFAULT 0,
+            lop_hra REAL DEFAULT 0,
+            lop_transport REAL DEFAULT 0,
+            lop_other REAL DEFAULT 0,
+            prof_tax REAL DEFAULT 0,
+            advance_deduction REAL DEFAULT 0,
+            lw_employee REAL DEFAULT 0,
+            payroll_detail TEXT,
+            organization_id INTEGER NOT NULL DEFAULT 1
+        , payroll_run_id INTEGER, payment_status TEXT DEFAULT 'pending', ot_hours REAL DEFAULT 0, ot_amount REAL DEFAULT 0, variable_pay_amount REAL DEFAULT 0, reimbursement_amount REAL DEFAULT 0, arrears_amount REAL DEFAULT 0, employer_cost_json TEXT);
+
+-- permission_role
+CREATE TABLE "permission_role" ("id" SERIAL PRIMARY KEY not null, "permission_id" integer not null, "role_id" integer not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP)));
+
+-- platform_admins
+CREATE TABLE platform_admins (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , role TEXT NOT NULL DEFAULT 'admin', is_active INTEGER NOT NULL DEFAULT 1, totp_enabled INTEGER NOT NULL DEFAULT 0, last_login_at TEXT, totp_secret TEXT);
+
+-- platform_announcements
+CREATE TABLE platform_announcements (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT 'info',
+            audience TEXT NOT NULL DEFAULT 'all',
+            published INTEGER NOT NULL DEFAULT 1,
+            starts_at TEXT,
+            ends_at TEXT,
+            created_by_admin_id INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        , image_url TEXT);
+
+-- platform_audit_log
+CREATE TABLE platform_audit_log (
+            id SERIAL PRIMARY KEY,
+            actor_admin_id INTEGER),
+            actor_email TEXT,
+            action TEXT NOT NULL,
+            target_type TEXT,
+            target_id INTEGER,
+            target_label TEXT,
+            organization_id INTEGER),
+            meta_json TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_coupons
+CREATE TABLE platform_coupons (
+            id SERIAL PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            percent_off REAL NOT NULL DEFAULT 0,
+            amount_off REAL NOT NULL DEFAULT 0,
+            valid_until TEXT,
+            max_redemptions INTEGER,
+            redemption_count INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            created_by_admin_id INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_invoices
+CREATE TABLE platform_invoices (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            plan_slug TEXT NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'INR',
+            status TEXT NOT NULL DEFAULT 'pending',
+            period_start TEXT,
+            period_end TEXT,
+            note TEXT,
+            created_by_admin_id INTEGER),
+            paid_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_kb_articles
+CREATE TABLE platform_kb_articles (
+            id SERIAL PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            audience TEXT NOT NULL DEFAULT 'all',
+            status TEXT NOT NULL DEFAULT 'draft',
+            published_at TEXT,
+            created_by_admin_id INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_org_notes
+CREATE TABLE platform_org_notes (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            author_admin_id INTEGER),
+            author_email TEXT,
+            body TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_plan_change_requests
+CREATE TABLE platform_plan_change_requests (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            requested_plan TEXT NOT NULL,
+            current_plan TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            note TEXT,
+            requested_by_user_id INTEGER),
+            requested_by_email TEXT,
+            reviewed_by_admin_id INTEGER),
+            review_note TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- platform_releases
+CREATE TABLE platform_releases (
+            id SERIAL PRIMARY KEY,
+            version TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            audience TEXT NOT NULL DEFAULT 'all',
+            severity TEXT NOT NULL DEFAULT 'info',
+            status TEXT NOT NULL DEFAULT 'draft',
+            published_at TEXT,
+            created_by_admin_id INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        , desktop_installer TEXT);
+
+-- platform_sessions
+CREATE TABLE platform_sessions (
+            id SERIAL PRIMARY KEY,
+            admin_id INTEGER NOT NULL),
+            jti TEXT NOT NULL UNIQUE,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            last_used_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            expires_at TEXT,
+            revoked INTEGER NOT NULL DEFAULT 0
+        );
+
+-- platform_support_tickets
+CREATE TABLE platform_support_tickets (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER),
+            user_email TEXT,
+            user_name TEXT,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            replies_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+
+-- project_user
+CREATE TABLE "project_user" ("id" SERIAL PRIMARY KEY not null, "project_id" integer not null, "user_id" integer not null, "role" varchar check ("role" in ('member', 'lead', 'contributor')) not null default 'member', "created_at" TIMESTAMP, "updated_at" TIMESTAMP)));
+
+-- projects
+CREATE TABLE "projects" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "description" text, "status" varchar check ("status" in ('planning', 'in_progress', 'on_hold', 'completed', 'cancelled')) not null default 'planning', "priority" varchar check ("priority" in ('low', 'medium', 'high', 'urgent')) not null default 'medium', "start_date" date, "end_date" date, "budget" NUMERIC, "actual_cost" NUMERIC, "progress_percentage" integer not null default '0', "project_manager_id" integer, "created_by" integer, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1)));
+
+-- pt_slabs
+CREATE TABLE pt_slabs (
+            id SERIAL PRIMARY KEY,
+            state_code TEXT NOT NULL,
+            state_name TEXT NOT NULL,
+            min_gross REAL NOT NULL DEFAULT 0,
+            max_gross REAL,
+            monthly_tax REAL NOT NULL,
+            effective_from TEXT,
+            UNIQUE(state_code, min_gross)
+        );
+
+-- reimbursement_claims
+CREATE TABLE reimbursement_claims (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            user_id INTEGER NOT NULL),
+            salary_component_id INTEGER,
+            claim_month INTEGER NOT NULL,
+            claim_year INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            amount REAL NOT NULL,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            review_notes TEXT,
+            payroll_month INTEGER,
+            payroll_year INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+-- role_user
+CREATE TABLE "role_user" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "role_id" integer not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP)));
+
+-- salary_components
+CREATE TABLE "salary_components" (
+            id SERIAL PRIMARY KEY NOT NULL,
+            name VARCHAR NOT NULL,
+            type VARCHAR CHECK (type IN ('earning', 'deduction', 'reimbursement')) NOT NULL,
+            description VARCHAR,
+            is_active SMALLINT NOT NULL DEFAULT 1,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            earning_type VARCHAR,
+            name_in_payslip VARCHAR,
+            calculation_type VARCHAR CHECK (calculation_type IN ('flat_amount', 'percentage_of_basic', 'percentage_of_ctc', 'percentage_of_gross')),
+            amount NUMERIC,
+            deduction_type VARCHAR,
+            deduction_frequency VARCHAR CHECK (deduction_frequency IN ('recurring', 'one_time')),
+            is_pre_tax SMALLINT NOT NULL DEFAULT 0,
+            reimbursement_type VARCHAR,
+            max_amount_per_month NUMERIC,
+            slug TEXT,
+            component_type TEXT,
+            default_value REAL,
+            is_taxable INTEGER
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- salary_structure_items
+CREATE TABLE "salary_structure_items" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "salary_component_id" integer not null, "amount" NUMERIC not null default '0', "effective_from" date not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP)));
+
+-- salary_structures
+CREATE TABLE "salary_structures" ("id" SERIAL PRIMARY KEY not null, "user_id" integer not null, "basic_salary" NUMERIC not null default '0', "hra" NUMERIC not null default '0', "transport_allowance" NUMERIC not null default '0', "other_allowances" NUMERIC not null default '0', "pf_deduction" NUMERIC not null default '0', "esi_deduction" NUMERIC not null default '0', "tds" NUMERIC not null default '0', "effective_from" date not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP));
+
+-- salary_templates
+CREATE TABLE salary_templates (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            basic_pct REAL NOT NULL DEFAULT 50,
+            hra_pct REAL NOT NULL DEFAULT 35,
+            conv_pct REAL NOT NULL DEFAULT 15,
+            special_pct REAL NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- sessions
+CREATE TABLE "sessions" ("id" varchar not null, "user_id" integer, "ip_address" varchar, "user_agent" text, "payload" text not null, "last_activity" integer not null, primary key ("id"));
+
+-- shift_daily_roster
+CREATE TABLE shift_daily_roster (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            roster_date TEXT NOT NULL,
+            shift_template_id INTEGER),
+            is_day_off INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP), organization_id INTEGER NOT NULL DEFAULT 1),
+            UNIQUE(user_id, roster_date)
+        );
+
+-- shift_templates
+CREATE TABLE shift_templates (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            start_time TEXT NOT NULL DEFAULT '09:00:00',
+            end_time TEXT NOT NULL DEFAULT '18:00:00',
+            grace_in_minutes INTEGER NOT NULL DEFAULT 0,
+            grace_out_minutes INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , is_default INTEGER NOT NULL DEFAULT 0, working_days_mask INTEGER NOT NULL DEFAULT 31, organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- signup_otp_challenges
+CREATE TABLE signup_otp_challenges (
+            id TEXT PRIMARY KEY,
+            channel TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            otp_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+-- task_comments
+CREATE TABLE "task_comments" ("id" SERIAL PRIMARY KEY not null, "task_id" integer not null, "user_id" integer not null, "comment" text not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP)));
+
+-- tasks
+CREATE TABLE "tasks" ("id" SERIAL PRIMARY KEY not null, "title" varchar not null, "description" text, "status" varchar not null default ('todo'), "priority" varchar not null default ('medium'), "type" varchar check ("type" in ('call', 'email', 'meeting', 'follow_up', 'development', 'other')) not null default 'other', "due_date" date, "due_time" time, "assigned_to" integer, "created_by" integer not null, "related_to_type" varchar, "related_to_id" integer, "is_reminder_sent" SMALLINT not null default ('0'), "completed_at" TIMESTAMP, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP, "project_id" integer, organization_id INTEGER NOT NULL DEFAULT 1))));
+
+-- tenant_feature_overrides
+CREATE TABLE tenant_feature_overrides (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL),
+            module_slug TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            reason TEXT,
+            created_by_admin_id INTEGER),
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE(organization_id, module_slug)
+        );
+
+-- testimonials
+CREATE TABLE "testimonials" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "company" varchar, "position" varchar, "content" text not null, "rating" integer not null default '5', "avatar" varchar, "is_featured" SMALLINT not null default '0', "is_active" SMALLINT not null default '1', "display_order" integer not null default '0', "created_at" TIMESTAMP, "updated_at" TIMESTAMP);
+
+-- user_presence
+CREATE TABLE user_presence (
+            user_id SERIAL PRIMARY KEY),
+            organization_id INTEGER NOT NULL),
+            ip_address TEXT,
+            latitude REAL,
+            longitude REAL,
+            city TEXT,
+            region TEXT,
+            country TEXT,
+            last_active_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        , accuracy_meters REAL);
+
+-- user_shift_assignments
+CREATE TABLE user_shift_assignments (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL),
+            shift_template_id INTEGER NOT NULL),
+            effective_from TEXT NOT NULL,
+            effective_to TEXT,
+            created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        , organization_id INTEGER NOT NULL DEFAULT 1);
+
+-- workflow_executions
+CREATE TABLE "workflow_executions" ("id" SERIAL PRIMARY KEY not null, "workflow_id" integer not null, "trigger_type" varchar not null, "trigger_data" text, "status" varchar not null, "actions_executed" text, "error_message" text, "started_at" TIMESTAMP, "completed_at" TIMESTAMP, "created_at" TIMESTAMP, "updated_at" TIMESTAMP));
+
+-- workflows
+CREATE TABLE "workflows" ("id" SERIAL PRIMARY KEY not null, "name" varchar not null, "description" text, "trigger_type" varchar not null, "trigger_conditions" text, "actions" text not null, "is_active" SMALLINT not null default '1', "execution_count" integer not null default '0', "last_executed_at" TIMESTAMP, "created_by" integer not null, "created_at" TIMESTAMP, "updated_at" TIMESTAMP, "deleted_at" TIMESTAMP, organization_id INTEGER NOT NULL DEFAULT 1));
+
+-- Would copy data for 89 tables

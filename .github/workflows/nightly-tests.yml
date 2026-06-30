@@ -1,0 +1,63 @@
+name: Nightly Full Test Suite
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --release
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          HRM_AUTH_LOGIN_MAX: "500"
+          ALLOW_INSECURE_SECRETS: "1"
+        run: |
+          nohup ./target/release/hrm-backend > ../nightly-backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/api/health && break
+            sleep 2
+          done
+
+      - name: Install tenant frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start tenant dev server
+        working-directory: frontend
+        run: |
+          nohup npm run dev -- --host 127.0.0.1 --port 5174 > ../nightly-frontend.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:5174/ && break
+            sleep 2
+          done
+
+      - name: Run complete test orchestrator
+        run: |
+          pwsh -NoProfile -File scripts/run-complete-all-tests.ps1 -SkipPlatform
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-test-logs
+          path: |
+            nightly-backend.log
+            nightly-frontend.log
+            reports/

@@ -166,7 +166,7 @@ fn load_space_row(
 fn load_dm_members(conn: &crate::db::Connection, space_id: i64, viewer_id: i64) -> Vec<ChatMember> {
     let cutoff = chrono::Utc::now() - chrono::Duration::minutes(15);
     let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT u.id, u.name, u.email, u.photo,
                 CASE WHEN p.last_active_at >= ?3 THEN 1 ELSE 0 END AS is_online
          FROM chat_space_members m
@@ -194,7 +194,7 @@ fn build_reactions_json(
     message_id: i64,
     viewer_id: i64,
 ) -> String {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT emoji, GROUP_CONCAT(user_id) FROM chat_message_reactions WHERE message_id = ?1 GROUP BY emoji",
     ) {
         Ok(s) => s,
@@ -222,7 +222,7 @@ fn build_reactions_json(
 }
 
 fn build_attachments_json(conn: &crate::db::Connection, message_id: i64) -> String {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, file_name, file_url, file_size, mime_type FROM chat_message_attachments WHERE message_id = ?1",
     ) {
         Ok(s) => s,
@@ -299,7 +299,7 @@ fn fetch_message(
 
 fn auto_join_public_channels(conn: &crate::db::Connection, org_id: i64, user_id: i64) {
     let now = now_ts();
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id FROM chat_spaces WHERE organization_id = ?1 AND kind = 'channel' AND is_private = 0",
     ) {
         Ok(s) => s,
@@ -333,7 +333,7 @@ pub async fn spaces_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
     auto_join_public_channels(&conn, org_id, user_id);
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT s.id FROM chat_spaces s
          JOIN chat_space_members m ON m.space_id = s.id AND m.user_id = ?2
          WHERE s.organization_id = ?1
@@ -667,11 +667,13 @@ pub async fn dm_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json
     }
 
     let now = now_ts();
-    conn.execute(
+    if let Err(_) = conn.execute(
         "INSERT INTO chat_spaces (organization_id, kind, dm_hash, is_private, created_by, created_at, updated_at)
          VALUES (?1, 'dm', ?2, 1, ?3, ?4, ?4)",
         crate::params![org_id, &hash, user_id, &now],
-    );
+    ) {
+        return HttpResponse::InternalServerError().json(ApiError::new("Failed to create DM"));
+    }
     let space_id = conn.last_insert_rowid();
     for uid in &ids {
         let _ = conn.execute(
@@ -752,7 +754,7 @@ pub async fn messages_index(
          ORDER BY m.id DESC LIMIT ?4"
     );
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
@@ -931,10 +933,13 @@ pub async fn messages_update(
         )
         .unwrap_or(0);
 
-    conn.execute(
-        "UPDATE chat_messages SET content = ?1, is_edited = 1, updated_at = ?2 WHERE id = ?3",
-        crate::params![content, &now, message_id],
-    );
+    if let Err(_) = conn.execute(
+        "UPDATE chat_messages SET content = ?1, is_edited = 1, updated_at = ?2
+         WHERE id = ?3 AND organization_id = ?4",
+        crate::params![content, &now, message_id, org_id],
+    ) {
+        return HttpResponse::InternalServerError().json(ApiError::new("Failed to update message"));
+    }
 
     let message = fetch_message(&conn, message_id, org_id, user_id);
     if let Some(ref msg) = message {
@@ -986,10 +991,12 @@ pub async fn messages_destroy(
     }
 
     let now = now_ts();
-    conn.execute(
+    if let Err(_) = conn.execute(
         "UPDATE chat_messages SET is_deleted = 1, content = '[deleted]', updated_at = ?1 WHERE id = ?2",
         crate::params![&now, message_id],
-    );
+    ) {
+        return HttpResponse::InternalServerError().json(ApiError::new("Failed to delete message"));
+    }
 
     events.emit(
         org_id,
@@ -1235,7 +1242,7 @@ pub async fn search(pool: web::Data<DbPool>, req: HttpRequest, query: web::Query
     };
 
     let pattern = format!("%{term}%");
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT m.id FROM chat_messages m
          JOIN chat_space_members mem ON mem.space_id = m.space_id AND mem.user_id = ?3
          WHERE m.organization_id = ?1 AND m.is_deleted = 0 AND m.content LIKE ?2
@@ -1273,7 +1280,7 @@ pub async fn pins_index(pool: web::Data<DbPool>, req: HttpRequest, path: web::Pa
         return resp;
     }
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT message_id FROM chat_pinned_messages WHERE space_id = ?1 ORDER BY pinned_at DESC",
     ) {
         Ok(s) => s,
@@ -1301,7 +1308,7 @@ pub async fn starred_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRes
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT message_id FROM chat_starred_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
     ) {
         Ok(s) => s,
@@ -1330,7 +1337,7 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
     let cutoff = chrono::Utc::now() - chrono::Duration::minutes(15);
     let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT u.id, u.name, u.email, u.photo,
                 CASE WHEN p.last_active_at >= ?2 THEN 1 ELSE 0 END AS is_online
          FROM users u

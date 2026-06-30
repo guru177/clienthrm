@@ -8,6 +8,8 @@ Rust backend plus two standalone React apps: tenant HRM (`frontend`) and platfor
 
 **Platform admin:** [docs/PLATFORM.md](docs/PLATFORM.md) — SaaS console (orgs, plans, impersonation, IP tracking).
 
+**Biometric devices:** [docs/BIOMETRIC-DEVICE-SETUP.md](docs/BIOMETRIC-DEVICE-SETUP.md) — connect ZKTeco / BIO-PARK attendance devices.
+
 ## Run locally
 
 Backend:

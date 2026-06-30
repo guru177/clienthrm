@@ -27,7 +27,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
-    let mut stmt = conn.prepare("SELECT * FROM tasks WHERE organization_id = ?1 ORDER BY created_at DESC").unwrap();
+    let stmt = conn.prepare("SELECT * FROM tasks WHERE organization_id = ?1 ORDER BY created_at DESC").unwrap();
     let items: Vec<Task> = stmt.query_map([org_id], Task::from_row);
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
@@ -47,6 +47,10 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Ta
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let title = match crate::validation::require_non_empty(&body.title, "Title") {
+        Ok(t) => t,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let assigned_to = parse_optional_task_id(&body.assigned_to);
     let project_id = parse_optional_task_id(&body.project_id);
@@ -60,7 +64,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Ta
         .unwrap_or("medium");
     match conn.execute(
         "INSERT INTO tasks (title,description,status,priority,assigned_to,project_id,due_date,\"type\",created_by,organization_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-        crate::params![body.title, body.description, body.status.as_deref().unwrap_or("todo"), priority, assigned_to, project_id, body.due_date, body.development_type, claims.sub, org_id, &now, &now],
+        crate::params![title, body.description, body.status.as_deref().unwrap_or("todo"), priority, assigned_to, project_id, body.due_date, body.development_type, claims.sub, org_id, &now, &now],
     ) {
         Ok(_)=>HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
         Err(e)=>HttpResponse::BadRequest().json(ApiError::new(&format!("{}",e)))
@@ -70,6 +74,10 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let title = match crate::validation::require_non_empty(&body.title, "Title") {
+        Ok(t) => t,
+        Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
+    };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let assigned_to = body.assigned_to;
     let project_id = body.project_id;
@@ -78,7 +86,7 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     }
     match conn.execute(
         "UPDATE tasks SET title=?1,description=?2,status=?3,priority=?4,assigned_to=?5,project_id=?6,due_date=?7,\"type\"=?8,updated_at=?9 WHERE id=?10 AND organization_id=?11",
-        crate::params![body.title, body.description, body.status, body.priority, assigned_to, project_id, body.due_date, body.development_type, &now, path.into_inner(), org_id],
+        crate::params![title, body.description, body.status, body.priority, assigned_to, project_id, body.due_date, body.development_type, &now, path.into_inner(), org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),

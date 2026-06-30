@@ -12,6 +12,7 @@ pub struct LeaveTypeConfig {
     pub name: String,
     pub payment_type: String,
     pub counts_toward_quota: bool,
+    pub quota_days: Option<i64>,
     pub is_active: bool,
 }
 
@@ -33,8 +34,8 @@ pub fn payment_type_label(payment_type: &str) -> &'static str {
 }
 
 pub fn load_all(conn: &Connection, org_id: i64) -> Vec<LeaveTypeConfig> {
-    let mut stmt = match conn.prepare(
-        "SELECT id, slug, name, payment_type, counts_toward_quota, is_active
+    let stmt = match conn.prepare(
+        "SELECT id, slug, name, payment_type, counts_toward_quota, quota_days, is_active
          FROM leave_types WHERE organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,
@@ -47,7 +48,8 @@ pub fn load_all(conn: &Connection, org_id: i64) -> Vec<LeaveTypeConfig> {
             name: row.get_idx::<String>(2)?,
             payment_type: row.get_idx::<String>(3)?,
             counts_toward_quota: row.get_idx::<i64>(4).unwrap_or(0) != 0,
-            is_active: row.get_idx::<i64>(5).unwrap_or(1) != 0,
+            quota_days: row.get_idx::<Option<i64>>(5).ok().flatten(),
+            is_active: row.get_idx::<i64>(6).unwrap_or(1) != 0,
         })
     });
     if list.is_empty() {
@@ -130,6 +132,7 @@ fn default_types() -> Vec<LeaveTypeConfig> {
             name: "Sick Leave".into(),
             payment_type: "paid".into(),
             counts_toward_quota: false,
+            quota_days: None,
             is_active: true,
         },
         LeaveTypeConfig {
@@ -138,6 +141,7 @@ fn default_types() -> Vec<LeaveTypeConfig> {
             name: "Annual Leave".into(),
             payment_type: "paid".into(),
             counts_toward_quota: true,
+            quota_days: None,
             is_active: true,
         },
         LeaveTypeConfig {
@@ -146,6 +150,7 @@ fn default_types() -> Vec<LeaveTypeConfig> {
             name: "Personal Leave".into(),
             payment_type: "paid".into(),
             counts_toward_quota: false,
+            quota_days: None,
             is_active: true,
         },
         LeaveTypeConfig {
@@ -154,6 +159,7 @@ fn default_types() -> Vec<LeaveTypeConfig> {
             name: "Unpaid Leave".into(),
             payment_type: "unpaid".into(),
             counts_toward_quota: false,
+            quota_days: None,
             is_active: true,
         },
         LeaveTypeConfig {
@@ -162,6 +168,7 @@ fn default_types() -> Vec<LeaveTypeConfig> {
             name: "Emergency Leave".into(),
             payment_type: "paid".into(),
             counts_toward_quota: false,
+            quota_days: None,
             is_active: true,
         },
     ]

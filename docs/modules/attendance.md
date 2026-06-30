@@ -13,8 +13,9 @@ Track employee presence via manual clock-in/out, optional face capture, and biom
 |------------|-----|
 | `view-attendance` | Lists, stats, today board |
 | `clock-inout` | Self clock-in/out |
-| `manage-attendance` | Admin corrections (via shifts/biometric write paths) |
-| `mark-attendance` | Manual mark for others |
+| `manage-attendance` | Admin corrections (edit/delete in History) |
+
+Manual marking for others is provided by the separate [Manual Attendance](manual_attendance.md) module (`mark-attendance` permission).
 
 ## Frontend
 

@@ -1,6 +1,7 @@
 // Head removed - use document.title instead
 import axios from '@/lib/axios';
 import { storageUrl, externalHttpsUrl } from '@/lib/storage-url';
+import { staticAssetUrl } from '@/lib/static-asset';
 import { useAuth } from '@/contexts/AuthContext';
 import { Search, Eye, Trash2, FileText, MoreHorizontal, RefreshCw, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, ExternalLink, Send, CheckCircle2, XCircle, Loader2, Settings, Sparkles, ArrowUp, ArrowDown } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -9,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import {
     Select,
     SelectContent,
@@ -157,7 +159,7 @@ export default function JobApplicationsIndex() {
 
     const { settings } = useAuth();
     const appName = settings?.app_name || "Raintech HRM";
-    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : "/images/logo.webp";
+    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : staticAssetUrl('images/logo.webp');
 
 
 
@@ -892,7 +894,7 @@ export default function JobApplicationsIndex() {
                                     onClick={handleSendEmail}
                                 >
                                     <Send className="mr-2 h-4 w-4" />
-                                    {sendingEmail ? 'Sendingâ€¦' : 'Send Email'}
+                                    {sendingEmail ? 'Sending…' : 'Send Email'}
                                 </Button>
                                 </div>
                             </div>
@@ -1001,11 +1003,10 @@ export default function JobApplicationsIndex() {
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">SMTP Password</label>
-                            <Input 
-                                type="password"
-                                value={configData.smtp_pass} 
-                                onChange={(e) => setConfigData({...configData, smtp_pass: e.target.value})} 
-                                placeholder="••••••••" 
+                            <PasswordInput
+                                value={configData.smtp_pass}
+                                onChange={(e) => setConfigData({...configData, smtp_pass: e.target.value})}
+                                placeholder="••••••••"
                             />
                         </div>
                         <div className="space-y-2">
@@ -1019,11 +1020,10 @@ export default function JobApplicationsIndex() {
                         <Separator />
                         <div className="space-y-2">
                             <label className="text-sm font-medium">AI API Key</label>
-                            <Input 
-                                type="password"
-                                value={configData.ai_api_key} 
-                                onChange={(e) => setConfigData({...configData, ai_api_key: e.target.value})} 
-                                placeholder="Enter API Key" 
+                            <PasswordInput
+                                value={configData.ai_api_key}
+                                onChange={(e) => setConfigData({...configData, ai_api_key: e.target.value})}
+                                placeholder="Enter API Key"
                             />
                             <p className="text-xs text-muted-foreground">Used for AI ATS parsing and email generation.</p>
                         </div>

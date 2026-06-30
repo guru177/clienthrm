@@ -248,7 +248,7 @@ pub fn ensure_org_subscription_enforced(conn: &Connection, org_id: i64) -> Resul
 }
 
 pub fn backfill_org_subscriptions(conn: &Connection) {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, plan, created_at FROM organizations WHERE status != 'deleted' AND plan_started_at IS NULL",
     ) {
         Ok(s) => s,

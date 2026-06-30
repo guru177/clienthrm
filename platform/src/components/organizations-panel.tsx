@@ -12,6 +12,7 @@ import { defaultAdminRoute, redirectToTenantImpersonation } from '@/lib/app-urls
 import { PlatformAlertDialog, PlatformConfirmDialog } from '@/components/platform-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
@@ -459,8 +460,7 @@ export function OrganizationsPanel({ compact = false }: OrganizationsPanelProps)
                         </div>
                         <div className="space-y-2 sm:col-span-2">
                             <Label>Admin password</Label>
-                            <Input
-                                type="password"
+                            <PasswordInput
                                 value={form.admin_password}
                                 onChange={(e) =>
                                     setForm({ ...form, admin_password: e.target.value })

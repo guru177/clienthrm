@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import AuthLayout from '@/layouts/auth-layout';
@@ -26,8 +27,15 @@ export default function Login() {
         setError('');
 
         try {
-            const perms = await login(email, password, orgSlug.trim() || undefined);
-            const has = (slug: string) => perms.includes('*') || perms.includes(slug);
+            const result = await login(email, password, orgSlug.trim() || undefined);
+            if (result.kind === 'requires2fa') {
+                navigate('/auth/two-factor-challenge', {
+                    replace: true,
+                    state: { preAuthToken: result.preAuthToken, email: result.email },
+                });
+                return;
+            }
+            const has = (slug: string) => result.permissions.includes('*') || result.permissions.includes(slug);
             navigate(defaultAdminRoute(has), { replace: true });
         } catch (err: any) {
             setError(err.message || 'Invalid credentials');
@@ -68,10 +76,18 @@ export default function Login() {
                     </div>
 
                     <div className="space-y-2">
-                        <Label htmlFor="password">Password</Label>
-                        <Input
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="password">Password</Label>
+                            <Link
+                                to="/forgot-password"
+                                className="text-xs font-medium text-primary hover:underline"
+                                tabIndex={3}
+                            >
+                                Forgot password?
+                            </Link>
+                        </div>
+                        <PasswordInput
                             id="password"
-                            type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required
@@ -96,7 +112,7 @@ export default function Login() {
                                 className="h-11"
                             />
                             <p className="text-xs text-muted-foreground">
-                                Use if your email exists in multiple companies. Desktop app connects to the API on port 3001.
+                                Use if your email exists in multiple companies.
                             </p>
                         </div>
                     )}

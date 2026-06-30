@@ -17,7 +17,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_read() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -114,7 +114,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         }));
     }
 
-    let mut hstmt = conn
+    let hstmt = conn
         .prepare("SELECT name, date FROM holidays WHERE organization_id = ?1 AND date >= ?2 ORDER BY date LIMIT 4")
         .unwrap();
     let holidays: Vec<serde_json::Value> = hstmt
@@ -162,7 +162,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
 
     let cal_days = crate::payroll_logic::calendar_days_in_month(month, year);
     let as_of = format!("{}-{:02}-{}", year, month, cal_days);
-    let mut dept_stmt = match conn.prepare(
+    let dept_stmt = match conn.prepare(
             "SELECT d.id, d.name, u.id AS user_id
              FROM departments d
              INNER JOIN users u ON u.department_id = d.id AND u.deleted_at IS NULL AND u.is_super_admin=0
@@ -217,7 +217,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
 
     let celebrations: Vec<serde_json::Value> = {
         let mut result = Vec::new();
-        if let Ok(mut stmt) = conn.prepare(
+        if let Ok(stmt) = conn.prepare(
             "SELECT name, date_of_birth FROM users
              WHERE deleted_at IS NULL AND organization_id = ?1
                AND date_of_birth IS NOT NULL AND date_of_birth != ''
@@ -255,7 +255,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
 
     let recent_workflows: Vec<serde_json::Value> = {
         let mut result = Vec::new();
-        if let Ok(mut stmt) = conn.prepare(
+        if let Ok(stmt) = conn.prepare(
             "SELECT we.id, w.name, we.status, we.trigger_type, we.updated_at
              FROM workflow_executions we
              JOIN workflows w ON w.id = we.workflow_id

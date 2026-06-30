@@ -9,6 +9,7 @@ import {
     Search,
     Trash2,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
 
 import { Badge } from '@/components/ui/badge';
@@ -39,7 +40,9 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/use-permissions';
+import { isModuleAllowed } from '@/lib/plan-modules';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface ShiftInfo {
@@ -67,12 +70,6 @@ interface AttendanceRecord {
     shift?: ShiftInfo | null;
 }
 
-interface EmployeeOption {
-    id: number;
-    name: string;
-    email?: string;
-}
-
 const STATUS_OPTIONS = ['present', 'absent', 'half_day', 'leave', 'sick_leave', 'holiday'];
 
 /** Extract an "HH:MM" value for a time input from a combined datetime or time string. */
@@ -83,14 +80,20 @@ function toTimeInput(value?: string | null): string {
 }
 
 export default function AttendanceTable() {
+    const { planModules } = useAuth();
     const { hasPermission } = usePermissions();
     const canManage = hasPermission('manage-attendance');
+    const canMarkManual =
+        isModuleAllowed(planModules, 'manual_attendance') &&
+        (hasPermission('mark-attendance') || hasPermission('manage-attendance'));
 
     const [records, setRecords] = useState<AttendanceRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [status, setStatus] = useState('all');
     const [onlyOpen, setOnlyOpen] = useState(false);
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [lastPage, setLastPage] = useState(1);
     const [total, setTotal] = useState(0);
@@ -98,24 +101,11 @@ export default function AttendanceTable() {
     const [from, setFrom] = useState(0);
     const [to, setTo] = useState(0);
 
-    const [employees, setEmployees] = useState<EmployeeOption[]>([]);
-
     // Edit dialog state
     const [editOpen, setEditOpen] = useState(false);
     const [editRow, setEditRow] = useState<AttendanceRecord | null>(null);
     const [editForm, setEditForm] = useState({ clock_in: '', clock_out: '', status: 'present', notes: '' });
     const [saving, setSaving] = useState(false);
-
-    // Add dialog state
-    const [addOpen, setAddOpen] = useState(false);
-    const [addForm, setAddForm] = useState({
-        user_id: '',
-        date: new Date().toISOString().slice(0, 10),
-        clock_in: '',
-        clock_out: '',
-        status: 'present',
-        notes: '',
-    });
 
     const fetchRecords = useCallback(async () => {
         setLoading(true);
@@ -125,6 +115,8 @@ export default function AttendanceTable() {
                     search,
                     status: status !== 'all' ? status : undefined,
                     only_open: onlyOpen ? true : undefined,
+                    date_from: dateFrom || undefined,
+                    date_to: dateTo || undefined,
                     page: currentPage,
                     per_page: perPage,
                 },
@@ -145,21 +137,11 @@ export default function AttendanceTable() {
         } finally {
             setLoading(false);
         }
-    }, [search, status, onlyOpen, currentPage, perPage]);
+    }, [search, status, onlyOpen, dateFrom, dateTo, currentPage, perPage]);
 
     useEffect(() => {
         fetchRecords();
     }, [fetchRecords]);
-
-    const loadEmployees = useCallback(async () => {
-        if (employees.length > 0) return;
-        try {
-            const res = await axios.get('/admin/attendance/users');
-            if (res.data.success) setEmployees(res.data.data ?? []);
-        } catch {
-            /* ignore */
-        }
-    }, [employees.length]);
 
     const openEdit = (record: AttendanceRecord) => {
         setEditRow(record);
@@ -185,44 +167,6 @@ export default function AttendanceTable() {
             handleApiResponse(res);
             setEditOpen(false);
             setEditRow(null);
-            fetchRecords();
-        } catch (error) {
-            handleApiError(error);
-        } finally {
-            setSaving(false);
-        }
-    };
-
-    const openAdd = () => {
-        void loadEmployees();
-        setAddForm({
-            user_id: '',
-            date: new Date().toISOString().slice(0, 10),
-            clock_in: '',
-            clock_out: '',
-            status: 'present',
-            notes: '',
-        });
-        setAddOpen(true);
-    };
-
-    const submitAdd = async () => {
-        if (!addForm.user_id) {
-            handleApiError({ response: { data: { message: 'Select an employee' } } });
-            return;
-        }
-        setSaving(true);
-        try {
-            const res = await axios.post('/admin/attendance/manual', {
-                user_id: Number(addForm.user_id),
-                date: addForm.date,
-                clock_in: addForm.clock_in || undefined,
-                clock_out: addForm.clock_out || undefined,
-                status: addForm.status,
-                notes: addForm.notes || undefined,
-            });
-            handleApiResponse(res);
-            setAddOpen(false);
             fetchRecords();
         } catch (error) {
             handleApiError(error);
@@ -318,6 +262,28 @@ export default function AttendanceTable() {
                             </SelectContent>
                         </Select>
 
+                        {/* Date range */}
+                        <Input
+                            type="date"
+                            value={dateFrom}
+                            onChange={(e) => {
+                                setDateFrom(e.target.value);
+                                setCurrentPage(1);
+                            }}
+                            className="w-[150px]"
+                            title="From date"
+                        />
+                        <Input
+                            type="date"
+                            value={dateTo}
+                            onChange={(e) => {
+                                setDateTo(e.target.value);
+                                setCurrentPage(1);
+                            }}
+                            className="w-[150px]"
+                            title="To date"
+                        />
+
                         {/* Open-sessions filter */}
                         <Button
                             type="button"
@@ -350,9 +316,11 @@ export default function AttendanceTable() {
                             </SelectContent>
                         </Select>
 
-                        {canManage && (
-                            <Button type="button" size="sm" onClick={openAdd}>
-                                <Plus className="mr-1 h-4 w-4" /> Add entry
+                        {canMarkManual && (
+                            <Button type="button" size="sm" variant="outline" asChild>
+                                <Link to="/admin/manual-attendance">
+                                    <Plus className="mr-1 h-4 w-4" /> Mark attendance
+                                </Link>
                             </Button>
                         )}
                     </div>
@@ -454,7 +422,13 @@ export default function AttendanceTable() {
                                         <TableCell>{getStatusBadge(record.status)}</TableCell>
                                         <TableCell>
                                             <Badge variant="outline" className="capitalize">
-                                                {record.source || 'manual'}
+                                                {record.source === 'biometric'
+                                                    ? 'Biometric'
+                                                    : record.source === 'manual'
+                                                      ? 'Manual'
+                                                      : !record.source
+                                                        ? 'App / system'
+                                                        : record.source}
                                             </Badge>
                                         </TableCell>
                                         {canManage && (
@@ -605,98 +579,6 @@ export default function AttendanceTable() {
                 </DialogContent>
             </Dialog>
 
-            {/* Add dialog */}
-            <Dialog open={addOpen} onOpenChange={setAddOpen}>
-                <DialogContent>
-                    <DialogHeader>
-                        <DialogTitle>Add attendance entry</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-3">
-                        <div className="space-y-1">
-                            <Label>Employee</Label>
-                            <Select
-                                value={addForm.user_id}
-                                onValueChange={(v) => setAddForm((f) => ({ ...f, user_id: v }))}
-                            >
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Select employee" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {employees.map((e) => (
-                                        <SelectItem key={e.id} value={String(e.id)}>
-                                            {e.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        <div className="space-y-1">
-                            <Label htmlFor="add_date">Date</Label>
-                            <Input
-                                id="add_date"
-                                type="date"
-                                value={addForm.date}
-                                onChange={(e) => setAddForm((f) => ({ ...f, date: e.target.value }))}
-                            />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                            <div className="space-y-1">
-                                <Label htmlFor="add_in">Clock in</Label>
-                                <Input
-                                    id="add_in"
-                                    type="time"
-                                    value={addForm.clock_in}
-                                    onChange={(e) => setAddForm((f) => ({ ...f, clock_in: e.target.value }))}
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <Label htmlFor="add_out">Clock out</Label>
-                                <Input
-                                    id="add_out"
-                                    type="time"
-                                    value={addForm.clock_out}
-                                    onChange={(e) => setAddForm((f) => ({ ...f, clock_out: e.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="space-y-1">
-                            <Label>Status</Label>
-                            <Select
-                                value={addForm.status}
-                                onValueChange={(v) => setAddForm((f) => ({ ...f, status: v }))}
-                            >
-                                <SelectTrigger>
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {STATUS_OPTIONS.map((s) => (
-                                        <SelectItem key={s} value={s} className="capitalize">
-                                            {s.replace('_', ' ')}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-                        <div className="space-y-1">
-                            <Label htmlFor="add_notes">Notes</Label>
-                            <Textarea
-                                id="add_notes"
-                                placeholder="Reason (optional)"
-                                value={addForm.notes}
-                                onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
-                            />
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setAddOpen(false)} disabled={saving}>
-                            Cancel
-                        </Button>
-                        <Button onClick={submitAdd} disabled={saving}>
-                            {saving ? 'Saving...' : 'Create entry'}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </Card>
     );
 }

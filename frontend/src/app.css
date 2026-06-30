@@ -210,7 +210,6 @@
     }
 
     /* Hide elements that shouldn't be printed */
-    .print\\:hidden,
     nav,
     aside,
     header[role='banner'],

@@ -138,7 +138,7 @@ pub async fn index(
     }
     sql.push_str(" ORDER BY lc.created_at DESC, lc.id DESC");
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };

@@ -1,4 +1,4 @@
-/** Matches backend plan_limits::MODULE_CATALOG (24 tenant sidebar modules). */
+/** Matches backend plan_limits::MODULE_CATALOG (25 tenant sidebar modules). */
 export const TENANT_MODULE_CATALOG = [
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'users', label: 'Users & Roles' },
@@ -11,6 +11,7 @@ export const TENANT_MODULE_CATALOG = [
     { key: 'attendance', label: 'Attendance' },
     { key: 'shifts', label: 'Shifts' },
     { key: 'biometric', label: 'Biometric Devices' },
+    { key: 'manual_attendance', label: 'Manual Attendance' },
     { key: 'leave', label: 'Leave Requests' },
     { key: 'leave_manage', label: 'Manage Leave' },
     { key: 'holidays', label: 'Holidays' },

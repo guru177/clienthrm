@@ -1,24 +1,6 @@
-# Builds tenant + platform static apps and serves them via Caddy (HTTPS)
-FROM node:22-alpine AS tenant
-WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
-COPY frontend/ ./
-ARG VITE_PLATFORM_APP_URL=https://platform.example.com
-ENV VITE_PLATFORM_APP_URL=${VITE_PLATFORM_APP_URL}
-RUN npm run build
-
-FROM node:22-alpine AS platform
-WORKDIR /app
-COPY platform/package.json platform/package-lock.json* ./
-RUN npm ci
-COPY platform/ ./
-COPY frontend/public ./public
-ARG VITE_TENANT_APP_URL=https://app.example.com
-ENV VITE_TENANT_APP_URL=${VITE_TENANT_APP_URL}
-RUN npm run build
-
+# Serves pre-built tenant + platform static apps via Caddy (HTTPS)
+# Build frontends locally before deploy: see scripts/deploy-production.ps1
 FROM caddy:2-alpine
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
-COPY --from=tenant /app/dist /srv/tenant
-COPY --from=platform /app/dist /srv/platform
+COPY frontend/dist /srv/tenant
+COPY platform/dist /srv/platform

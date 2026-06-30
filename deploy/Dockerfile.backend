@@ -1,10 +1,11 @@
 # Multi-stage build for HRM Rust backend
-FROM rust:1.83-bookworm AS builder
+FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY backend/Cargo.toml backend/Cargo.lock ./
 RUN mkdir src && echo "fn main(){}" > src/main.rs
 RUN cargo build --release 2>/dev/null || true
 COPY backend/src ./src
+COPY backend/assets ./assets
 RUN touch src/main.rs && cargo build --release
 
 FROM debian:bookworm-slim

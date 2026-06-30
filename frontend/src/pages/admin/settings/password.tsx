@@ -7,6 +7,7 @@ import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
@@ -88,10 +89,9 @@ export default function Password() {
                                 Current password
                             </Label>
 
-                            <Input
+                            <PasswordInput
                                 id="current_password"
                                 ref={currentPasswordInput}
-                                type="password"
                                 className="mt-1 block w-full"
                                 autoComplete="current-password"
                                 placeholder="Current password"
@@ -109,10 +109,9 @@ export default function Password() {
                                 New password
                             </Label>
 
-                            <Input
+                            <PasswordInput
                                 id="password"
                                 ref={passwordInput}
-                                type="password"
                                 className="mt-1 block w-full"
                                 autoComplete="new-password"
                                 placeholder="New password"
@@ -128,9 +127,8 @@ export default function Password() {
                                 Confirm password
                             </Label>
 
-                            <Input
+                            <PasswordInput
                                 id="password_confirmation"
-                                type="password"
                                 className="mt-1 block w-full"
                                 autoComplete="new-password"
                                 placeholder="Confirm password"

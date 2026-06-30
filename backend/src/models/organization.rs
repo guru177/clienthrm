@@ -43,6 +43,8 @@ pub struct CheckSignupAvailabilityRequest {
     #[serde(default)]
     pub org_slug: Option<String>,
     #[serde(default)]
+    pub company_email: Option<String>,
+    #[serde(default)]
     pub admin_email: Option<String>,
 }
 

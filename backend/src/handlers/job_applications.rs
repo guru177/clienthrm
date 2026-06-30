@@ -1,8 +1,7 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
-use lettre::{Message, SmtpTransport, Transport};
+use lettre::{Message};
 use lettre::message::MultiPart;
-use lettre::transport::smtp::authentication::Credentials;
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
@@ -57,7 +56,7 @@ pub async fn index(
 
     sql.push_str(" ORDER BY created_at DESC");
 
-    let mut stmt = conn.prepare(&sql).unwrap();
+    let stmt = conn.prepare(&sql).unwrap();
     let items: Vec<JobApplication> = stmt
         .query_map(&params, JobApplication::from_row);
     HttpResponse::Ok().json(ApiResponse::success(items))
@@ -380,33 +379,14 @@ pub async fn send_email(
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Application not found")),
     };
 
-    let get_config = |key: &str, default_env: &str| -> String {
-        let db_val: Result<String, _> = conn.query_row(
-            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = ?2",
-            crate::params![org_id, key],
-            |row| row.get_idx::<String>(0),
-        );
-        match db_val {
-            Ok(v) if !v.is_empty() => v,
-            _ => std::env::var(default_env).unwrap_or_default(),
+    let smtp = match crate::smtp_config::resolve(&conn, org_id) {
+        Some(c) => c,
+        None => {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "SMTP not configured (set in App Settings or .env)",
+            ));
         }
     };
-
-    let smtp_host = get_config("smtp_host", "SMTP_HOST");
-    let smtp_user = get_config("smtp_user", "SMTP_USER");
-    let smtp_pass = get_config("smtp_pass", "SMTP_PASS");
-    let mut smtp_port = get_config("smtp_port", "SMTP_PORT");
-    if smtp_port.is_empty() {
-        smtp_port = "587".to_string();
-    }
-    let mut smtp_from = get_config("smtp_from", "SMTP_FROM");
-    if smtp_from.is_empty() {
-        smtp_from = "no-reply@example.com".to_string();
-    }
-
-    if smtp_host.is_empty() {
-        return HttpResponse::BadRequest().json(ApiError::new("SMTP credentials not configured"));
-    }
 
     let multipart = if let Some(html) = &body.html_body {
         MultiPart::alternative_plain_html(body.body.clone(), html.clone())
@@ -417,8 +397,13 @@ pub async fn send_email(
         )
     };
 
+    let from = match smtp.from_mailbox() {
+        Ok(f) => f,
+        Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
+    };
+
     let email_message = match Message::builder()
-        .from(smtp_from.parse().unwrap_or_else(|_| "no-reply@example.com".parse().unwrap()))
+        .from(from)
         .to(email.parse().unwrap_or_else(|_| "user@example.com".parse().unwrap()))
         .subject(&body.subject)
         .multipart(multipart)
@@ -427,20 +412,7 @@ pub async fn send_email(
         Err(_) => return HttpResponse::BadRequest().json(ApiError::new("Failed to construct email")),
     };
 
-    let creds = Credentials::new(smtp_user, smtp_pass);
-
-    let mailer = match SmtpTransport::starttls_relay(&smtp_host) {
-        Ok(builder) => builder
-            .credentials(creds)
-            .port(smtp_port.parse().unwrap_or(587))
-            .build(),
-        Err(e) => {
-            return HttpResponse::InternalServerError()
-                .json(ApiError::new(&format!("SMTP relay error: {}", e)));
-        }
-    };
-
-    let result = web::block(move || mailer.send(&email_message)).await;
+    let result = web::block(move || smtp.send(&email_message)).await;
 
     match result {
         Ok(Ok(_)) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({

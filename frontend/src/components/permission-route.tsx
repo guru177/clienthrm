@@ -1,4 +1,5 @@
-import { Navigate, type ReactNode } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { isModuleAllowed } from '@/lib/plan-modules';
 

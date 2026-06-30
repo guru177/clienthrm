@@ -343,7 +343,7 @@ fn bucket_pct(name: &str, slug: &str, pct: f64) -> (f64, f64, f64, f64) {
 /// Load active salary component definitions — single source of truth for CTC split.
 pub fn load_component_split_config(conn: &Connection, org_id: i64) -> ComponentSplitConfig {
     let mut earnings = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(stmt) = conn.prepare(
         "SELECT id, name, COALESCE(slug,'') AS slug, COALESCE(calculation_type,'flat_amount') AS calc_type,
                 COALESCE(default_value, amount) AS val, is_active
          FROM salary_components
@@ -379,7 +379,7 @@ pub fn load_component_split_config(conn: &Connection, org_id: i64) -> ComponentS
     }
 
     let mut deductions = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(stmt) = conn.prepare(
         "SELECT id, name, COALESCE(slug, LOWER(REPLACE(name,' ','_'))) AS slug,
                 COALESCE(calculation_type,'flat_amount') AS calc_type,
                 COALESCE(default_value, amount, 0) AS val,

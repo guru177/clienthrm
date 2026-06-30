@@ -291,8 +291,8 @@ export default function EditUserPage() {
                 fd.append('employee_id', formData.employee_id);
                 fd.append('phone', formData.phone);
                 fd.append('status', formData.status);
-                fd.append('department_id', formData.department_id || '');
-                fd.append('designation_id', formData.designation_id || '');
+                fd.append('department_id', formData.department_id != null ? String(formData.department_id) : '');
+                fd.append('designation_id', formData.designation_id != null ? String(formData.designation_id) : '');
                 fd.append('date_of_joining', formData.date_of_joining);
                 fd.append('work_location', formData.work_location);
                 fd.append('bank_name', formData.bank_name);

@@ -51,6 +51,24 @@ $token = $json.data.token
 if (-not $token) { $token = $json.token }
 Write-Host "Logged in as $($json.data.user.email)" -ForegroundColor Green
 
+function Flow-Api($Method, $Path, $Body, $Token) {
+    $headers = @{ "Content-Type" = "application/json" }
+    if ($Token) { $headers["Authorization"] = "Bearer $Token" }
+    $uri = "$Base$Path"
+    try {
+        $params = @{ Uri = $uri; Method = $Method; Headers = $headers; UseBasicParsing = $true; TimeoutSec = 30 }
+        if ($null -ne $Body) { $params["Body"] = ($Body | ConvertTo-Json -Depth 10) }
+        $r = Invoke-WebRequest @params
+        return @{ Ok = $true; Code = $r.StatusCode; Json = ($r.Content | ConvertFrom-Json) }
+    } catch {
+        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        return @{ Ok = $false; Code = $code }
+    }
+}
+
+. (Join-Path $PSScriptRoot "test-attendance-setup.ps1")
+Ensure-TodayRosterForClockIn -Api ${function:Flow-Api} -Token $token
+
 Test-Endpoint "Auth /me" GET "/auth/me" -Token $token
 
 # Core modules (GET list/stats used by UI)
@@ -83,7 +101,7 @@ $endpoints = @(
     @("Careers list", "GET", "/admin/careers/list"),
     @("Reports attendance", "GET", "/admin/reports/attendance-summary"),
     @("Reports payroll", "GET", "/admin/reports/payroll-register"),
-    @("Public careers", "GET", "/public/careers"),
+    @("Public careers", "GET", "/public/careers?org_slug=mashuptech"),
     @("Tasks list", "GET", "/admin/tasks/list"),
     @("Projects list", "GET", "/admin/projects/list"),
     @("Workflows list", "GET", "/admin/workflows/list"),
@@ -92,7 +110,16 @@ $endpoints = @(
     @("Biometric devices", "GET", "/admin/biometric/devices"),
     @("Biometric stats", "GET", "/admin/biometric/stats"),
     @("Biometric punches", "GET", "/admin/biometric/punches"),
-    @("Biometric mapping", "GET", "/admin/biometric/mapping")
+    @("Biometric mapping", "GET", "/admin/biometric/mapping"),
+    @("Shifts list", "GET", "/admin/shifts"),
+    @("Shifts roster", "GET", "/admin/shifts/roster"),
+    @("Shifts daily roster", "GET", "/admin/shifts/daily-roster"),
+    @("Chat spaces", "GET", "/admin/chat/spaces"),
+    @("Chat users", "GET", "/admin/chat/users"),
+    @("Notifications inbox", "GET", "/admin/org-notifications"),
+    @("Notifications sent", "GET", "/admin/org-notifications/sent"),
+    @("Billing plans", "GET", "/admin/billing/plans"),
+    @("Support tickets", "GET", "/admin/support/tickets")
 )
 
 foreach ($e in $endpoints) {

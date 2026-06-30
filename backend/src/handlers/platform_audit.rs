@@ -139,7 +139,7 @@ pub async fn audit_log_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
     params.push(crate::db::into_param_value(limit));
     params.push(crate::db::into_param_value(offset));
 
-    let mut stmt = match conn.prepare(&sql) {
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };

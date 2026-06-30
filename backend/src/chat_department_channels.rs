@@ -39,7 +39,7 @@ fn sync_department_channel_members(
     org_id: i64,
 ) -> crate::db::Result<()> {
     let now = now_ts();
-    let mut stmt = conn.prepare(
+    let stmt = conn.prepare(
         "SELECT id FROM users WHERE organization_id = ?1 AND department_id = ?2 AND deleted_at IS NULL",
     )?;
     let user_ids: Vec<i64> =
@@ -122,7 +122,7 @@ pub fn ensure_department_channel(
 
 /// Ensure every department in the org has a channel with up-to-date membership.
 pub fn sync_all_department_channels(conn: &Connection, org_id: i64, actor_user_id: i64) {
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id FROM departments WHERE organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,

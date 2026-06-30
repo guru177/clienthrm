@@ -150,10 +150,14 @@ impl RowGet for Option<bool> {
         }
     }
     fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
-        match row.try_get::<_, Option<i64>>(col) {
+        match row.try_get::<_, Option<i16>>(col) {
             Ok(Some(v)) => Ok(Some(v != 0)),
             Ok(None) => Ok(None),
-            Err(_) => row.try_get(col).map_err(DbError::from),
+            Err(_) => match row.try_get::<_, Option<i64>>(col) {
+                Ok(Some(v)) => Ok(Some(v != 0)),
+                Ok(None) => Ok(None),
+                Err(_) => row.try_get(col).map_err(DbError::from),
+            },
         }
     }
 }
@@ -170,10 +174,14 @@ impl RowGetIdx for Option<bool> {
         }
     }
     fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
-        match row.try_get::<_, Option<i64>>(idx) {
+        match row.try_get::<_, Option<i16>>(idx) {
             Ok(Some(v)) => Ok(Some(v != 0)),
             Ok(None) => Ok(None),
-            Err(_) => row.try_get(idx).map_err(DbError::from),
+            Err(_) => match row.try_get::<_, Option<i64>>(idx) {
+                Ok(Some(v)) => Ok(Some(v != 0)),
+                Ok(None) => Ok(None),
+                Err(_) => row.try_get(idx).map_err(DbError::from),
+            },
         }
     }
 }

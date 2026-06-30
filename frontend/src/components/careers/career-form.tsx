@@ -99,6 +99,12 @@ export default function CareerForm({
         setLoading(true);
         setErrors({});
 
+        if (!formData.title.trim()) {
+            setErrors({ title: ['Title is required'] });
+            setLoading(false);
+            return;
+        }
+
         try {
             // Filter out empty strings from arrays
             const cleanedData = {

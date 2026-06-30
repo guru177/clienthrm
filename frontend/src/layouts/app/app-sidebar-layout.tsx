@@ -6,6 +6,7 @@ import { AppContent } from '@/components/app-content';
 import { AppShell } from '@/components/app-shell';
 import { AppSidebar } from '@/components/app-sidebar';
 import { AppSidebarHeader } from '@/components/app-sidebar-header';
+import { DesktopUpdateBanner } from '@/components/desktop-update-banner';
 import { ImpersonationBanner } from '@/components/impersonation-banner';
 import SubscriptionExpiryBanner from '@/components/subscription-expiry-banner';
 import { useAuth } from '@/contexts/AuthContext';
@@ -48,6 +49,7 @@ export default function AppSidebarLayout({
             >
                 <ImpersonationBanner />
                 <SubscriptionExpiryBanner plan={plan} />
+                <DesktopUpdateBanner />
                 <AppSidebarHeader breadcrumbs={breadcrumbs} />
                 <div
                     className={cn(

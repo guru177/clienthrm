@@ -143,11 +143,15 @@ function TwoFactorSetupStep({
 function TwoFactorVerificationStep({
     onClose,
     onBack,
+    onConfirm,
 }: {
     onClose: () => void;
     onBack: () => void;
+    onConfirm: (code: string) => Promise<void>;
 }) {
     const [code, setCode] = useState<string>('');
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState('');
     const pinInputContainerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -156,77 +160,65 @@ function TwoFactorVerificationStep({
         }, 0);
     }, []);
 
-    return (
-        <Form
-            {...confirm.form()}
-            onSuccess={() => onClose()}
-            resetOnError
-            resetOnSuccess
-        >
-            {({
-                processing,
-                errors,
-            }: {
-                processing: boolean;
-                errors?: { confirmTwoFactorAuthentication?: { code?: string } };
-            }) => (
-                <>
-                    <div
-                        ref={pinInputContainerRef}
-                        className="relative w-full space-y-3"
-                    >
-                        <div className="flex w-full flex-col items-center space-y-3 py-2">
-                            <InputOTP
-                                id="otp"
-                                name="code"
-                                maxLength={OTP_MAX_LENGTH}
-                                onChange={setCode}
-                                disabled={processing}
-                                pattern={REGEXP_ONLY_DIGITS}
-                            >
-                                <InputOTPGroup>
-                                    {Array.from(
-                                        { length: OTP_MAX_LENGTH },
-                                        (_, index) => (
-                                            <InputOTPSlot
-                                                key={index}
-                                                index={index}
-                                            />
-                                        ),
-                                    )}
-                                </InputOTPGroup>
-                            </InputOTP>
-                            <InputError
-                                message={
-                                    errors?.confirmTwoFactorAuthentication?.code
-                                }
-                            />
-                        </div>
+    async function handleSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        if (code.length < OTP_MAX_LENGTH) return;
+        setSubmitting(true);
+        setError('');
+        try {
+            await onConfirm(code);
+            onClose();
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Invalid authentication code');
+        } finally {
+            setSubmitting(false);
+        }
+    }
 
-                        <div className="flex w-full space-x-5">
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="flex-1"
-                                onClick={onBack}
-                                disabled={processing}
-                            >
-                                Back
-                            </Button>
-                            <Button
-                                type="submit"
-                                className="flex-1"
-                                disabled={
-                                    processing || code.length < OTP_MAX_LENGTH
-                                }
-                            >
-                                Confirm
-                            </Button>
-                        </div>
-                    </div>
-                </>
-            )}
-        </Form>
+    return (
+        <form onSubmit={handleSubmit}>
+            <div
+                ref={pinInputContainerRef}
+                className="relative w-full space-y-3"
+            >
+                <div className="flex w-full flex-col items-center space-y-3 py-2">
+                    <InputOTP
+                        id="otp"
+                        name="code"
+                        maxLength={OTP_MAX_LENGTH}
+                        value={code}
+                        onChange={setCode}
+                        pattern={REGEXP_ONLY_DIGITS}
+                    >
+                        <InputOTPGroup>
+                            {Array.from({ length: OTP_MAX_LENGTH }, (_, index) => (
+                                <InputOTPSlot key={index} index={index} />
+                            ))}
+                        </InputOTPGroup>
+                    </InputOTP>
+                    {error ? <p className="text-sm text-destructive">{error}</p> : null}
+                </div>
+
+                <div className="flex w-full space-x-5">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={onBack}
+                        disabled={submitting}
+                    >
+                        Back
+                    </Button>
+                    <Button
+                        type="submit"
+                        className="flex-1"
+                        disabled={code.length < OTP_MAX_LENGTH || submitting}
+                    >
+                        {submitting ? 'Enabling…' : 'Confirm'}
+                    </Button>
+                </div>
+            </div>
+        </form>
     );
 }
 
@@ -239,6 +231,8 @@ interface TwoFactorSetupModalProps {
     manualSetupKey: string | null;
     clearSetupData: () => void;
     fetchSetupData: () => Promise<void>;
+    enableTwoFactor: (code: string) => Promise<string[]>;
+    onEnabled: (recoveryCodes: string[]) => void;
     errors: string[];
 }
 
@@ -251,6 +245,8 @@ export default function TwoFactorSetupModal({
     manualSetupKey,
     clearSetupData,
     fetchSetupData,
+    enableTwoFactor,
+    onEnabled,
     errors,
 }: TwoFactorSetupModalProps) {
     const [showVerificationStep, setShowVerificationStep] =
@@ -330,8 +326,12 @@ export default function TwoFactorSetupModal({
                 <div className="flex flex-col items-center space-y-5">
                     {showVerificationStep ? (
                         <TwoFactorVerificationStep
-                            onClose={onClose}
+                            onClose={handleClose}
                             onBack={() => setShowVerificationStep(false)}
+                            onConfirm={async (code) => {
+                                const codes = await enableTwoFactor(code);
+                                onEnabled(codes);
+                            }}
                         />
                     ) : (
                         <TwoFactorSetupStep

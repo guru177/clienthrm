@@ -88,7 +88,7 @@ pub async fn org_notes_index(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, organization_id, author_admin_id, author_email, body, pinned, created_at, updated_at
          FROM platform_org_notes WHERE organization_id = ?1
          ORDER BY pinned DESC, id DESC",
@@ -246,7 +246,7 @@ pub async fn announcements_index(pool: web::Data<DbPool>, req: HttpRequest) -> H
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, organization_id, title, body, severity, audience, published, starts_at, ends_at, image_url, created_at
          FROM platform_announcements ORDER BY id DESC LIMIT 200",
     ) {
@@ -527,7 +527,7 @@ pub async fn tenant_announcements_index(pool: web::Data<DbPool>, req: HttpReques
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, organization_id, title, body, severity, audience, published, starts_at, ends_at, image_url, created_at
          FROM platform_announcements
          WHERE published = 1
@@ -577,6 +577,7 @@ fn release_to_value(row: &crate::db::Row) -> crate::db::Result<serde_json::Value
         "audience": row.get::<String>("audience")?,
         "severity": row.get::<String>("severity")?,
         "status": row.get::<String>("status")?,
+        "desktop_installer": row.get::<Option<String>>("desktop_installer").unwrap_or(None),
         "published_at": row.get::<Option<String>>("published_at")?,
         "created_at": row.get::<Option<String>>("created_at")?,
         "updated_at": row.get::<Option<String>>("updated_at")?,
@@ -593,8 +594,8 @@ pub async fn releases_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRe
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
-    let mut stmt = match conn.prepare(
-        "SELECT id, version, title, body, audience, severity, status, published_at, created_at, updated_at
+    let stmt = match conn.prepare(
+        "SELECT id, version, title, body, audience, severity, status, desktop_installer, published_at, created_at, updated_at
          FROM platform_releases ORDER BY id DESC LIMIT 200",
     ) {
         Ok(s) => s,
@@ -768,6 +769,13 @@ pub async fn releases_update(
         None,
         serde_json::json!({"status": status}),
     );
+    if status == "published" {
+        if let Err(e) = crate::handlers::desktop_updates::sync_desktop_feed_for_release(
+            &conn, id, &version, &status,
+        ) {
+            log::warn!("Desktop update feed sync failed for release {id}: {e}");
+        }
+    }
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"updated": true})))
 }
 
@@ -818,8 +826,8 @@ pub async fn tenant_releases_index(pool: web::Data<DbPool>, req: HttpRequest) ->
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
-    let mut stmt = match conn.prepare(
-        "SELECT id, version, title, body, audience, severity, status, published_at, created_at, updated_at
+    let stmt = match conn.prepare(
+        "SELECT id, version, title, body, audience, severity, status, desktop_installer, published_at, created_at, updated_at
          FROM platform_releases WHERE status = 'published'
          ORDER BY published_at DESC, id DESC LIMIT 50",
     ) {
@@ -859,7 +867,7 @@ pub async fn feature_overrides_index(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, module_slug, enabled, reason, updated_at
          FROM tenant_feature_overrides WHERE organization_id = ?1 ORDER BY module_slug ASC",
     ) {

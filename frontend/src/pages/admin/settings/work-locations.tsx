@@ -1,7 +1,6 @@
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import axios from '@/lib/axios';
 import { MapPin, Plus, Pencil, Trash2, Check, X } from 'lucide-react';
-import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,18 +9,14 @@ import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface WorkLocation {
-    id: string;
+    id: number;
     name: string;
 }
 
-interface Props {
-    workLocations: WorkLocation[];
-}
-
-export default function WorkLocationsPage({ workLocations: initial }: Props) {
-    const [locations, setLocations] = useState<WorkLocation[]>(initial ?? []);
+export default function WorkLocationsPage() {
+    const [locations, setLocations] = useState<WorkLocation[]>([]);
     const [newName, setNewName] = useState('');
-    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editingId, setEditingId] = useState<number | null>(null);
     const [editingName, setEditingName] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -30,12 +25,22 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
         { label: 'Work Locations', href: '#' },
     ];
 
+    const loadLocations = async () => {
+        const res = await axios.get('/admin/api/settings/centers');
+        const items = (res.data?.data ?? []) as Array<{ id: number; name: string }>;
+        setLocations(items.map((c) => ({ id: c.id, name: c.name })));
+    };
+
+    useEffect(() => {
+        loadLocations().catch(handleApiError);
+    }, []);
+
     const handleAdd = async () => {
         if (!newName.trim()) return;
         setLoading(true);
         try {
-            const res = await axios.post('/admin/api/settings/work-locations', { name: newName.trim() });
-            setLocations((prev) => [...prev, res.data.data]);
+            const res = await axios.post('/admin/settings/centers', { name: newName.trim() });
+            await loadLocations();
             setNewName('');
             handleApiResponse(res);
         } catch (e) {
@@ -55,12 +60,12 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
         setEditingName('');
     };
 
-    const handleUpdate = async (id: string) => {
+    const handleUpdate = async (id: number) => {
         if (!editingName.trim()) return;
         setLoading(true);
         try {
-            const res = await axios.put(`/admin/api/settings/work-locations/${id}`, { name: editingName.trim() });
-            setLocations((prev) => prev.map((l) => (l.id === id ? res.data.data : l)));
+            const res = await axios.put(`/admin/settings/centers/${id}`, { name: editingName.trim() });
+            await loadLocations();
             cancelEdit();
             handleApiResponse(res);
         } catch (e) {
@@ -70,12 +75,12 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
         }
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = async (id: number) => {
         if (!confirm('Delete this work location?')) return;
         setLoading(true);
         try {
-            const res = await axios.delete(`/admin/api/settings/work-locations/${id}`);
-            setLocations((prev) => prev.filter((l) => l.id !== id));
+            const res = await axios.delete(`/admin/settings/centers/${id}`);
+            await loadLocations();
             handleApiResponse(res);
         } catch (e) {
             handleApiError(e);
@@ -86,8 +91,6 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            
-
             <div className="space-y-6 max-w-2xl">
                 <div>
                     <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -95,11 +98,10 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
                         Work Locations
                     </h1>
                     <p className="text-muted-foreground mt-1">
-                        Manage the list of work locations available for employee assignment.
+                        Manage centers used as employee work locations (same data as Centers).
                     </p>
                 </div>
 
-                {/* Add new */}
                 <Card>
                     <CardHeader>
                         <CardTitle>Add Location</CardTitle>
@@ -121,7 +123,6 @@ export default function WorkLocationsPage({ workLocations: initial }: Props) {
                     </CardContent>
                 </Card>
 
-                {/* Location list */}
                 <Card>
                     <CardHeader>
                         <CardTitle>Existing Locations</CardTitle>

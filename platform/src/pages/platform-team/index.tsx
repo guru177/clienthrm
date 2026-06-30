@@ -10,6 +10,7 @@ import { usePlatformAuth } from '@/contexts/PlatformAuthContext';
 import { PlatformAlertDialog, PlatformConfirmDialog } from '@/components/platform-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
@@ -218,8 +219,7 @@ export default function PlatformTeam() {
                     </div>
                     <div className="space-y-2">
                         <Label>Initial password (min 12 chars)</Label>
-                        <Input
-                            type="password"
+                        <PasswordInput
                             value={form.password}
                             onChange={(e) => setForm({ ...form, password: e.target.value })}
                             required
@@ -405,8 +405,7 @@ export default function PlatformTeam() {
                         </p>
                         <div className="mt-4 space-y-2">
                             <Label>New password</Label>
-                            <Input
-                                type="password"
+                            <PasswordInput
                                 value={resetPassword}
                                 onChange={(e) => setResetPassword(e.target.value)}
                                 minLength={12}

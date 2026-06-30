@@ -101,7 +101,7 @@ pub fn deduct_advances_for_payslip(
     user_id: i64,
     now: &str,
 ) -> Result<(f64, Vec<AdvanceAllocation>), String> {
-    let mut stmt = conn
+    let stmt = conn
         .prepare(
             "SELECT id, monthly_emi, balance FROM employee_advances
              WHERE user_id = ?1 AND is_active = 1 AND balance > 0
@@ -203,7 +203,7 @@ pub fn restore_advances_for_payslip(
     }
 
     // Legacy payslips without allocation metadata: restore proportionally by EMI share.
-    let mut stmt = conn
+    let stmt = conn
         .prepare(
             "SELECT id, monthly_emi FROM employee_advances
              WHERE user_id = ?1 ORDER BY id ASC",

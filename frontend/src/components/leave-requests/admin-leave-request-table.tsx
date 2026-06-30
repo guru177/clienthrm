@@ -294,7 +294,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             ID
                                             {sortBy === 'id' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -305,7 +305,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             User
                                             {sortBy === 'user_name' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -317,7 +317,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Start Date
                                             {sortBy === 'start_date' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -328,7 +328,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             End Date
                                             {sortBy === 'end_date' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -339,7 +339,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Days
                                             {sortBy === 'days_count' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -350,7 +350,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Status
                                             {sortBy === 'status' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -361,7 +361,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Submitted
                                             {sortBy === 'created_at' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? 'â†‘' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
                                             )}
                                         </div>
                                     </TableHead>

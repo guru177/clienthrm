@@ -18,15 +18,6 @@ pub struct PlatformPreAuthClaims {
     pub iat: usize,
 }
 
-pub fn generate_platform_token(
-    admin_id: i64,
-    email: &str,
-    secret: &str,
-    expiration_hours: u64,
-) -> Result<String, jsonwebtoken::errors::Error> {
-    generate_platform_token_with_session(admin_id, email, None, None, secret, expiration_hours)
-}
-
 pub fn generate_platform_token_with_session(
     admin_id: i64,
     email: &str,

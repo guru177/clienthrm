@@ -20,17 +20,23 @@ pub fn configure_iclock(cfg: &mut web::ServiceConfig) {
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg
-        // Health check
-        .route("/api/health", web::get().to(|| async {
-            actix_web::HttpResponse::Ok().json(serde_json::json!({"status": "ok", "service": "hrm-backend"}))
-        }))
+        // Health check (enhanced for load balancers)
+        .route("/api/health", web::get().to(handlers::health::health))
+        .route("/api/openapi.json", web::get().to(handlers::openapi::openapi_json))
 
         // ── Auth ──
         .route("/api/auth/login", web::post().to(handlers::auth::login))
+        .route("/api/auth/2fa/verify", web::post().to(handlers::two_factor::verify_login))
         .route("/api/auth/refresh", web::post().to(handlers::auth::refresh))
         .route("/api/auth/me", web::get().to(handlers::auth::me))
         .route("/api/auth/presence", web::post().to(handlers::auth::presence))
         .route("/api/auth/logout", web::post().to(handlers::auth::logout))
+        .route("/api/auth/forgot-password", web::post().to(handlers::auth::forgot_password))
+        .route(
+            "/api/auth/verify-password-reset-otp",
+            web::post().to(handlers::auth::verify_password_reset_otp),
+        )
+        .route("/api/auth/reset-password", web::post().to(handlers::auth::reset_password))
         .route(
             "/api/public/signup/check-availability",
             web::post().to(handlers::auth::check_signup_availability),
@@ -38,7 +44,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/public/signup/send-otp", web::post().to(handlers::auth::send_signup_otp))
         .route("/api/public/signup", web::post().to(handlers::auth::signup))
         .route("/api/public/careers", web::get().to(handlers::careers::public_list))
+        .route(
+            "/api/public/desktop/updates/{tail:.*}",
+            web::get().to(handlers::desktop_updates::serve),
+        )
         .route("/api/onboarding/complete", web::post().to(handlers::settings::complete_onboarding))
+
+        // ── Tenant two-factor (authenticated) ──
+        .route("/api/two-factor/qr-code", web::get().to(handlers::two_factor::qr_code))
+        .route("/api/two-factor/secret-key", web::get().to(handlers::two_factor::secret_key))
+        .route("/api/two-factor/recovery-codes", web::get().to(handlers::two_factor::recovery_codes))
+        .route("/api/two-factor/status", web::get().to(handlers::two_factor::status))
+        .route("/api/two-factor/enable", web::post().to(handlers::two_factor::enable))
+        .route("/api/two-factor/disable", web::post().to(handlers::two_factor::disable))
 
         // ── Platform (SaaS super admin) ──
         .route("/api/platform/auth/login", web::post().to(handlers::platform::login))
@@ -95,6 +113,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/platform/releases", web::post().to(handlers::platform_content::releases_store))
         .route("/api/platform/releases/{id}", web::patch().to(handlers::platform_content::releases_update))
         .route("/api/platform/releases/{id}", web::delete().to(handlers::platform_content::releases_destroy))
+        .route(
+            "/api/platform/releases/{id}/desktop-installer",
+            web::post().to(handlers::desktop_updates::platform_upload_installer),
+        )
+        .route(
+            "/api/platform/desktop-update/status",
+            web::get().to(handlers::desktop_updates::platform_feed_status),
+        )
         .route("/api/platform/plans", web::get().to(handlers::subscription_plans::index))
         .route("/api/platform/plans/modules", web::get().to(handlers::subscription_plans::modules_catalog))
         .route("/api/platform/plans", web::post().to(handlers::subscription_plans::store))
@@ -209,6 +235,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/attendance/clock-in", web::post().to(handlers::attendance::clock_in))
         .route("/api/admin/attendance/clock-out", web::post().to(handlers::attendance::clock_out))
         .route("/api/admin/attendance/manual", web::post().to(handlers::attendance::store_manual))
+        .route("/api/admin/attendance/manual/bulk", web::post().to(handlers::attendance::store_manual_bulk))
         .route("/api/admin/attendance/{id}", web::patch().to(handlers::attendance::update))
         .route("/api/admin/attendance/{id}", web::delete().to(handlers::attendance::destroy))
 
@@ -237,6 +264,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/leave-requests/list", web::get().to(handlers::leave_requests::list))
         .route("/api/admin/leave-requests/stats", web::get().to(handlers::leave_requests::stats))
         .route("/api/admin/leave-requests", web::post().to(handlers::leave_requests::store))
+        .route("/api/admin/leave-requests/{id}", web::put().to(handlers::leave_requests::update))
         .route("/api/admin/leave-requests/{id}", web::delete().to(handlers::leave_requests::destroy))
         .route("/api/admin/leave-requests/manage", web::get().to(handlers::leave_requests::manage))
         .route("/api/admin/leave-requests/manage/list", web::get().to(handlers::leave_requests::list_all))
@@ -278,6 +306,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/workflows/{id}", web::delete().to(handlers::workflows::destroy))
         .route("/api/admin/workflows/{id}/toggle", web::post().to(handlers::workflows::toggle))
         .route("/api/admin/workflows/{id}/duplicate", web::post().to(handlers::workflows::duplicate))
+        .route("/api/admin/workflows/{id}/executions", web::get().to(handlers::workflows::executions))
 
         // ── Careers ──
         .route("/api/admin/careers", web::get().to(handlers::careers::index))
@@ -303,6 +332,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
         // ── Reports ──
         .route("/api/admin/reports/attendance-summary", web::get().to(handlers::reports::attendance_summary))
+        .route("/api/admin/reports/daily-attendance", web::get().to(handlers::reports::daily_attendance_register))
+        .route("/api/admin/reports/employee-attendance-log", web::get().to(handlers::reports::employee_attendance_log))
         .route("/api/admin/reports/payroll-register", web::get().to(handlers::reports::payroll_register))
         .route("/api/admin/reports/payroll-split", web::get().to(handlers::reports::payroll_split))
         .route("/api/admin/reports/leave-balance", web::get().to(handlers::reports::leave_balance))
@@ -315,6 +346,26 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/payroll/preview", web::post().to(handlers::payroll::preview))
         .route("/api/admin/payroll/generate", web::post().to(handlers::payroll::generate))
         .route("/api/admin/payslips/{id}/unlock", web::post().to(handlers::payroll::unlock_payslip))
+        .route("/api/admin/payroll/variable-pay", web::get().to(handlers::payroll_advanced::variable_pay_list))
+        .route("/api/admin/payroll/variable-pay", web::post().to(handlers::payroll_advanced::variable_pay_store))
+        .route("/api/admin/payroll/variable-pay/{id}", web::delete().to(handlers::payroll_advanced::variable_pay_destroy))
+        .route("/api/admin/payroll/reimbursements", web::get().to(handlers::payroll_advanced::reimbursement_list))
+        .route("/api/admin/payroll/reimbursements", web::post().to(handlers::payroll_advanced::reimbursement_store))
+        .route("/api/admin/payroll/reimbursements/{id}/review", web::post().to(handlers::payroll_advanced::reimbursement_review))
+        .route("/api/admin/payroll/runs", web::get().to(handlers::payroll_advanced::payroll_runs_list))
+        .route("/api/admin/payroll/runs", web::post().to(handlers::payroll_advanced::payroll_run_store))
+        .route("/api/admin/payroll/runs/{id}/action", web::post().to(handlers::payroll_advanced::payroll_run_action))
+        .route("/api/admin/payroll/checklist", web::get().to(handlers::payroll_advanced::payroll_checklist))
+        .route("/api/admin/payroll/reminder", web::get().to(handlers::payroll_advanced::payroll_reminder_status))
+        .route("/api/admin/payroll/compliance-export", web::get().to(handlers::payroll_advanced::compliance_export))
+        .route("/api/admin/payroll/bank-file", web::get().to(handlers::payroll_advanced::bank_payment_file))
+        .route("/api/admin/payroll/mark-paid", web::post().to(handlers::payroll_advanced::mark_payslips_paid))
+        .route("/api/admin/payroll/accounting-export", web::get().to(handlers::payroll_advanced::accounting_journal_export))
+        .route("/api/admin/payroll/pay-groups", web::get().to(handlers::payroll_advanced::pay_groups_list))
+        .route("/api/admin/payroll/pay-groups", web::post().to(handlers::payroll_advanced::pay_group_store))
+        .route("/api/admin/users/{id}/payroll-hold", web::post().to(handlers::payroll_advanced::set_payroll_hold))
+        .route("/api/admin/users/{id}/tax-declaration/{fy}", web::get().to(handlers::payroll_advanced::tax_declaration_get))
+        .route("/api/admin/users/{id}/tax-declaration", web::post().to(handlers::payroll_advanced::tax_declaration_save))
 
 
         // ── Salaries ──
@@ -329,6 +380,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/me/payslips", web::get().to(handlers::payslips::my_payslips_list))
         .route("/api/admin/salaries/employees/{id}/payslips/list", web::get().to(handlers::payslips::employee_payslips_list))
         .route("/api/admin/payslips/{id}/send-whatsapp", web::post().to(handlers::payslips::send_whatsapp))
+        .route("/api/admin/payslips/{id}/send-email", web::post().to(handlers::payslips::send_email))
+        .route("/api/admin/payslips/bulk-send-email", web::post().to(handlers::payslips::bulk_send_email))
         .route("/api/admin/payslips/{id}/pdf", web::get().to(handlers::payslips::payslip_pdf))
         .route("/api/admin/payslips/bulk-download", web::post().to(handlers::payslips::bulk_download))
 
@@ -351,10 +404,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/settings/profile/photo", web::post().to(handlers::settings::update_profile_photo))
         .route("/api/admin/settings/profile", web::post().to(handlers::settings::update_profile))
 
-        // ── iClock (also on BIOMETRIC_PORT listener) ──
-        .configure(configure_iclock)
-
         // ── Biometric Admin API (Authenticated) ──
+        // iClock device endpoints are only on BIOMETRIC_PORT (7788), not the main API port.
         .route("/api/admin/biometric/devices", web::get().to(handlers::biometric::devices_list))
         .route("/api/admin/biometric/devices", web::post().to(handlers::biometric::devices_store))
         .route("/api/admin/biometric/devices/{id}", web::delete().to(handlers::biometric::devices_destroy))

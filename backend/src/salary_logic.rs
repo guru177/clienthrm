@@ -73,7 +73,7 @@ pub fn load_from_structure_items(
         )
         .ok()?;
 
-    let mut stmt = conn
+    let stmt = conn
         .prepare(
             "SELECT sc.id, sc.name, sc.slug, COALESCE(sc.component_type, sc.type) AS comp_type, sc.calculation_type, ssi.amount
              FROM salary_structure_items ssi
@@ -270,7 +270,7 @@ pub fn count_attendance_penalty_days(
     let start_s = active_start.format("%Y-%m-%d").to_string();
     let end_s = active_end.format("%Y-%m-%d").to_string();
 
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT DISTINCT date FROM attendance
          WHERE user_id=?1 AND date >= ?2 AND date <= ?3 AND deleted_at IS NULL
            AND clock_out IS NOT NULL AND (is_late = 1 OR is_early_exit = 1)",
@@ -287,9 +287,10 @@ pub fn count_attendance_penalty_days(
         .count() as i64
 }
 
-/// Late/early attendance penalty amount for a payroll month.
+/// Late/early mark count and **suggested** penalty amount for a payroll month.
+/// The amount is a reference for HR only — not auto-deducted; apply via payroll adjustments.
 /// `lop_gross` is gross earnings excluding reimbursements (same base as LOP).
-pub fn shift_penalty_for_month(
+pub fn suggested_shift_penalty_for_month(
     conn: &crate::db::Connection,
     user_id: i64,
     org_id: i64,

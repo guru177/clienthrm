@@ -84,7 +84,7 @@ pub async fn components_list(pool: web::Data<DbPool>, req: HttpRequest, query: w
         "SELECT * FROM salary_components WHERE organization_id=?1 ORDER BY name"
     };
 
-    let mut stmt = match conn.prepare(sql) {
+    let stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<serde_json::Value>::new()))
     };
@@ -442,7 +442,7 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
     params.push(crate::db::into_param_value(offset));
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut stmt = conn.prepare(&sql).unwrap();
+    let stmt = conn.prepare(&sql).unwrap();
     let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>, Option<String>)> = stmt
         .query_map(&params, |row| {
             Ok((
@@ -516,12 +516,12 @@ pub async fn employees_filter_options(pool: web::Data<DbPool>, req: HttpRequest)
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let mut dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
+    let dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
     let departments: Vec<serde_json::Value> = dept_stmt.query_map([org_id], |row| {
         Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
     });
 
-    let mut desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
+    let desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
     let designations: Vec<serde_json::Value> = desig_stmt.query_map([org_id], |row| {
         Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
     });
@@ -842,7 +842,7 @@ pub async fn templates_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRe
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, name, basic_pct, hra_pct, conv_pct, special_pct, is_default FROM salary_templates WHERE organization_id = ?1 ORDER BY name",
     ) {
         Ok(s) => s,
@@ -1091,7 +1091,7 @@ pub async fn advances_list(
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
-    let mut stmt = match conn.prepare(
+    let stmt = match conn.prepare(
         "SELECT id, amount, balance, monthly_emi, description, is_active, created_at
          FROM employee_advances WHERE user_id=?1 ORDER BY id DESC",
     ) {
