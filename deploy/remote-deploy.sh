@@ -9,11 +9,34 @@ POSTGRES_PASSWORD=$(env_val POSTGRES_PASSWORD)
 POSTGRES_USER=$(env_val POSTGRES_USER); POSTGRES_USER=${POSTGRES_USER:-hrm}
 POSTGRES_DB=$(env_val POSTGRES_DB); POSTGRES_DB=${POSTGRES_DB:-hrm}
 TENANT_DOMAIN=$(env_val TENANT_DOMAIN)
+BACKEND_IMAGE=$(env_val BACKEND_IMAGE)
 
 COMPOSE="sudo docker compose -f docker-compose.production.yml"
 
-echo "==> Pull/build images"
-$COMPOSE build --pull
+ghcr_login() {
+  local token user
+  token=$(env_val GHCR_TOKEN 2>/dev/null || true)
+  user=$(env_val GHCR_USERNAME 2>/dev/null || true)
+  if [ -n "$token" ] && [ -n "$user" ]; then
+    echo "==> Log in to GHCR"
+    echo "$token" | sudo docker login ghcr.io -u "$user" --password-stdin
+  fi
+}
+
+pull_backend() {
+  echo "==> Pull backend image (${BACKEND_IMAGE})"
+  ghcr_login
+  if $COMPOSE pull backend; then
+    return 0
+  fi
+  echo "WARN: Pull failed — building backend locally (slow; fix BACKEND_IMAGE or GHCR access)"
+  sudo docker build -f /opt/hrm/deploy/Dockerfile.backend -t "${BACKEND_IMAGE}" /opt/hrm
+}
+
+echo "==> Build caddy (tenant + platform static)"
+$COMPOSE build caddy
+
+pull_backend
 
 echo "==> Start PostgreSQL"
 $COMPOSE up -d postgres
@@ -49,7 +72,29 @@ else
 fi
 
 echo "==> Start full stack"
-$COMPOSE up -d --build
+$COMPOSE up -d
+
+echo "==> Sync storage files into data volume"
+VOL=$(sudo docker volume inspect deploy_hrm_data --format '{{.Mountpoint}}' 2>/dev/null || true)
+if [ -n "$VOL" ]; then
+  sudo mkdir -p "$VOL/storage"
+  for dir in chat users announcements org-notifications desktop-updates; do
+    if [ -d "/opt/hrm/storage/$dir" ]; then
+      sudo mkdir -p "$VOL/storage/$dir"
+      sudo cp -an "/opt/hrm/storage/$dir/." "$VOL/storage/$dir/" 2>/dev/null || true
+    fi
+  done
+  if [ -d /opt/hrm/frontend/public/storage ]; then
+    for dir in chat users announcements org-notifications; do
+      if [ -d "/opt/hrm/frontend/public/storage/$dir" ]; then
+        sudo mkdir -p "$VOL/storage/$dir"
+        sudo cp -an "/opt/hrm/frontend/public/storage/$dir/." "$VOL/storage/$dir/" 2>/dev/null || true
+      fi
+    done
+  fi
+  sudo chown -R 999:999 "$VOL/storage" 2>/dev/null || true
+  echo "Storage synced to $VOL/storage"
+fi
 
 echo "==> Wait for HTTPS health"
 PLATFORM_DOMAIN=$(env_val PLATFORM_DOMAIN)

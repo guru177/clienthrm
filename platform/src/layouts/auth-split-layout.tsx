@@ -49,16 +49,17 @@ export default function AuthSplitLayout({
                     </div>
                 </div>
 
-                <div className="relative z-10 pl-[8%]">
-                    <Link to="/login" className="flex items-center gap-2 text-lg font-bold tracking-tight text-white">
-                        <div className="flex rounded-xl border border-white/20 bg-white/10 p-2 shadow-lg backdrop-blur-md">
-                            <img src="/images/logo.webp" alt="Raintech HRM" className="h-8 w-auto object-contain" />
-                        </div>
-                        <span className="text-xl">RAINTECH HRM</span>
-                    </Link>
-                </div>
-
                 <div className="relative z-10 min-h-0 flex-1 space-y-6 overflow-hidden pl-[8%] max-w-[85%] xl:space-y-10">
+                    <Link to="/login" className="inline-flex">
+                        <div className="rounded-xl border border-white/30 bg-white px-3 py-2 shadow-md">
+                            <img
+                                src="/images/logo.png"
+                                alt="Raintech HRM"
+                                className="h-auto w-full max-w-[140px] object-contain"
+                            />
+                        </div>
+                    </Link>
+
                     <div className="space-y-3 xl:space-y-4">
                         <h1 className="text-3xl font-extrabold leading-tight tracking-tight text-white drop-shadow-md xl:text-[3.25rem]">
                             Platform
@@ -115,11 +116,14 @@ export default function AuthSplitLayout({
                 <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-5 sm:px-8 lg:py-6">
                     <div className="m-auto flex w-full max-w-md flex-col gap-5 py-4">
                         <div className="flex flex-col items-center gap-2 lg:hidden">
-                            <Link to="/login" className="flex items-center gap-2 text-lg font-bold">
-                                <div className="flex rounded-lg bg-[#001f3f] p-1.5">
-                                    <img src="/images/logo.webp" alt="Raintech HRM" className="h-6 w-auto object-contain" />
+                            <Link to="/login" className="inline-flex">
+                                <div className="rounded-lg border border-border/40 bg-white px-3 py-2 shadow-sm">
+                                    <img
+                                        src="/images/logo.png"
+                                        alt="Raintech HRM"
+                                        className="h-auto w-full max-w-[120px] object-contain"
+                                    />
                                 </div>
-                                <span>Raintech HRM</span>
                             </Link>
                         </div>
 

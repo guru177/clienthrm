@@ -1,24 +1,18 @@
 import { Link } from 'react-router-dom';
 
-export default function PlatformLogo({ compact = false }: { compact?: boolean }) {
+export default function PlatformLogo() {
     return (
-        <Link to="/" className="flex items-center gap-2.5">
-            <div className="flex size-9 items-center justify-center overflow-hidden rounded-lg bg-white/80 shadow-sm ring-1 ring-white/60">
+        <Link to="/" className="inline-flex">
+            <div className="flex min-h-12 items-center justify-center overflow-hidden rounded-lg bg-white px-2 py-1 shadow-sm ring-1 ring-border/40">
                 <img
-                    src="/images/logo.webp"
+                    src="/images/logo.png"
                     alt="Raintech HRM"
-                    className="size-8 object-contain"
+                    className="h-auto w-full max-w-[110px] object-contain"
                     onError={(e) => {
                         (e.target as HTMLImageElement).style.display = 'none';
                     }}
                 />
             </div>
-            {!compact && (
-                <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-[#001f3f]">Raintech HRM</p>
-                    <p className="truncate text-xs text-[#1e3a5f]/70">Platform</p>
-                </div>
-            )}
         </Link>
     );
 }

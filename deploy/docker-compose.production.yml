@@ -1,10 +1,11 @@
 # Production stack: HTTPS (Caddy) + Rust API + PostgreSQL
-# Backend uses DATABASE_URL (PostgreSQL). SQLite file on hrm_data volume is optional for migration only.
+# Backend image is built in GitHub Actions and pulled on deploy (see BACKEND_IMAGE in deploy/.env).
+# Caddy is built on the server from pre-built frontend/dist + platform/dist.
 #
 # Usage:
 #   cp deploy/.env.production.example deploy/.env
-#   # Edit deploy/.env with your domains and secrets
-#   docker compose -f deploy/docker-compose.production.yml up -d --build
+#   # Edit deploy/.env with your domains, secrets, and BACKEND_IMAGE
+#   bash deploy/remote-deploy.sh
 #
 # Tenant app:    https://${TENANT_DOMAIN}
 # Platform app: https://${PLATFORM_DOMAIN}
@@ -30,9 +31,8 @@ services:
       - hrm
 
   backend:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.backend
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in deploy/.env}
+    pull_policy: always
     restart: unless-stopped
     env_file:
       - .env

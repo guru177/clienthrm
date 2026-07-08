@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 const path = require('path');
 
-const inputPath = path.join(__dirname, '..', 'public', 'images', 'logo.webp');
+const inputPath = path.join(__dirname, '..', 'public', 'favicon.png');
 const outputPng = path.join(__dirname, '..', 'public', 'images', 'icon.png');
 
 sharp(inputPath)

@@ -2,12 +2,12 @@
 # Usage: powershell -NoProfile -File scripts/deploy-production.ps1
 
 param(
-    [string]$ServerIp = "13.232.29.223",
+    [string]$ServerIp = "13.232.42.204",
     [string]$SshUser = "ubuntu",
     [string]$KeyPath = "$env:USERPROFILE\Downloads\raintechHrm_key_pair.pem",
-    [string]$TenantDomain = "hrm.13-232-29-223.sslip.io",
-    [string]$PlatformDomain = "platform.13-232-29-223.sslip.io",
-    [string]$ApiDomain = "api.13-232-29-223.sslip.io",
+    [string]$TenantDomain = "hrm.13-232-42-204.sslip.io",
+    [string]$PlatformDomain = "platform.13-232-42-204.sslip.io",
+    [string]$ApiDomain = "api.13-232-42-204.sslip.io",
     [string]$GitRepo = "https://github.com/guru177/hrm-rust.git",
     [string]$GitBranch = "main",
     [switch]$SkipBootstrap,
@@ -54,6 +54,12 @@ if (-not $pgPass) { $pgPass = New-Secret 32 }
 $platPass = Get-EnvValue $existingEnv "PLATFORM_ADMIN_PASSWORD"
 if (-not $platPass) { $platPass = "Raintech$(New-Password 16)!" }
 
+$backendImage = Get-EnvValue $existingEnv "BACKEND_IMAGE"
+if (-not $backendImage) { $backendImage = "ghcr.io/guru177/hrm-rust-backend:latest" }
+
+$ghcrUser = Get-EnvValue $existingEnv "GHCR_USERNAME"
+$ghcrToken = Get-EnvValue $existingEnv "GHCR_TOKEN"
+
 # Optional: merge SMTP/signup from local backend .env
 $smtpBlock = @()
 $localEnv = Join-Path $Root "backend\.env"
@@ -67,6 +73,10 @@ if (Test-Path $localEnv) {
 
 $tenantUrl = "https://$TenantDomain"
 $platformUrl = "https://$PlatformDomain"
+
+$ghcrBlock = @()
+if ($ghcrUser) { $ghcrBlock += "GHCR_USERNAME=$ghcrUser" }
+if ($ghcrToken) { $ghcrBlock += "GHCR_TOKEN=$ghcrToken" }
 
 $deployEnv = @"
 TENANT_DOMAIN=$TenantDomain
@@ -95,6 +105,8 @@ VITE_PLATFORM_APP_URL=$platformUrl
 SIGNUP_OTP_DEBUG=0
 SIGNUP_OTP_BYPASS=0
 RUST_LOG=info
+BACKEND_IMAGE=$backendImage
+$($ghcrBlock -join "`n")
 $($smtpBlock -join "`n")
 "@
 
@@ -172,6 +184,7 @@ if (Test-Path $archive) { Remove-Item $archive -Force }
     --exclude=node_modules `
     --exclude=backend/target `
     --exclude=frontend/release `
+    --exclude=frontend/release-build* `
     --exclude=frontend/node_modules `
     --exclude=platform/node_modules `
     --exclude=.git `
@@ -198,7 +211,10 @@ if (-not $SkipBootstrap) {
 }
 
 $remote += "sed -i 's/\r$//' /tmp/remote-deploy.sh /tmp/remote-bootstrap.sh 2>/dev/null || true`n"
-$remote += "`nbash /tmp/remote-deploy.sh 2>&1 | tee /tmp/hrm-deploy.log`n"
+$remote += "cp /tmp/remote-deploy.sh /opt/hrm/deploy/remote-deploy.sh`n"
+$remote += "chmod +x /opt/hrm/deploy/remote-deploy.sh`n"
+$remote += "`nbash /opt/hrm/deploy/remote-deploy.sh 2>&1 | tee /tmp/hrm-deploy.log`n"
+$remote += "if ! grep -q 'Deploy finished' /tmp/hrm-deploy.log; then echo 'Deploy did not finish'; exit 1; fi`n"
 
 $remote = ($remote -replace "`r`n", "`n") -replace "`r", ""
 $remote | & ssh @ssh "${SshUser}@${ServerIp}" "bash -s"

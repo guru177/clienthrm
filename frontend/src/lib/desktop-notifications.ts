@@ -53,7 +53,7 @@ export function showDesktopNotification(options: NotificationOptions): void {
     const notification = new Notification(title, {
         body,
         tag,
-        icon: staticAssetUrl('images/icon.png'),
+        icon: staticAssetUrl('favicon.png'),
     });
     notification.onclick = () => {
         window.focus();

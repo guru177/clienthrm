@@ -17,20 +17,22 @@ import { Label } from '@/components/ui/label';
 import { OTP_MAX_LENGTH } from '@/hooks/use-two-factor-auth';
 import AuthLayout from '@/layouts/auth-layout';
 import { apiPost } from '@/lib/api';
-import { isElectronApp } from '@/lib/is-electron';
+import { cn } from '@/lib/utils';
 
-type Step = 'email' | 'otp' | 'password';
+type Step = 'contact' | 'otp' | 'password';
+type ResetChannel = 'email' | 'whatsapp';
 
 export default function ForgotPassword() {
     const navigate = useNavigate();
-    const desktop = isElectronApp();
 
-    const [step, setStep] = useState<Step>('email');
+    const [step, setStep] = useState<Step>('contact');
+    const [channel, setChannel] = useState<ResetChannel>('email');
     const [email, setEmail] = useState('');
+    const [phone, setPhone] = useState('');
     const [orgSlug, setOrgSlug] = useState('');
     const [showOrgSlug, setShowOrgSlug] = useState(false);
     const [verificationId, setVerificationId] = useState('');
-    const [maskedEmail, setMaskedEmail] = useState('');
+    const [destinationMasked, setDestinationMasked] = useState('');
     const [otp, setOtp] = useState('');
     const [password, setPassword] = useState('');
     const [passwordConfirmation, setPasswordConfirmation] = useState('');
@@ -38,14 +40,26 @@ export default function ForgotPassword() {
     const [error, setError] = useState('');
     const [info, setInfo] = useState('');
 
-    async function handleEmailSubmit(e: FormEvent) {
+    async function handleContactSubmit(e: FormEvent) {
         e.preventDefault();
         setProcessing(true);
         setError('');
         setInfo('');
 
         try {
-            const body: { email: string; org_slug?: string } = { email: email.trim() };
+            const body: {
+                channel: ResetChannel;
+                email?: string;
+                phone?: string;
+                org_slug?: string;
+            } = { channel };
+
+            if (channel === 'email') {
+                body.email = email.trim();
+            } else {
+                body.phone = phone.trim();
+            }
+
             const slug = orgSlug.trim();
             if (slug) {
                 body.org_slug = slug;
@@ -56,6 +70,8 @@ export default function ForgotPassword() {
                 requires_org_slug?: boolean;
                 verification_id?: string;
                 masked_email?: string;
+                destination_masked?: string;
+                channel?: string;
                 account_found?: boolean;
             }>('/auth/forgot-password', body);
 
@@ -64,14 +80,16 @@ export default function ForgotPassword() {
             if (data.requires_org_slug) {
                 setShowOrgSlug(true);
                 setError(
-                    'This email is registered with multiple organizations. Enter your organization slug and try again.',
+                    channel === 'whatsapp'
+                        ? 'This phone number is registered with multiple organizations. Enter your organization slug and try again.'
+                        : 'This email is registered with multiple organizations. Enter your organization slug and try again.',
                 );
                 return;
             }
 
             if (data.verification_id) {
                 setVerificationId(data.verification_id);
-                setMaskedEmail(data.masked_email || email.trim());
+                setDestinationMasked(data.destination_masked || data.masked_email || '');
                 setInfo(data.message || 'Verification code sent.');
                 setStep('otp');
                 setOtp('');
@@ -151,9 +169,9 @@ export default function ForgotPassword() {
             <AuthLayout
                 title="Enter verification code"
                 description={
-                    maskedEmail
-                        ? `We sent a 6-digit code to ${maskedEmail}`
-                        : 'Enter the verification code sent to your email'
+                    destinationMasked
+                        ? `We sent a 6-digit code to ${destinationMasked}`
+                        : 'Enter the verification code we sent you'
                 }
             >
                 <form onSubmit={handleOtpSubmit} className="space-y-6">
@@ -191,12 +209,12 @@ export default function ForgotPassword() {
                             type="button"
                             className="underline underline-offset-4 hover:text-foreground"
                             onClick={() => {
-                                setStep('email');
+                                setStep('contact');
                                 setOtp('');
                                 setError('');
                             }}
                         >
-                            Use a different email
+                            Use a different {channel === 'whatsapp' ? 'phone number' : 'email'}
                         </button>
                     </div>
                 </form>
@@ -254,7 +272,7 @@ export default function ForgotPassword() {
     return (
         <AuthLayout
             title="Forgot password"
-            description="Enter your email to receive a verification code"
+            description="Choose email or WhatsApp to receive a verification code"
         >
             {info && (
                 <div className="mb-4 text-center text-sm font-medium text-green-600">
@@ -263,23 +281,78 @@ export default function ForgotPassword() {
             )}
 
             <div className="space-y-6">
-                <form onSubmit={handleEmailSubmit} className="space-y-6">
-                    <div className="grid gap-2">
-                        <Label htmlFor="email">Email address</Label>
-                        <Input
-                            id="email"
-                            type="email"
-                            name="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            autoComplete="email"
-                            autoFocus
-                            placeholder="email@example.com"
-                            required
-                        />
+                <form onSubmit={handleContactSubmit} className="space-y-6">
+                    <div className="grid grid-cols-2 gap-3">
+                        <button
+                            type="button"
+                            className={cn(
+                                'rounded-lg border p-3 text-left text-sm transition-colors',
+                                channel === 'email'
+                                    ? 'border-primary bg-primary/5'
+                                    : 'border-border hover:bg-muted/50',
+                            )}
+                            onClick={() => {
+                                setChannel('email');
+                                setError('');
+                            }}
+                        >
+                            <p className="font-medium">Email</p>
+                            <p className="mt-1 text-xs text-muted-foreground">Verification code by email</p>
+                        </button>
+                        <button
+                            type="button"
+                            className={cn(
+                                'rounded-lg border p-3 text-left text-sm transition-colors',
+                                channel === 'whatsapp'
+                                    ? 'border-primary bg-primary/5'
+                                    : 'border-border hover:bg-muted/50',
+                            )}
+                            onClick={() => {
+                                setChannel('whatsapp');
+                                setError('');
+                            }}
+                        >
+                            <p className="font-medium">WhatsApp</p>
+                            <p className="mt-1 text-xs text-muted-foreground">Code to your mobile number</p>
+                        </button>
                     </div>
 
-                    {(showOrgSlug || desktop) && (
+                    {channel === 'email' ? (
+                        <div className="grid gap-2">
+                            <Label htmlFor="email">Email address</Label>
+                            <Input
+                                id="email"
+                                type="email"
+                                name="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                autoComplete="email"
+                                autoFocus
+                                placeholder="email@example.com"
+                                required
+                            />
+                        </div>
+                    ) : (
+                        <div className="grid gap-2">
+                            <Label htmlFor="phone">Mobile number</Label>
+                            <Input
+                                id="phone"
+                                type="tel"
+                                name="phone"
+                                value={phone}
+                                onChange={(e) => setPhone(e.target.value)}
+                                autoComplete="tel"
+                                autoFocus
+                                placeholder="+91 62823 90631"
+                                required
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Use the phone number saved on your account.
+                            </p>
+                        </div>
+                    )}
+
+                    {showOrgSlug && (
                         <div className="grid gap-2">
                             <Label htmlFor="org_slug">Organization slug</Label>
                             <Input
@@ -290,10 +363,10 @@ export default function ForgotPassword() {
                                 onChange={(e) => setOrgSlug(e.target.value)}
                                 autoComplete="organization"
                                 placeholder="your-company"
-                                required={showOrgSlug}
+                                required
                             />
                             <p className="text-xs text-muted-foreground">
-                                Required when your email is used by more than one organization.
+                                Required when your {channel === 'whatsapp' ? 'phone number' : 'email'} is used by more than one organization.
                             </p>
                         </div>
                     )}

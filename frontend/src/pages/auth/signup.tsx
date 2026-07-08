@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { setToken, setRefreshToken, apiPost } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 import { Button } from '@/components/ui/button';
 
@@ -33,6 +34,12 @@ import {
 
 import { cn } from '@/lib/utils';
 import { isValidOrgSlug, normalizeOrgSlug } from '@/lib/org-slug';
+
+const authInputClass =
+    'h-11 rounded-xl border-[#e2e8f0] bg-white shadow-none focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/20';
+
+const primaryAuthButtonClass =
+    'rounded-xl bg-gradient-to-r from-[#071428] via-[#0a192f] to-[#1e3a5f] text-[15px] font-semibold text-white shadow-[0_8px_24px_-8px_rgba(10,25,47,0.65)] transition-all hover:from-[#0a192f] hover:via-[#132f4c] hover:to-[#234b73] hover:text-white hover:shadow-[0_10px_28px_-8px_rgba(10,25,47,0.75)]';
 
 
 
@@ -155,6 +162,9 @@ function signupPayload(form: SignupForm) {
 
 export default function Signup() {
 
+    const navigate = useNavigate();
+    const { refreshUser } = useAuth();
+
     const [step, setStep] = useState<1 | 2 | 3>(1);
 
     const [form, setForm] = useState<SignupForm>(initialForm);
@@ -178,6 +188,14 @@ export default function Signup() {
     const [otp, setOtp] = useState('');
 
     const [otpSent, setOtpSent] = useState(false);
+
+    useEffect(() => {
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, []);
 
     function clearOtpVerification() {
         setOtpSent(false);
@@ -235,8 +253,13 @@ export default function Signup() {
 
     const duplicateEmailError =
         error.includes('work email already exists') ||
+        error.includes('work email is already registered') ||
         error.includes('company email is already registered') ||
         error.includes('already exists. Sign in');
+
+    const existingOrgSlug = error.match(/organization "([^"]+)"/i)?.[1] ?? null;
+
+    const signInHref = `/login?email=${encodeURIComponent(form.adminEmail.trim())}`;
 
 
 
@@ -289,17 +312,11 @@ export default function Signup() {
 
         setCheckingAvailability(true);
         try {
-            await checkAvailability({
-                org_slug: normalizeOrgSlug(form.orgSlug),
-                admin_email: form.adminEmail.trim(),
-            });
             setOtpSent(false);
             setOtp('');
             setVerificationId('');
             setDestinationMasked('');
             setStep(3);
-        } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : 'Could not verify account details');
         } finally {
             setCheckingAvailability(false);
         }
@@ -410,7 +427,9 @@ export default function Signup() {
 
             const has = (slug: string) => perms.includes('*') || perms.includes(slug);
 
-            window.location.href = defaultAdminRoute(has);
+            await refreshUser();
+
+            navigate(defaultAdminRoute(has), { replace: true });
 
         } catch (err: unknown) {
 
@@ -446,13 +465,13 @@ export default function Signup() {
 
     return (
 
-        <AuthLayout title={stepTitle} description={stepDescription}>
+        <AuthLayout fitViewport scrollableCard title={stepTitle} description={stepDescription}>
 
             <title>Sign up — HRM Portal</title>
 
 
 
-            <div className="mb-4 flex items-center gap-2">
+            <div className="mb-3 flex items-center gap-2">
 
                 {[1, 2, 3].map((n) => (
 
@@ -466,9 +485,9 @@ export default function Signup() {
 
                                 step >= n
 
-                                    ? 'bg-primary text-primary-foreground'
+                                    ? 'bg-gradient-to-r from-[#071428] via-[#0a192f] to-[#1e3a5f] text-white'
 
-                                    : 'bg-muted text-muted-foreground',
+                                    : 'bg-slate-100 text-slate-500',
 
                             )}
 
@@ -480,7 +499,7 @@ export default function Signup() {
 
                         <div className="hidden min-w-0 sm:block">
 
-                            <p className="truncate text-xs font-medium">
+                            <p className="truncate text-xs font-semibold text-slate-700">
 
                                 {n === 1 ? 'Company' : n === 2 ? 'Admin' : 'Verify'}
 
@@ -488,7 +507,7 @@ export default function Signup() {
 
                         </div>
 
-                        {n < 3 && <div className="h-px flex-1 bg-border" />}
+                        {n < 3 && <div className="h-px flex-1 bg-[#e2e8f0]" />}
 
                     </div>
 
@@ -506,9 +525,15 @@ export default function Signup() {
 
                     {duplicateEmailError && (
                         <p className="mt-2">
-                            <Link to="/login" className="font-medium underline">
+                            <Link to={signInHref} className="font-medium underline">
                                 Sign in with this email
                             </Link>
+                            {existingOrgSlug ? (
+                                <span className="text-red-700 dark:text-red-300">
+                                    {' '}
+                                    (organization: {existingOrgSlug})
+                                </span>
+                            ) : null}
                         </p>
                     )}
 
@@ -520,9 +545,8 @@ export default function Signup() {
 
             {step === 1 ? (
 
-                <form onSubmit={handleContinue} className="space-y-4">
-
-                    <div className="space-y-3">
+                <form onSubmit={handleContinue} className="space-y-3">
+                    <div className="space-y-2.5">
 
                         <div className="space-y-2">
 
@@ -540,7 +564,7 @@ export default function Signup() {
 
                                 autoFocus
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="Acme Corporation"
 
@@ -569,7 +593,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10 font-mono"
+                                className={cn(authInputClass, 'font-mono')}
 
                                 placeholder="acme-corp"
 
@@ -599,7 +623,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="Jane Smith"
 
@@ -623,7 +647,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="contact@company.com"
 
@@ -647,7 +671,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="+91 98765 43210"
 
@@ -703,7 +727,12 @@ export default function Signup() {
 
 
 
-                    <Button type="submit" className="h-10 w-full" disabled={checkingAvailability}>
+                    <Button
+                        type="submit"
+                        variant="ghost"
+                        className={cn(primaryAuthButtonClass, 'h-11 w-full')}
+                        disabled={checkingAvailability}
+                    >
 
                         {checkingAvailability && <Spinner size="sm" />}
 
@@ -715,9 +744,8 @@ export default function Signup() {
 
             ) : step === 2 ? (
 
-                <form onSubmit={handleAdminContinue} className="space-y-4">
-
-                    <div className="space-y-3">
+                <form onSubmit={handleAdminContinue} className="space-y-3">
+                    <div className="space-y-2.5">
 
                         <div className="space-y-2">
 
@@ -735,7 +763,7 @@ export default function Signup() {
 
                                 autoFocus
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="Jane Smith"
 
@@ -759,7 +787,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="jane@company.com"
 
@@ -783,7 +811,7 @@ export default function Signup() {
 
                                 required
 
-                                className="h-10"
+                                className={authInputClass}
 
                                 placeholder="+91 98765 43210"
 
@@ -807,7 +835,7 @@ export default function Signup() {
 
                                 minLength={8}
 
-                                className="h-10"
+                                className={authInputClass}
 
                             />
 
@@ -829,7 +857,7 @@ export default function Signup() {
 
                                 minLength={8}
 
-                                className="h-10"
+                                className={authInputClass}
 
                             />
 
@@ -847,7 +875,7 @@ export default function Signup() {
 
                             variant="outline"
 
-                            className="h-10 flex-1"
+                            className="h-11 flex-1 rounded-xl border-[#e2e8f0] bg-white"
 
                             onClick={() => {
                                 setError('');
@@ -861,7 +889,12 @@ export default function Signup() {
 
                         </Button>
 
-                        <Button type="submit" className="h-10 flex-[2]" disabled={checkingAvailability}>
+                        <Button
+                            type="submit"
+                            variant="ghost"
+                            className={cn(primaryAuthButtonClass, 'h-11 flex-[2]')}
+                            disabled={checkingAvailability}
+                        >
 
                             {checkingAvailability && <Spinner size="sm" />}
 
@@ -977,7 +1010,7 @@ export default function Signup() {
 
                         variant="outline"
 
-                        className="h-10 w-full"
+                        className="h-11 w-full rounded-xl border-[#e2e8f0] bg-white"
 
                         disabled={sendingOtp}
 
@@ -1023,7 +1056,7 @@ export default function Signup() {
 
                             required
 
-                            className="h-10 text-center text-lg tracking-widest"
+                            className={cn(authInputClass, 'text-center text-lg tracking-widest')}
 
                             placeholder="000000"
 
@@ -1043,7 +1076,7 @@ export default function Signup() {
 
                             variant="outline"
 
-                            className="h-10 flex-1"
+                            className="h-11 flex-1 rounded-xl border-[#e2e8f0] bg-white"
 
                             disabled={processing}
 
@@ -1060,13 +1093,10 @@ export default function Signup() {
                         </Button>
 
                         <Button
-
                             type="submit"
-
-                            className="h-10 flex-[2]"
-
+                            variant="ghost"
+                            className={cn(primaryAuthButtonClass, 'h-11 flex-[2]')}
                             disabled={processing || !verificationId}
-
                         >
 
                             {processing && <Spinner size="sm" />}
@@ -1083,11 +1113,9 @@ export default function Signup() {
 
 
 
-            <p className="mt-4 text-center text-sm text-muted-foreground">
-
+            <p className="mt-3 text-center text-sm text-slate-500">
                 Already have an account?{' '}
-
-                <Link to="/login" className="font-medium text-primary hover:underline">
+                <Link to="/login" className="font-semibold text-[#3b82f6] hover:underline">
 
                     Sign in
 

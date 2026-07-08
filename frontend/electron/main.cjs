@@ -2,19 +2,34 @@ const { app, BrowserWindow, ipcMain, Notification, shell } = require('electron')
 const fs = require('fs');
 const path = require('path');
 const { initAutoUpdater } = require('./updater.cjs');
+const { registerPrivilegedScheme, installHrmProtocol } = require('./local-protocol.cjs');
+
+registerPrivilegedScheme();
 
 const DEV_API_BASE = 'http://127.0.0.1:3001';
 
-function packagedApiBase() {
+function readPackagedApiFile(name) {
+    const filePath = path.join(__dirname, name);
+    if (!fs.existsSync(filePath)) return null;
     try {
-        const prod = require('./production-api.json');
-        if (typeof prod?.apiBase === 'string' && prod.apiBase.trim()) {
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function packagedApiBase() {
+    for (const name of ['production-api.json', 'production-api.json.example']) {
+        const prod = readPackagedApiFile(name);
+        if (typeof prod?.apiBase === 'string' && prod.apiBase.trim() && !isLocalApi(prod.apiBase)) {
             return normalizeApiRoot(prod.apiBase);
         }
-    } catch {
-        /* no production-api.json — dev / custom install */
     }
     return DEV_API_BASE;
+}
+
+function isLocalApi(raw) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(String(raw).trim());
 }
 
 function defaultApiBase() {
@@ -29,10 +44,24 @@ function configPath() {
 }
 
 function readConfig() {
+    const packaged = defaultApiBase();
+    if (app.isPackaged) {
+        const config = { apiBase: packaged };
+        try {
+            const parsed = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+            if (typeof parsed.updateUrl === 'string' && parsed.updateUrl.trim()) {
+                config.updateUrl = parsed.updateUrl.trim().replace(/\/$/, '');
+            }
+        } catch {
+            /* first run */
+        }
+        return config;
+    }
+
     try {
         const raw = fs.readFileSync(configPath(), 'utf8');
         const parsed = JSON.parse(raw);
-        const config = { apiBase: defaultApiBase() };
+        const config = { apiBase: packaged };
         if (typeof parsed.apiBase === 'string' && parsed.apiBase.trim()) {
             config.apiBase = normalizeApiRoot(parsed.apiBase);
         }
@@ -43,7 +72,7 @@ function readConfig() {
     } catch {
         /* first run */
     }
-    return { apiBase: defaultApiBase() };
+    return { apiBase: packaged };
 }
 
 function writeConfig(next) {
@@ -69,7 +98,9 @@ function resolveUpdateFeedUrl() {
 
 function resolveWindowIcon() {
     const candidates = [
+        path.join(__dirname, '../build/icon.ico'),
         path.join(__dirname, '../build/icon.png'),
+        path.join(__dirname, '../public/favicon.png'),
         path.join(__dirname, '../public/images/icon.png'),
     ];
     for (const candidate of candidates) {
@@ -108,7 +139,9 @@ function createWindow() {
             mainWindow.webContents.openDevTools({ mode: 'detach' });
         }
     } else {
-        mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+        const distRoot = path.join(__dirname, '../dist');
+        installHrmProtocol(distRoot);
+        mainWindow.loadURL('hrm://app/index.html');
     }
 
     mainWindow.on('closed', () => {
@@ -207,6 +240,18 @@ if (!gotLock) {
     });
 
     app.whenReady().then(() => {
+        app.setAppUserModelId('com.raintech.hrm');
+        const iconPath = resolveWindowIcon();
+        if (iconPath) {
+            app.setAboutPanelOptions({
+                applicationName: 'Raintech HRM',
+                applicationVersion: app.getVersion(),
+                copyright: 'Copyright © Raintech Software',
+                version: app.getVersion(),
+                iconPath,
+            });
+        }
+
         writeConfig(readConfig());
         createWindow();
 
