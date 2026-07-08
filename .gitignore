@@ -2,6 +2,7 @@
 frontend/electron/production-api.json
 .env.*
 !.env.example
+backend/.env
 
 # Rust
 backend/target/
@@ -53,3 +54,10 @@ debug-*.log
 backend/*.log
 reports/full-test-run*.log
 scripts/last-complete-test-run.txt
+
+
+
+.deploy
+.docs
+.scripts
+.docker-compose.yml
