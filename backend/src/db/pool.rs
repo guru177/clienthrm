@@ -2,7 +2,6 @@ use std::sync::RwLock;
 
 use r2d2::Pool;
 use r2d2_postgres::{postgres::NoTls, PostgresConnectionManager};
-use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::db::connection::Connection;
 use crate::db::dialect::Backend;
@@ -12,42 +11,23 @@ type PgManager = PostgresConnectionManager<NoTls>;
 
 static READ_POOL: RwLock<Option<DbPool>> = RwLock::new(None);
 
-pub enum DbPool {
-    Sqlite(Pool<SqliteConnectionManager>),
-    Postgres(Pool<PgManager>),
-}
-
-impl Clone for DbPool {
-    fn clone(&self) -> Self {
-        match self {
-            DbPool::Sqlite(p) => DbPool::Sqlite(p.clone()),
-            DbPool::Postgres(p) => DbPool::Postgres(p.clone()),
-        }
-    }
-}
+#[derive(Clone)]
+pub struct DbPool(Pool<PgManager>);
 
 impl DbPool {
     pub fn backend(&self) -> Backend {
-        match self {
-            DbPool::Sqlite(_) => Backend::Sqlite,
-            DbPool::Postgres(_) => Backend::Postgres,
-        }
+        Backend::Postgres
     }
 
     pub fn get(&self) -> Result<Connection, r2d2::Error> {
-        match self {
-            DbPool::Sqlite(p) => p.get().map(Connection::sqlite),
-            DbPool::Postgres(p) => {
-                if tokio::runtime::Handle::try_current().is_ok() {
-                    let pool = p.clone();
-                    match std::thread::spawn(move || pool.get().map(Connection::postgres)).join() {
-                        Ok(result) => result,
-                        Err(panic) => std::panic::resume_unwind(panic),
-                    }
-                } else {
-                    p.get().map(Connection::postgres)
-                }
+        let pool = self.0.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            match std::thread::spawn(move || pool.get().map(Connection::postgres)).join() {
+                Ok(result) => result,
+                Err(panic) => std::panic::resume_unwind(panic),
             }
+        } else {
+            self.0.get().map(Connection::postgres)
         }
     }
 
@@ -92,17 +72,13 @@ fn env_pool_size(key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-pub fn init_pool(database_path: &str, database_url: Option<&str>) -> DbPool {
-    if let Some(url) = database_url.filter(|u| {
-        let u = u.trim();
-        u.starts_with("postgres://") || u.starts_with("postgresql://")
-    }) {
-        log::info!("Using PostgreSQL database");
-        return init_postgres(url);
+pub fn init_pool(database_url: &str) -> DbPool {
+    let url = database_url.trim();
+    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        panic!("DATABASE_URL must be a PostgreSQL URL; got: {url}");
     }
-
-    log::info!("Using SQLite database at {}", database_path);
-    init_sqlite(database_path)
+    log::info!("Using PostgreSQL database");
+    init_postgres(url)
 }
 
 /// Optional read replica pool (`DATABASE_READ_URL`).
@@ -119,25 +95,6 @@ pub fn init_read_pool() {
     }
 }
 
-fn init_sqlite(database_path: &str) -> DbPool {
-    let max_size = env_pool_size("DB_POOL_MAX_SIZE", 10);
-    let manager = SqliteConnectionManager::file(database_path);
-    let pool = Pool::builder()
-        .max_size(max_size)
-        .build(manager)
-        .expect("Failed to create SQLite pool");
-
-    if let Ok(conn) = pool.get() {
-        let _ = conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=5000;",
-        );
-    }
-
-    DbPool::Sqlite(pool)
-}
-
 fn init_postgres(url: &str) -> DbPool {
     let max_size = env_pool_size("DB_POOL_MAX_SIZE", 50);
     let pg_config: postgres::Config = url.parse().expect("Invalid DATABASE_URL");
@@ -147,5 +104,5 @@ fn init_postgres(url: &str) -> DbPool {
         .build(manager)
         .expect("Failed to create PostgreSQL pool");
 
-    DbPool::Postgres(pool)
+    DbPool(pool)
 }

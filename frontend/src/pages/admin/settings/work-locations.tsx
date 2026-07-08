@@ -26,7 +26,7 @@ export default function WorkLocationsPage() {
     ];
 
     const loadLocations = async () => {
-        const res = await axios.get('/admin/api/settings/centers');
+        const res = await axios.get('/admin/settings/centers');
         const items = (res.data?.data ?? []) as Array<{ id: number; name: string }>;
         setLocations(items.map((c) => ({ id: c.id, name: c.name })));
     };
@@ -98,7 +98,7 @@ export default function WorkLocationsPage() {
                         Work Locations
                     </h1>
                     <p className="text-muted-foreground mt-1">
-                        Manage centers used as employee work locations (same data as Centers).
+                        Manage branches used as employee work locations (same data as Branches).
                     </p>
                 </div>
 

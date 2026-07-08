@@ -1,6 +1,6 @@
 import axios from '@/lib/axios';
 import { Plus } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Textarea } from '@/components/ui/textarea';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
@@ -29,6 +30,20 @@ export interface EmployeeOption {
     id: number;
     name: string;
     email?: string;
+    phone?: string | null;
+    department_name?: string | null;
+}
+
+function formatEmployeeLabel(e: EmployeeOption): string {
+    const parts = [e.name];
+    if (e.department_name) {
+        parts.push(e.department_name);
+    }
+    let label = parts.join(' — ');
+    if (e.phone) {
+        label += ` (${e.phone})`;
+    }
+    return label;
 }
 
 export interface ManualEntryForm {
@@ -56,20 +71,40 @@ interface ManualAttendanceFormProps {
 
 export default function ManualAttendanceForm({ defaultDate, onSuccess }: ManualAttendanceFormProps) {
     const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+    const [loadingEmployees, setLoadingEmployees] = useState(true);
+    const [selectedEmployee, setSelectedEmployee] = useState<EmployeeOption | null>(null);
     const [form, setForm] = useState<ManualEntryForm>(() => emptyForm(defaultDate));
     const [saving, setSaving] = useState(false);
+    const searchTimerRef = useRef<number | undefined>(undefined);
 
-    const loadEmployees = useCallback(async () => {
+    const loadEmployees = useCallback(async (search: string) => {
+        setLoadingEmployees(true);
         try {
-            const res = await axios.get('/admin/attendance/users');
+            const res = await axios.get('/admin/attendance/users', {
+                params: { search: search.trim() || undefined },
+            });
             setEmployees(res.data.data ?? []);
         } catch (error) {
             handleApiError(error);
+        } finally {
+            setLoadingEmployees(false);
         }
     }, []);
 
+    const handleQueryChange = useCallback(
+        (query: string) => {
+            if (searchTimerRef.current) {
+                window.clearTimeout(searchTimerRef.current);
+            }
+            searchTimerRef.current = window.setTimeout(() => {
+                void loadEmployees(query);
+            }, 300);
+        },
+        [loadEmployees],
+    );
+
     useEffect(() => {
-        void loadEmployees();
+        void loadEmployees('');
     }, [loadEmployees]);
 
     useEffect(() => {
@@ -77,6 +112,24 @@ export default function ManualAttendanceForm({ defaultDate, onSuccess }: ManualA
             setForm((f) => ({ ...f, date: defaultDate }));
         }
     }, [defaultDate]);
+
+    const employeeOptions = useMemo(() => {
+        const opts = employees.map((e) => ({
+            value: String(e.id),
+            label: formatEmployeeLabel(e),
+        }));
+        if (
+            selectedEmployee &&
+            form.user_id === String(selectedEmployee.id) &&
+            !opts.some((o) => o.value === form.user_id)
+        ) {
+            opts.unshift({
+                value: String(selectedEmployee.id),
+                label: formatEmployeeLabel(selectedEmployee),
+            });
+        }
+        return opts;
+    }, [employees, form.user_id, selectedEmployee]);
 
     const submit = async () => {
         if (!form.user_id) {
@@ -95,6 +148,7 @@ export default function ManualAttendanceForm({ defaultDate, onSuccess }: ManualA
             });
             handleApiResponse(res);
             setForm(emptyForm(form.date));
+            setSelectedEmployee(null);
             onSuccess?.();
         } catch (error) {
             handleApiError(error);
@@ -116,22 +170,29 @@ export default function ManualAttendanceForm({ defaultDate, onSuccess }: ManualA
             </CardHeader>
             <CardContent className="space-y-3">
                 <div className="space-y-1">
-                    <Label>Employee</Label>
-                    <Select
+                    <Label htmlFor="manual_form_employee">Employee</Label>
+                    <SearchableSelect
                         value={form.user_id}
-                        onValueChange={(v) => setForm((f) => ({ ...f, user_id: v }))}
-                    >
-                        <SelectTrigger>
-                            <SelectValue placeholder="Select employee" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {employees.map((e) => (
-                                <SelectItem key={e.id} value={String(e.id)}>
-                                    {e.name}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
+                        onValueChange={(v) => {
+                            const employee = employees.find((e) => String(e.id) === v);
+                            if (employee) {
+                                setSelectedEmployee(employee);
+                            }
+                            setForm((f) => ({ ...f, user_id: v }));
+                        }}
+                        options={employeeOptions}
+                        placeholder="Select employee"
+                        searchPlaceholder="Search by name, department, or phone"
+                        emptyMessage="No employees match your search"
+                        loading={loadingEmployees}
+                        filterLocally={false}
+                        onQueryChange={handleQueryChange}
+                        onOpenChange={(open) => {
+                            if (!open) {
+                                void loadEmployees('');
+                            }
+                        }}
+                    />
                 </div>
                 <div className="space-y-1">
                     <Label htmlFor="manual_form_date">Date</Label>

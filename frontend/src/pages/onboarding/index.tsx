@@ -2,6 +2,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import axios from '@/lib/axios';
 import { Check } from 'lucide-react';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -66,6 +67,7 @@ const STEPS = [
 ];
 
 export default function OnboardingIndex() {
+    const navigate = useNavigate();
     const { user: authUser } = useAuth();
     const user = authUser as any;
     const [currentStep, setCurrentStep] = useState(1);
@@ -125,7 +127,7 @@ export default function OnboardingIndex() {
 
             // Redirect after onboarding (backend nests payload under `data`)
             const redirect = response.data?.data?.redirect ?? response.data?.redirect;
-            window.location.href = redirect || '/admin/attendance';
+            navigate(redirect || '/admin/attendance', { replace: true });
         } catch (error: any) {
             if (error.response?.data?.errors) {
                 setErrors(error.response.data.errors);

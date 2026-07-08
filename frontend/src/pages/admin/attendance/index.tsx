@@ -1,7 +1,7 @@
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import axios from '@/lib/axios';
-import { storageUrl } from '@/lib/storage-url';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import { Clock, LogIn, LogOut, Calendar, Timer, UserCheck } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -107,7 +107,7 @@ export default function AttendancePage() {
     };
 
     const breadcrumbs = [{ label: 'Attendance', href: '/admin/attendance' }];
-    const userPhotoUrl = user?.photo ? storageUrl(user.photo) : null;
+    const userPhotoUrl = useStorageSrc(user?.photo);
 
     const todayShift = todayData?.shift;
     const formatShiftTime = (value?: string) => {

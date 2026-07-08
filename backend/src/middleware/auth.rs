@@ -105,6 +105,25 @@ fn token_from_query(req: &HttpRequest) -> Option<String> {
     })
 }
 
+fn token_from_cookie(req: &HttpRequest) -> Option<String> {
+    req.cookie("hrm_session").map(|c| c.value().to_string())
+}
+
+/// Build Set-Cookie header for HttpOnly session (same-origin file/img requests).
+pub fn session_cookie_header(token: &str, max_age_secs: i64) -> String {
+    let secure = if cfg!(debug_assertions) { "" } else { "; Secure" };
+    format!(
+        "hrm_session={}; HttpOnly; Path=/api; SameSite=Lax; Max-Age={}{secure}",
+        token, max_age_secs
+    )
+}
+
+/// Clear session cookie on logout.
+pub fn clear_session_cookie_header() -> String {
+    let secure = if cfg!(debug_assertions) { "" } else { "; Secure" };
+    format!("hrm_session=; HttpOnly; Path=/api; SameSite=Lax; Max-Age=0{secure}")
+}
+
 /// Extracts and validates JWT token from Authorization header.
 pub fn extract_claims(req: &ServiceRequest) -> Result<JwtClaims, Error> {
     let jwt_secret = req
@@ -125,18 +144,18 @@ pub fn get_claims_from_request(req: &HttpRequest) -> Result<JwtClaims, Error> {
     decode_tenant_token(&token, jwt_secret.as_str())
 }
 
-/// Bearer header first, then `?token=` query param (for img/download URLs).
+/// Bearer header, HttpOnly cookie, then legacy `?token=` query param.
 pub fn get_claims_from_request_or_query(req: &HttpRequest) -> Result<JwtClaims, Error> {
-    if let Ok(token) = bearer_from_headers(req.headers()) {
-        let jwt_secret = req
-            .app_data::<actix_web::web::Data<Arc<String>>>()
-            .ok_or_else(|| ErrorUnauthorized("Server configuration error"))?;
-        return decode_tenant_token(&token, jwt_secret.as_str());
-    }
-
     let jwt_secret = req
         .app_data::<actix_web::web::Data<Arc<String>>>()
         .ok_or_else(|| ErrorUnauthorized("Server configuration error"))?;
+
+    if let Ok(token) = bearer_from_headers(req.headers()) {
+        return decode_tenant_token(&token, jwt_secret.as_str());
+    }
+    if let Some(token) = token_from_cookie(req) {
+        return decode_tenant_token(&token, jwt_secret.as_str());
+    }
     let token = token_from_query(req).ok_or_else(|| ErrorUnauthorized("Missing token"))?;
     decode_tenant_token(&token, jwt_secret.as_str())
 }

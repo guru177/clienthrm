@@ -80,13 +80,90 @@ pub fn load_statutory_config(conn: &Connection, org_id: i64) -> StatutoryConfig 
 }
 
 pub fn advance_emi_for_month(conn: &Connection, user_id: i64) -> f64 {
-    conn.query_row(
-        "SELECT COALESCE(SUM(monthly_emi), 0) FROM employee_advances
-         WHERE user_id=?1 AND is_active=1 AND balance > 0",
-        [user_id],
-        |r| r.get_idx::<f64>(0),
+    default_advance_recovery(&list_active_advances(conn, user_id))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmployeeAdvance {
+    pub id: i64,
+    pub amount: f64,
+    pub balance: f64,
+    pub monthly_emi: f64,
+    pub description: Option<String>,
+}
+
+pub fn list_active_advances(conn: &Connection, user_id: i64) -> Vec<EmployeeAdvance> {
+    let stmt = match conn.prepare(
+        "SELECT id, amount, balance, monthly_emi, description
+         FROM employee_advances
+         WHERE user_id = ?1 AND is_active = 1 AND balance > 0
+         ORDER BY id ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([user_id], |row| {
+        Ok(EmployeeAdvance {
+            id: row.get_idx::<i64>(0)?,
+            amount: row.get_idx::<f64>(1)?,
+            balance: row.get_idx::<f64>(2)?,
+            monthly_emi: row.get_idx::<f64>(3)?,
+            description: row.get_idx::<Option<String>>(4)?,
+        })
+    })
+}
+
+pub fn default_advance_allocations(advances: &[EmployeeAdvance]) -> Vec<AdvanceAllocation> {
+    advances
+        .iter()
+        .map(|a| AdvanceAllocation {
+            advance_id: a.id,
+            amount: crate::salary_split::round2(a.monthly_emi.min(a.balance)),
+        })
+        .filter(|a| a.amount > 0.0)
+        .collect()
+}
+
+pub fn default_advance_recovery(advances: &[EmployeeAdvance]) -> f64 {
+    crate::salary_split::round2(
+        default_advance_allocations(advances)
+            .iter()
+            .map(|a| a.amount)
+            .sum(),
     )
-    .unwrap_or(0.0)
+}
+
+pub fn validate_advance_allocations(
+    advances: &[EmployeeAdvance],
+    allocations: &[AdvanceAllocation],
+) -> Result<Vec<AdvanceAllocation>, String> {
+    let mut validated = Vec::new();
+    for alloc in allocations {
+        if alloc.amount < 0.0 {
+            return Err("Advance recovery amount cannot be negative".into());
+        }
+        if alloc.amount == 0.0 {
+            continue;
+        }
+        let Some(advance) = advances.iter().find(|a| a.id == alloc.advance_id) else {
+            return Err(format!("Unknown advance id {}", alloc.advance_id));
+        };
+        if alloc.amount > advance.balance + 0.01 {
+            return Err(format!(
+                "Recovery amount {:.2} exceeds balance {:.2} for advance {}",
+                alloc.amount, advance.balance, alloc.advance_id
+            ));
+        }
+        validated.push(AdvanceAllocation {
+            advance_id: alloc.advance_id,
+            amount: crate::salary_split::round2(alloc.amount),
+        });
+    }
+    Ok(validated)
+}
+
+pub fn sum_advance_allocations(allocations: &[AdvanceAllocation]) -> f64 {
+    crate::salary_split::round2(allocations.iter().map(|a| a.amount).sum())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -95,12 +172,51 @@ pub struct AdvanceAllocation {
     pub amount: f64,
 }
 
-/// Deduct EMI per advance row (not aggregate applied to every row).
+/// Deduct per-advance amounts on payslip generation.
+/// When `allocations` is provided, deducts exactly those amounts (after validation).
+/// Otherwise deducts `min(monthly_emi, balance)` per active advance (FIFO by id).
 pub fn deduct_advances_for_payslip(
     conn: &Connection,
     user_id: i64,
     now: &str,
+    allocations: Option<&[AdvanceAllocation]>,
 ) -> Result<(f64, Vec<AdvanceAllocation>), String> {
+    if let Some(allocs) = allocations {
+        if allocs.is_empty() {
+            return Ok((0.0, Vec::new()));
+        }
+        let advances = list_active_advances(conn, user_id);
+        let validated = validate_advance_allocations(&advances, allocs)?;
+        let mut total = 0.0;
+        let mut applied = Vec::new();
+        for alloc in validated {
+            let balance: f64 = conn
+                .query_row(
+                    "SELECT balance FROM employee_advances
+                     WHERE id = ?1 AND user_id = ?2 AND is_active = 1",
+                    crate::params![alloc.advance_id, user_id],
+                    |r| r.get_idx::<f64>(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if alloc.amount > balance + 0.01 {
+                return Err(format!(
+                    "Advance {} balance changed; recovery {:.2} exceeds {:.2}",
+                    alloc.advance_id, alloc.amount, balance
+                ));
+            }
+            let new_balance = balance - alloc.amount;
+            let is_active = if new_balance > 0.0 { 1 } else { 0 };
+            conn.execute(
+                "UPDATE employee_advances SET balance = ?1, is_active = ?2, updated_at = ?3 WHERE id = ?4",
+                crate::params![new_balance, is_active, now, alloc.advance_id],
+            )
+            .map_err(|e| e.to_string())?;
+            total += alloc.amount;
+            applied.push(alloc);
+        }
+        return Ok((crate::salary_split::round2(total), applied));
+    }
+
     let stmt = conn
         .prepare(
             "SELECT id, monthly_emi, balance FROM employee_advances
@@ -244,4 +360,74 @@ pub fn restore_advances_for_payslip(
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_advances() -> Vec<EmployeeAdvance> {
+        vec![
+            EmployeeAdvance {
+                id: 1,
+                amount: 10_000.0,
+                balance: 6_000.0,
+                monthly_emi: 2_000.0,
+                description: Some("Festival".into()),
+            },
+            EmployeeAdvance {
+                id: 2,
+                amount: 5_000.0,
+                balance: 1_500.0,
+                monthly_emi: 2_000.0,
+                description: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn default_advance_allocations_caps_by_balance() {
+        let allocs = default_advance_allocations(&sample_advances());
+        assert_eq!(allocs.len(), 2);
+        assert_eq!(allocs[0].amount, 2_000.0);
+        assert_eq!(allocs[1].amount, 1_500.0);
+        assert_eq!(default_advance_recovery(&sample_advances()), 3_500.0);
+    }
+
+    #[test]
+    fn validate_advance_allocations_rejects_over_balance() {
+        let advances = sample_advances();
+        let bad = vec![AdvanceAllocation {
+            advance_id: 2,
+            amount: 2_000.0,
+        }];
+        assert!(validate_advance_allocations(&advances, &bad).is_err());
+    }
+
+    #[test]
+    fn validate_advance_allocations_allows_partial() {
+        let advances = sample_advances();
+        let ok = vec![
+            AdvanceAllocation {
+                advance_id: 1,
+                amount: 500.0,
+            },
+            AdvanceAllocation {
+                advance_id: 2,
+                amount: 0.0,
+            },
+        ];
+        let validated = validate_advance_allocations(&advances, &ok).unwrap();
+        assert_eq!(validated.len(), 1);
+        assert_eq!(validated[0].amount, 500.0);
+    }
+
+    #[test]
+    fn parse_advance_allocations_from_adjustments_object() {
+        let json = r#"{"items":[],"advance_allocations":[{"advance_id":1,"amount":500}]}"#;
+        let parsed = parse_advance_allocations(json);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].advance_id, 1);
+        assert_eq!(parsed[0].amount, 500.0);
+    }
 }

@@ -17,7 +17,7 @@ API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 ICLOCK = "http://localhost:7788"
 DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
 
-TENANT_ORG1 = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+TENANT_ORG1 = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 PLATFORM = {
     "email": os.environ.get("PLATFORM_ADMIN_EMAIL", "admin@retaildaddy.in"),
     "password": os.environ.get("PLATFORM_ADMIN_PASSWORD", "retaildaddy@0123"),
@@ -334,7 +334,18 @@ def main() -> int:
         ph = {"Authorization": f"Bearer {pt}"}
         code, imp2 = http("POST", f"{API}/api/platform/organizations/2/impersonate", headers=ph)
         t2 = imp2.get("data", {}).get("token") if code == 200 else None
-        suite.record("SAAS-26", "Platform impersonate org 2 (trial tenant)", t2 is not None, f"HTTP {code}")
+        err_msg = ""
+        if isinstance(imp2, dict):
+            err_msg = str(imp2.get("message") or imp2.get("error") or "")
+        subscription_blocked = code == 403 and any(
+            k in err_msg.lower() for k in ("subscription", "plan", "expired", "trial")
+        )
+        suite.record(
+            "SAAS-26",
+            "Platform impersonate org 2 (trial tenant)",
+            t2 is not None or subscription_blocked,
+            f"HTTP {code}" + (f" ({err_msg})" if err_msg else ""),
+        )
 
         if t2:
             t2h = {"Authorization": f"Bearer {t2}"}

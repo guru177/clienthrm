@@ -537,7 +537,8 @@ pub async fn tenant_announcements_index(pool: web::Data<DbPool>, req: HttpReques
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
-    let is_admin = claims.is_super_admin;
+    let is_admin =
+        crate::tenant::user_is_super_admin(&conn, claims.sub, claims.organization_id);
     let items: Vec<serde_json::Value> = stmt
         .query_map(crate::params![claims.organization_id], announcement_to_value)
         .into_iter()
@@ -834,7 +835,8 @@ pub async fn tenant_releases_index(pool: web::Data<DbPool>, req: HttpRequest) ->
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
-    let is_admin = claims.is_super_admin;
+    let is_admin =
+        crate::tenant::user_is_super_admin(&conn, claims.sub, claims.organization_id);
     let items: Vec<serde_json::Value> = stmt
         .query_map([], release_to_value)
         .into_iter()

@@ -1,6 +1,6 @@
 # API input flow test - same payloads the UI sends
 $Base = "http://localhost:5174/api"
-$Email = "admin@mashuptech.in"
+$Email = "info@retaildaddy.in"
 $Password = "password"
 $Ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $Results = @()
@@ -45,11 +45,24 @@ Log "Attendance" "Today shows active session" $(if ($active) { "OK" } else { "WA
 $cout = Api POST "/admin/attendance/clock-out" @{} $token
 Log "Attendance" "Clock out" $(if ($cout.Ok) { "OK" } else { "FAIL" }) ""
 
-# Department CRUD
+# Center (required for department branch)
+$ct = Api POST "/admin/settings/centers" @{
+    name = "API Center $Ts"; address_line1 = "1 St"; place = "P"; city = "C"; state = "S"; pincode = "1"
+} $token
+$centerId = 0
+if ($ct.Ok -and $ct.Json.data.id) {
+    $centerId = [int]$ct.Json.data.id
+    $Created.centers += $centerId
+    Log "Centers" "Create" "OK"
+} else { Log "Centers" "Create" "FAIL" $ct.Code }
+
+# Department CRUD (requires valid center_id)
 $deptName = "API Dept $Ts"
-$d = Api POST "/admin/departments" @{ name = $deptName; description = "test"; is_active = $true } $token
-if ($d.Ok -and $d.Json.data.id) { $Created.departments += $d.Json.data.id; Log "Departments" "Create" "OK" $deptName }
-else { Log "Departments" "Create" "FAIL" $d.Code }
+if ($centerId -gt 0) {
+    $d = Api POST "/admin/departments" @{ name = $deptName; description = "test"; is_active = $true; center_id = $centerId } $token
+    if ($d.Ok -and $d.Json.data.id) { $Created.departments += $d.Json.data.id; Log "Departments" "Create" "OK" $deptName }
+    else { Log "Departments" "Create" "FAIL" $d.Code }
+} else { Log "Departments" "Create" "FAIL" "no center" }
 
 # Designation
 $desName = "API Desig $Ts"
@@ -97,12 +110,6 @@ $pr = Api POST "/admin/projects" @{
     name = "API Proj $Ts"; description = "d"; status = "planning"; priority = "medium"
 } $token
 if ($pr.Ok) { Log "Projects" "Create" "OK" } else { Log "Projects" "Create" "FAIL" $pr.Code }
-
-# Center
-$ct = Api POST "/admin/api/settings/centers" @{
-    name = "API Center $Ts"; address_line1 = "1 St"; place = "P"; city = "C"; state = "S"; pincode = "1"
-} $token
-if ($ct.Ok) { Log "Centers" "Create" "OK" } else { Log "Centers" "Create" "FAIL" $ct.Code }
 
 # Settings patch
 $prof = Api PATCH "/admin/settings/profile" @{ phone = "9999999999" } $token

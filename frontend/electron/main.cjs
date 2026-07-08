@@ -1,8 +1,15 @@
 const { app, BrowserWindow, ipcMain, Notification, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { initAutoUpdater } = require('./updater.cjs');
 const { registerPrivilegedScheme, installHrmProtocol } = require('./local-protocol.cjs');
+const {
+    createSplashWindow,
+    updateSplashProgress,
+    closeSplashWindow,
+    destroySplashWindow,
+} = require('./splash.cjs');
 
 registerPrivilegedScheme();
 
@@ -96,12 +103,35 @@ function resolveUpdateFeedUrl() {
     return `${config.apiBase}/api/public/desktop/updates`;
 }
 
+function brandingPath(...parts) {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'branding', ...parts);
+    }
+    return path.join(__dirname, 'branding', ...parts);
+}
+
+function resolveLogoForSplash() {
+    const candidates = [
+        brandingPath('logo.png'),
+        brandingPath('icon-256.png'),
+        path.join(__dirname, '../build/icon-256.png'),
+        path.join(__dirname, '../public/images/logo.png'),
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            return pathToFileURL(candidate).href;
+        }
+    }
+    return undefined;
+}
+
 function resolveWindowIcon() {
     const candidates = [
+        brandingPath('icon.ico'),
         path.join(__dirname, '../build/icon.ico'),
-        path.join(__dirname, '../build/icon.png'),
-        path.join(__dirname, '../public/favicon.png'),
-        path.join(__dirname, '../public/images/icon.png'),
+        brandingPath('icon-256.png'),
+        path.join(__dirname, '../build/icon-256.png'),
+        path.join(__dirname, '../public/images/logo.png'),
     ];
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
@@ -111,27 +141,54 @@ function resolveWindowIcon() {
 
 function createWindow() {
     const isDev = !app.isPackaged;
+    const iconPath = resolveWindowIcon();
+
+    createSplashWindow({ iconPath });
+    updateSplashProgress(8, 'Starting HR Daddy…');
 
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 860,
         minWidth: 960,
         minHeight: 640,
+        show: false,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: true,
             preload: path.join(__dirname, 'preload.cjs'),
         },
-        icon: resolveWindowIcon(),
-        title: 'Raintech HRM',
+        icon: iconPath,
+        title: 'HR Daddy',
         autoHideMenuBar: true,
-        show: false,
     });
 
-    mainWindow.once('ready-to-show', () => {
-        mainWindow.show();
+    if (iconPath && process.platform === 'win32') {
+        mainWindow.setIcon(iconPath);
+    }
+
+    mainWindow.webContents.on('did-start-loading', () => {
+        updateSplashProgress(34, 'Loading interface…');
     });
+
+    mainWindow.webContents.on('dom-ready', () => {
+        updateSplashProgress(68, 'Preparing workspace…');
+    });
+
+    mainWindow.webContents.on('did-finish-load', () => {
+        updateSplashProgress(88, 'Almost ready…');
+    });
+
+    mainWindow.once('ready-to-show', async () => {
+        updateSplashProgress(100, 'Launching…');
+        await closeSplashWindow();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+
+    updateSplashProgress(18, 'Connecting to services…');
 
     if (isDev) {
         mainWindow.loadURL('http://localhost:5174');
@@ -150,6 +207,14 @@ function createWindow() {
 
     updaterControls = initAutoUpdater(mainWindow, resolveUpdateFeedUrl);
 }
+
+ipcMain.on('splash-meta', (event) => {
+    event.returnValue = {
+        appName: 'HR Daddy',
+        version: app.getVersion(),
+        logoPath: resolveLogoForSplash(),
+    };
+});
 
 ipcMain.on('get-api-base', (event) => {
     event.returnValue = readConfig().apiBase;
@@ -210,7 +275,7 @@ ipcMain.handle('show-notification', async (event, { title, body, tag }) => {
     if (!Notification.isSupported()) return false;
 
     const notification = new Notification({
-        title: title || 'Raintech HRM',
+        title: title || 'HR Daddy',
         body: body || '',
         silent: false,
     });
@@ -239,12 +304,16 @@ if (!gotLock) {
         }
     });
 
+    app.on('before-quit', () => {
+        destroySplashWindow();
+    });
+
     app.whenReady().then(() => {
         app.setAppUserModelId('com.raintech.hrm');
         const iconPath = resolveWindowIcon();
         if (iconPath) {
             app.setAboutPanelOptions({
-                applicationName: 'Raintech HRM',
+                applicationName: 'HR Daddy',
                 applicationVersion: app.getVersion(),
                 copyright: 'Copyright © Raintech Software',
                 version: app.getVersion(),

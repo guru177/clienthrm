@@ -511,28 +511,15 @@ pub async fn system_health(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let backend = if cfg
-        .database_url
-        .as_deref()
-        .map(|u| u.starts_with("postgres"))
-        .unwrap_or(false)
-    {
-        "postgres"
-    } else {
-        "sqlite"
-    };
-
+    let backend = "postgres";
+    let db_path = cfg.database_url.clone();
     let mut db_size_bytes: Option<u64> = None;
-    let mut db_path = cfg.database_path.clone();
-    if backend == "sqlite" {
-        if let Ok(meta) = std::fs::metadata(&cfg.database_path) {
-            db_size_bytes = Some(meta.len());
-        }
-    } else {
-        db_path = cfg
-            .database_url
-            .clone()
-            .unwrap_or_else(|| "(postgres)".to_string());
+    if let Ok(row) = conn.query_row(
+        "SELECT pg_database_size(current_database())",
+        crate::db::Params::empty(),
+        |r| r.get_idx::<i64>(0),
+    ) {
+        db_size_bytes = Some(row.max(0) as u64);
     }
 
     let counts = [

@@ -20,6 +20,20 @@ pub struct Center {
 }
 
 impl Center {
+    fn is_active_from_row(row: &crate::db::Row) -> bool {
+        row.get::<Option<i64>>("is_active")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                row.get::<Option<bool>>("is_active")
+                    .ok()
+                    .flatten()
+                    .map(|b| if b { 1 } else { 0 })
+            })
+            .unwrap_or(1)
+            != 0
+    }
+
     pub fn from_row(row: &crate::db::Row) -> crate::db::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
@@ -29,7 +43,7 @@ impl Center {
             city: row.get("city")?,
             state: row.get("state")?,
             country: row.get("country")?,
-            is_active: row.get::<Option<bool>>("is_active")?.unwrap_or(true),
+            is_active: Self::is_active_from_row(row),
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -120,9 +134,24 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let center_id = path.into_inner();
+
+    let dept_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM departments WHERE center_id = ?1 AND organization_id = ?2",
+            crate::params![center_id, org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    if dept_count > 0 {
+        return HttpResponse::BadRequest().json(ApiError::new(&format!(
+            "Cannot delete branch: {dept_count} department(s) are assigned to it"
+        )));
+    }
+
     match conn.execute(
         "DELETE FROM centers WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![center_id, org_id],
     ) {
         Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Center not found")),

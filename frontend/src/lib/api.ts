@@ -15,6 +15,7 @@ export function setToken(token: string) {
 export function clearToken() {
     localStorage.removeItem('hrm_token');
     localStorage.removeItem('hrm_refresh_token');
+    import('@/lib/storage-url').then((m) => m.clearStorageBlobCache()).catch(() => {});
 }
 
 export function setRefreshToken(token: string) {
@@ -80,6 +81,7 @@ async function apiFetch<T = any>(
 
     const response = await fetch(apiUrl(path), {
         ...options,
+        credentials: 'include',
         headers,
     });
 
@@ -194,4 +196,31 @@ export async function apiUpload<T = any>(path: string, formData: FormData): Prom
     }
 
     return json as { success: boolean; data: T };
+}
+
+export interface AttendanceRegisterParams {
+    start_date: string;
+    end_date: string;
+    /** Alias for start_date */
+    from_date?: string;
+    /** Alias for end_date */
+    to_date?: string;
+    department_id?: number;
+    search?: string;
+}
+
+/** Fetch book-style attendance register matrix for a date range. */
+export async function fetchAttendanceRegister(params: AttendanceRegisterParams) {
+    const query: Record<string, string | number> = {
+        start_date: params.start_date ?? params.from_date ?? '',
+        end_date: params.end_date ?? params.to_date ?? '',
+    };
+    if (params.department_id != null) query.department_id = params.department_id;
+    if (params.search) query.search = params.search;
+    return apiGet('/admin/reports/attendance-register', query);
+}
+
+/** Fetch salary split report for a payroll month. */
+export async function fetchPayrollSplit(month: number, year: number) {
+    return apiGet('/admin/reports/payroll-split', { month, year });
 }

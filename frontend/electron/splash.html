@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HR Daddy</title>
+    <style>
+        :root {
+            --bg-0: #f8fafc;
+            --bg-1: #ffffff;
+            --bg-2: #eef4fb;
+            --text: #0f172a;
+            --muted: #64748b;
+            --accent: #0d4a8a;
+            --accent-soft: rgba(13, 74, 138, 0.16);
+            --line: rgba(15, 23, 42, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            font-family: "Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-1);
+            color: var(--text);
+        }
+
+        .splash {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            background:
+                radial-gradient(120% 80% at 50% -10%, rgba(13, 74, 138, 0.10), transparent 55%),
+                radial-gradient(90% 60% at 100% 100%, rgba(59, 130, 246, 0.08), transparent 60%),
+                linear-gradient(160deg, var(--bg-0) 0%, var(--bg-1) 42%, var(--bg-2) 100%);
+            opacity: 1;
+            transition: opacity 0.42s ease;
+        }
+
+        .splash.fade-out {
+            opacity: 0;
+        }
+
+        .top-accent {
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            opacity: 0.85;
+        }
+
+        .center {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 24px 32px 8px;
+        }
+
+        .logo-wrap {
+            position: relative;
+            width: 108px;
+            height: 108px;
+            display: grid;
+            place-items: center;
+        }
+
+        .logo-glow {
+            position: absolute;
+            inset: 8px;
+            border-radius: 28px;
+            background: radial-gradient(circle, var(--accent-soft), transparent 70%);
+            filter: blur(10px);
+            animation: pulse 2.4s ease-in-out infinite;
+        }
+
+        .logo-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 28px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: linear-gradient(145deg, #ffffff, #f1f5f9);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.95),
+                0 14px 32px rgba(15, 23, 42, 0.10);
+        }
+
+        .logo {
+            position: relative;
+            width: 72px;
+            height: 72px;
+            object-fit: contain;
+            filter: drop-shadow(0 6px 14px rgba(15, 23, 42, 0.12));
+            animation: float 3.2s ease-in-out infinite;
+        }
+
+        .brand {
+            text-align: center;
+        }
+
+        .brand h1 {
+            font-size: 28px;
+            font-weight: 300;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text);
+        }
+
+        .brand p {
+            margin-top: 8px;
+            font-size: 12px;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .footer {
+            padding: 0 28px 24px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: 0.04em;
+        }
+
+        .status-text {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .status-percent {
+            font-variant-numeric: tabular-nums;
+            color: #334155;
+        }
+
+        .progress-track {
+            position: relative;
+            height: 4px;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.08);
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+        }
+
+        .progress-fill {
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 0%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #0a3272, var(--accent), #3b82f6);
+            box-shadow: 0 0 12px rgba(13, 74, 138, 0.28);
+            transition: width 0.35s ease;
+        }
+
+        .progress-shimmer {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(
+                90deg,
+                transparent 0%,
+                rgba(255, 255, 255, 0.65) 50%,
+                transparent 100%
+            );
+            transform: translateX(-120%);
+            animation: shimmer 1.6s ease-in-out infinite;
+        }
+
+        .meta {
+            margin-top: 12px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: rgba(100, 116, 139, 0.9);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.55; transform: scale(0.98); }
+            50% { opacity: 1; transform: scale(1.03); }
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-120%); }
+            100% { transform: translateX(220%); }
+        }
+    </style>
+</head>
+<body>
+    <div class="splash" id="splash">
+        <div class="top-accent"></div>
+
+        <div class="center">
+            <div class="logo-wrap">
+                <div class="logo-glow"></div>
+                <div class="logo-ring"></div>
+                <img id="logo" class="logo" src="branding/logo.png" alt="HR Daddy" />
+            </div>
+
+            <div class="brand">
+                <h1 id="app-name">HR Daddy</h1>
+                <p>Human Resource Management</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="status-row">
+                <span class="status-text" id="status-text">Initializing workspace…</span>
+                <span class="status-percent" id="status-percent">0%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill"></div>
+                <div class="progress-shimmer"></div>
+            </div>
+            <div class="meta">
+                <span id="publisher">Raintech Software</span>
+                <span id="version">v1.0.0</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const splashEl = document.getElementById('splash');
+        const progressFill = document.getElementById('progress-fill');
+        const statusText = document.getElementById('status-text');
+        const statusPercent = document.getElementById('status-percent');
+        const appNameEl = document.getElementById('app-name');
+        const versionEl = document.getElementById('version');
+        const logoEl = document.getElementById('logo');
+
+        function setProgress(percent, message) {
+            const value = Math.max(0, Math.min(100, Number(percent) || 0));
+            progressFill.style.width = `${value}%`;
+            statusPercent.textContent = `${value}%`;
+            if (message) statusText.textContent = message;
+        }
+
+        if (window.splashApi) {
+            const meta = window.splashApi.getMeta();
+            if (meta?.appName) appNameEl.textContent = meta.appName;
+            if (meta?.version) versionEl.textContent = `v${meta.version}`;
+            if (meta?.logoPath) logoEl.src = meta.logoPath;
+
+            window.splashApi.onProgress(({ percent, message }) => setProgress(percent, message));
+            window.splashApi.onFadeOut(() => splashEl.classList.add('fade-out'));
+        } else {
+            let progress = 0;
+            const demo = setInterval(() => {
+                progress = Math.min(100, progress + 8);
+                setProgress(progress, progress < 100 ? 'Loading modules…' : 'Ready');
+                if (progress >= 100) clearInterval(demo);
+            }, 180);
+        }
+    </script>
+</body>
+</html>

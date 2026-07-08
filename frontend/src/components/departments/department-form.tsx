@@ -1,5 +1,4 @@
 import axios from '@/lib/axios';
-import { X } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -13,15 +12,28 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
+
+interface Branch {
+    id: number | string;
+    name: string;
+}
 
 interface Department {
     id: number;
     name: string;
     slug?: string;
     description?: string;
+    center_id?: number;
     is_active: boolean;
 }
 
@@ -39,12 +51,26 @@ export default function DepartmentForm({
     department = null,
 }: DepartmentFormProps) {
     const [loading, setLoading] = useState(false);
+    const [branches, setBranches] = useState<Branch[]>([]);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [formData, setFormData] = useState({
         name: '',
         description: '',
+        center_id: '' as string | number,
         is_active: true,
     });
+
+    useEffect(() => {
+        if (!open) return;
+        axios
+            .get('/admin/settings/centers')
+            .then((res) => {
+                if (res.data.success) {
+                    setBranches(res.data.data ?? []);
+                }
+            })
+            .catch(handleApiError);
+    }, [open]);
 
     useEffect(() => {
         if (!open) {
@@ -55,6 +81,7 @@ export default function DepartmentForm({
             setFormData({
                 name: '',
                 description: '',
+                center_id: '',
                 is_active: true,
             });
             setErrors({});
@@ -72,6 +99,7 @@ export default function DepartmentForm({
                 setFormData({
                     name: data.name ?? '',
                     description: data.description || '',
+                    center_id: data.center_id ?? '',
                     is_active: data.is_active ?? true,
                 });
                 setErrors({});
@@ -90,6 +118,10 @@ export default function DepartmentForm({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!formData.center_id) {
+            setErrors({ center_id: ['Branch is required'] });
+            return;
+        }
         setLoading(true);
         setErrors({});
 
@@ -99,7 +131,10 @@ export default function DepartmentForm({
                 : '/admin/departments';
             const method = department ? 'put' : 'post';
 
-            const response = await axios[method](url, formData);
+            const response = await axios[method](url, {
+                ...formData,
+                center_id: Number(formData.center_id),
+            });
             handleApiResponse(response);
             onSuccess();
             onClose();
@@ -123,13 +158,44 @@ export default function DepartmentForm({
                     <DialogDescription>
                         {department
                             ? 'Update department information'
-                            : 'Add a new department to your organization'}
+                            : 'Add a department under a branch'}
                     </DialogDescription>
                 </DialogHeader>
 
                 <form onSubmit={handleSubmit}>
                     <div className="space-y-4">
-                        {/* Name */}
+                        <div className="space-y-2">
+                            <Label htmlFor="center_id">
+                                Branch <span className="text-red-500">*</span>
+                            </Label>
+                            {branches.length === 0 ? (
+                                <p className="text-sm text-muted-foreground italic">
+                                    No branches configured. Add a branch first under Branches.
+                                </p>
+                            ) : (
+                                <Select
+                                    value={String(formData.center_id || '')}
+                                    onValueChange={(value) =>
+                                        setFormData({ ...formData, center_id: value })
+                                    }
+                                >
+                                    <SelectTrigger id="center_id">
+                                        <SelectValue placeholder="Select branch" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {branches.map((branch) => (
+                                            <SelectItem key={branch.id} value={String(branch.id)}>
+                                                {branch.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            )}
+                            {errors.center_id && (
+                                <p className="text-sm text-red-500">{errors.center_id[0]}</p>
+                            )}
+                        </div>
+
                         <div className="space-y-2">
                             <Label htmlFor="name">
                                 Name <span className="text-red-500">*</span>
@@ -148,7 +214,6 @@ export default function DepartmentForm({
                             )}
                         </div>
 
-                        {/* Description */}
                         <div className="space-y-2">
                             <Label htmlFor="description">Description</Label>
                             <Textarea
@@ -166,7 +231,6 @@ export default function DepartmentForm({
                             )}
                         </div>
 
-                        {/* Active Status */}
                         <div className="flex items-center justify-between rounded-lg border p-4">
                             <div className="space-y-0.5">
                                 <Label htmlFor="is_active">Active Status</Label>
@@ -194,7 +258,7 @@ export default function DepartmentForm({
                         >
                             Cancel
                         </Button>
-                        <Button type="submit" disabled={loading}>
+                        <Button type="submit" disabled={loading || branches.length === 0}>
                             {loading
                                 ? department
                                     ? 'Updating...'

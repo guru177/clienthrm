@@ -12,7 +12,8 @@ import { useChatWs } from '@/hooks/use-chat-ws';
 import {
     chatApi, QUICK_EMOJIS, type ChatMessage, type ChatSpace, type ChatMember, type ChatAttachment,
 } from '@/lib/chat-api';
-import { storageUrl } from '@/lib/storage-url';
+import { storageUrl, fetchAuthenticatedBlobUrl, authStorageFetch } from '@/lib/storage-url';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -29,6 +30,36 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { handleApiError } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { ChatNotificationStack } from '@/components/chat/chat-notification-stack';
+
+function UserAvatarPhoto({ path }: { path: string }) {
+    const src = useStorageSrc(path);
+    if (!src) return null;
+    return <AvatarImage src={src} />;
+}
+
+function AuthenticatedMedia({
+    path,
+    alt,
+    className,
+    as = 'img',
+}: {
+    path: string;
+    alt: string;
+    className?: string;
+    as?: 'img' | 'video' | 'audio';
+}) {
+    const src = useStorageSrc(path);
+    if (!src) {
+        return <div className={cn('animate-pulse rounded-lg bg-muted', className)} aria-hidden />;
+    }
+    if (as === 'video') {
+        return <video src={src} controls playsInline className={className}><track kind="captions" /></video>;
+    }
+    if (as === 'audio') {
+        return <audio src={src} controls className={className} />;
+    }
+    return <img src={src} alt={alt} className={className} />;
+}
 
 function initials(name: string) {
     return name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
@@ -147,7 +178,7 @@ function MessageItem({
     return (
         <div id={`chat-msg-${msg.id}`} className="group relative flex gap-3 rounded-lg px-4 py-2 hover:bg-[#071b3a]/5 dark:hover:bg-white/5">
             <Avatar className="h-9 w-9 shrink-0 mt-0.5">
-                {msg.user_photo && <AvatarImage src={storageUrl(msg.user_photo)} />}
+                {msg.user_photo && <UserAvatarPhoto path={msg.user_photo} />}
                 <AvatarFallback className="text-xs">{initials(msg.user_name)}</AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
@@ -356,7 +387,7 @@ function DocumentPreviewBody({ url, kind }: { url: string; kind: 'docx' | 'xlsx'
 
         void (async () => {
             try {
-                const res = await fetch(url);
+                const res = await authStorageFetch(url);
                 if (!res.ok) throw new Error('Could not load file');
                 const buf = await res.arrayBuffer();
 
@@ -435,7 +466,7 @@ function DocumentPreviewBody({ url, kind }: { url: string; kind: 'docx' | 'xlsx'
 async function downloadAttachment(attachment: ChatAttachment) {
     const url = resolveAttachmentUrl(attachment.file_url);
     try {
-        const res = await fetch(url);
+        const res = await authStorageFetch(url);
         if (!res.ok) throw new Error('Download failed');
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
@@ -458,8 +489,8 @@ function MediaPreviewPanel({
     attachment: ChatAttachment;
     onClose: () => void;
 }) {
-    const url = resolveAttachmentUrl(attachment.file_url);
     const kind = getMediaKind(attachment);
+    const pdfSrc = useStorageSrc(attachment.file_url);
 
     return (
         <aside className="flex w-[min(480px,42vw)] shrink-0 flex-col border-l border-[#071b3a]/10 bg-gradient-to-b from-[#f4f9ff] to-white dark:from-[#0d1e33] dark:to-[#071220]">
@@ -478,14 +509,21 @@ function MediaPreviewPanel({
             <div className="flex min-h-0 flex-1 overflow-auto bg-[#0a0f1a]/5 p-4 dark:bg-black/20">
                 {kind === 'image' && (
                     <div className="flex w-full items-center justify-center">
-                        <img src={url} alt={attachment.file_name} className="max-h-full max-w-full rounded-lg object-contain shadow-md" />
+                        <AuthenticatedMedia
+                            path={attachment.file_url}
+                            alt={attachment.file_name}
+                            className="max-h-full max-w-full rounded-lg object-contain shadow-md"
+                        />
                     </div>
                 )}
                 {kind === 'video' && (
                     <div className="flex w-full items-center justify-center">
-                        <video src={url} controls playsInline className="max-h-full max-w-full rounded-lg bg-black shadow-md">
-                            <track kind="captions" />
-                        </video>
+                        <AuthenticatedMedia
+                            path={attachment.file_url}
+                            alt={attachment.file_name}
+                            as="video"
+                            className="max-h-full max-w-full rounded-lg bg-black shadow-md"
+                        />
                     </div>
                 )}
                 {kind === 'audio' && (
@@ -497,15 +535,15 @@ function MediaPreviewPanel({
                                 </div>
                                 <p className="truncate text-sm font-medium">{attachment.file_name}</p>
                             </div>
-                            <audio src={url} controls className="w-full" />
+                            <AuthenticatedMedia path={attachment.file_url} alt={attachment.file_name} as="audio" className="w-full" />
                         </div>
                     </div>
                 )}
-                {kind === 'pdf' && (
-                    <iframe src={url} title={attachment.file_name} className="h-full min-h-[360px] w-full rounded-lg border bg-white shadow-md" />
+                {kind === 'pdf' && pdfSrc && (
+                    <iframe src={pdfSrc} title={attachment.file_name} className="h-full min-h-[360px] w-full rounded-lg border bg-white shadow-md" />
                 )}
                 {(kind === 'docx' || kind === 'xlsx' || kind === 'text') && (
-                    <DocumentPreviewBody url={url} kind={kind} />
+                    <DocumentPreviewBody url={resolveAttachmentUrl(attachment.file_url)} kind={kind} />
                 )}
                 {kind === 'other' && (
                     <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
@@ -537,14 +575,13 @@ function AttachmentPreview({
     attachment: ChatAttachment;
     onPreview: (attachment: ChatAttachment) => void;
 }) {
-    const url = resolveAttachmentUrl(attachment.file_url);
     const kind = getMediaKind(attachment);
 
     const thumb = (() => {
         if (kind === 'image') {
             return (
-                <img
-                    src={url}
+                <AuthenticatedMedia
+                    path={attachment.file_url}
                     alt={attachment.file_name}
                     className="max-h-48 max-w-xs rounded-lg border object-cover transition group-hover:opacity-90"
                 />
@@ -585,6 +622,7 @@ export default function TeamChatPage() {
     const [users, setUsers] = useState<ChatMember[]>([]);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(true);
+    const [spacesReady, setSpacesReady] = useState(false);
     const [sending, setSending] = useState(false);
     const [composer, setComposer] = useState('');
     const [pendingAttachments, setPendingAttachments] = useState<{ id: number; file_name: string }[]>([]);
@@ -744,19 +782,20 @@ export default function TeamChatPage() {
     useEffect(() => {
         void (async () => {
             setLoading(true);
+            setSpacesReady(false);
             await Promise.all([loadSpaces(), loadUsers()]);
+            setSpacesReady(true);
             setLoading(false);
         })();
     }, [loadSpaces, loadUsers]);
 
     useEffect(() => {
-        if (activeSpaceId) {
-            void loadMessages(activeSpaceId);
-            void loadPins(activeSpaceId);
-            setShowPinsPanel(false);
-            setPreviewAttachment(null);
-        }
-    }, [activeSpaceId, loadMessages, loadPins]);
+        if (!spacesReady || !activeSpaceId) return;
+        void loadMessages(activeSpaceId);
+        void loadPins(activeSpaceId);
+        setShowPinsPanel(false);
+        setPreviewAttachment(null);
+    }, [spacesReady, activeSpaceId, loadMessages, loadPins]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

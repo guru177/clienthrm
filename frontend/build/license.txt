@@ -1,0 +1,17 @@
+HR Daddy - End User License Agreement
+
+Copyright (c) Raintech Software. All rights reserved.
+
+HR Daddy is human resource management software for attendance,
+payroll, leave, workflows, and team collaboration.
+
+By installing this software you agree to use it only for lawful business
+purposes and in accordance with your organization's policies.
+
+This software connects to your organization's HR Daddy server. Your
+administrator controls access, data retention, and feature availability.
+
+Raintech Software provides this application "as is" without warranty of
+any kind. For support contact your system administrator or Raintech Software.
+
+Press "I Agree" to continue with installation.

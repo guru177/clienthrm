@@ -16,7 +16,7 @@ from datetime import datetime
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 ICLOCK = "http://localhost:7788"
 DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
-LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 TEST_DAY = "2026-06-12"
 SN = "A250902070"
 DEVICE_IP = "172.16.1.68"

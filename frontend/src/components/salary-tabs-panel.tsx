@@ -2,6 +2,7 @@ import axios from '@/lib/axios';
 import { useEffect, useState } from 'react';
 
 import { CtcSalaryPanel } from '@/components/ctc-salary-panel';
+import { EmployeeAdvancesPanel } from '@/components/employee-advances-panel';
 import { SalaryStructurePanel } from '@/components/salary-structure-panel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -30,6 +31,9 @@ export function SalaryTabsPanel({ userId }: { userId: number }) {
             </TabsContent>
             <TabsContent value="manual">
                 <SalaryStructurePanel userId={userId} hasCtc={hasCtc} onCtcChange={setHasCtc} />
+                <div className="mt-6">
+                    <EmployeeAdvancesPanel userId={userId} />
+                </div>
             </TabsContent>
         </Tabs>
     );

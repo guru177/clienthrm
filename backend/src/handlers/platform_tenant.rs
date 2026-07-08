@@ -555,7 +555,7 @@ pub async fn reset_user_password(
         Err(r) => return r,
     };
 
-    let hash = match bcrypt::hash(&body.new_password, bcrypt::DEFAULT_COST) {
+    let hash = match bcrypt::hash(&body.new_password, 12) {
         Ok(h) => h,
         Err(_) => {
             return HttpResponse::InternalServerError()

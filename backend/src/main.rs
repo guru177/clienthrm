@@ -35,6 +35,7 @@ mod payslip_pdf;
 mod payslip_email;
 mod smtp_config;
 mod rate_limit;
+mod otp_hash;
 mod signup_otp;
 mod signup_otp_email;
 mod password_reset;
@@ -44,6 +45,14 @@ mod password_reset_otp_email;
 mod totp_logic;
 mod validation;
 mod jobs;
+
+#[cfg(test)]
+#[path = "integration_tests.rs"]
+mod integration_tests;
+
+#[cfg(test)]
+#[path = "shift_attendance_salary_tests.rs"]
+mod shift_attendance_salary_tests;
 
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, middleware as actix_middleware};
@@ -96,12 +105,17 @@ async fn run_api_server(
             .supports_credentials()
             .max_age(3600)
             .allowed_origin_fn(move |origin, _req_head| {
-                allowed.iter().any(|o| origin == o.as_str())
+                if let Ok(s) = origin.to_str() {
+                    if s == "null" || s.starts_with("hrm://") {
+                        return true;
+                    }
+                    return allowed.iter().any(|o| s == o.as_str());
+                }
+                false
             });
 
         App::new()
             .app_data(web::PayloadConfig::new(10 * 1024 * 1024))
-            .wrap(cors)
             .wrap(actix_web::middleware::from_fn(
                 crate::middleware::security::security_headers_middleware,
             ))
@@ -115,6 +129,8 @@ async fn run_api_server(
             .wrap(actix_web::middleware::from_fn(
                 crate::middleware::rbac::rbac_middleware,
             ))
+            // Outermost: handle CORS preflight before auth middleware (Electron desktop).
+            .wrap(cors)
             .app_data(pool.clone())
             .app_data(jwt_secret.clone())
             .app_data(app_config.clone())
@@ -152,17 +168,16 @@ async fn main() -> std::io::Result<()> {
     }
     cfg.validate_security();
 
-    let database_path = cfg.database_path.clone();
     let database_url = cfg.database_url.clone();
     let pool = tokio::task::spawn_blocking(move || {
-        let pool = db::init_pool(&database_path, database_url.as_deref());
+        let pool = db::init_pool(&database_url);
         db::init_read_pool();
         db::run_migrations(&pool);
 
-        if pool.backend() == db::Backend::Postgres && !db::postgres_bootstrap::schema_ready(&pool) {
+        if !db::postgres_bootstrap::schema_ready(&pool) {
             panic!(
                 "PostgreSQL schema is not ready (users table missing). \
-                 Run scripts/migrate-sqlite-to-postgres.py before starting with DATABASE_URL."
+                 Run scripts/setup-local-postgres.ps1 or scripts/migrate-sqlite-to-postgres.py first."
             );
         }
 

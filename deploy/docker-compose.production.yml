@@ -42,8 +42,6 @@ services:
       BIOMETRIC_PORT: 7788
       BIO_PARK_TCP_PORT: 5010
       DATABASE_URL: postgres://${POSTGRES_USER:-hrm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hrm}
-      # Optional: keep SQLite file on volume for migrate-sqlite-to-postgres.py import
-      DATABASE_PATH: /data/database.sqlite
       STORAGE_PATH: /data/storage
       RUST_LOG: info
       CORS_ORIGINS: ${CORS_ORIGINS}

@@ -19,7 +19,7 @@ pub fn resolve_organization_id(
     conn.query_row(
         "SELECT id FROM organizations WHERE slug = ?1 AND status = 'active'",
         crate::params![slug],
-        |r| r.get_idx::<i64>(0),
+        |r| r.get("id"),
     )
     .map_err(|_| "Organization not found".to_string())
 }
@@ -73,12 +73,11 @@ pub fn user_in_organization(conn: &Connection, user_id: i64, org_id: i64) -> boo
 /// Load super-admin flag from DB — never trust JWT claim alone.
 pub fn user_is_super_admin(conn: &Connection, user_id: i64, org_id: i64) -> bool {
     conn.query_row(
-        "SELECT COALESCE(is_super_admin, 0) FROM users
+        "SELECT is_super_admin FROM users
          WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
         crate::params![user_id, org_id],
-        |r| r.get_idx::<i64>(0),
+        |r| r.get_idx::<Option<bool>>(0).map(|v| v.unwrap_or(false)),
     )
-    .map(|v| v != 0)
     .unwrap_or(false)
 }
 

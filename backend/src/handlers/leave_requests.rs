@@ -240,13 +240,11 @@ fn fetch_leave_list(
          INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?
          WHERE {}
          ORDER BY {} {}
-         LIMIT ? OFFSET ?",
+         LIMIT {per_page} OFFSET {offset}",
         where_clause, sort_col, sort_dir
     );
 
-    let mut list_params = params;
-    list_params.push(crate::db::into_param_value(per_page));
-    list_params.push(crate::db::into_param_value(offset));
+    let list_params = params;
 
     let stmt = conn.prepare(&sql).unwrap();
     let items: Vec<serde_json::Value> = stmt

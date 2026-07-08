@@ -8,7 +8,7 @@ BASE = "http://localhost:3001/api"
 TARGET = "guruprasad6282@gmail.com"
 DB = r"c:\Users\ASUS\Pictures\HRM\database\database.sqlite"
 LOGIN = {
-    "email": "admin@mashuptech.in",
+    "email": "info@retaildaddy.in",
     "password": "password",
     "org_slug": "mashuptech",
 }

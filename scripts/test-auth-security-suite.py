@@ -14,7 +14,7 @@ from datetime import datetime
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 TS = int(datetime.now().timestamp() * 1000)
-TENANT_LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+TENANT_LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 PLATFORM_LOGIN = {
     "email": os.environ.get("PLATFORM_ADMIN_EMAIL", "admin@retaildaddy.in"),
     "password": os.environ.get("PLATFORM_ADMIN_PASSWORD", "retaildaddy@0123"),
@@ -155,14 +155,14 @@ def main() -> int:
     code, fp = http(
         "POST",
         f"{API}/api/auth/forgot-password",
-        {"email": "admin@mashuptech.in", "org_slug": "mashuptech"},
+        {"email": "info@retaildaddy.in", "org_slug": "mashuptech"},
     )
     suite.record("SEC-11", "Forgot-password accepts request", code in (200, 429), f"HTTP {code}")
 
     code, bad_otp = http(
         "POST",
         f"{API}/api/auth/verify-password-reset-otp",
-        {"email": "admin@mashuptech.in", "org_slug": "mashuptech", "otp": "000000"},
+        {"email": "info@retaildaddy.in", "org_slug": "mashuptech", "otp": "000000"},
     )
     suite.record("SEC-12", "Wrong OTP rejected", code in (400, 401, 403, 422), f"HTTP {code}")
 
@@ -170,7 +170,7 @@ def main() -> int:
     code, cross = http(
         "POST",
         f"{API}/api/auth/forgot-password",
-        {"email": "admin@mashuptech.in", "org_slug": "nonexistent-org-slug-xyz"},
+        {"email": "info@retaildaddy.in", "org_slug": "nonexistent-org-slug-xyz"},
     )
     # Should not reveal user or succeed silently without leaking
     suite.record(

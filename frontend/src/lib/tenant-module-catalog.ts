@@ -2,7 +2,7 @@
 export const TENANT_MODULE_CATALOG = [
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'users', label: 'Users & Roles' },
-    { key: 'centers', label: 'Centers' },
+    { key: 'centers', label: 'Branches' },
     { key: 'departments', label: 'Departments' },
     { key: 'designations', label: 'Designations' },
     { key: 'careers', label: 'Job Postings' },

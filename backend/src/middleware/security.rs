@@ -70,6 +70,12 @@ where
             actix_web::http::header::HeaderName::from_static("strict-transport-security"),
             actix_web::http::header::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
+        headers.insert(
+            actix_web::http::header::HeaderName::from_static("content-security-policy"),
+            actix_web::http::header::HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; font-src 'self' data:; frame-ancestors 'none'",
+            ),
+        );
     }
     Ok(res.map_into_right_body())
 }

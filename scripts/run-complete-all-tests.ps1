@@ -4,7 +4,7 @@
 #   Backend   http://localhost:3001  (cd backend; cargo run)
 #   Tenant UI http://localhost:5174  (cd frontend; npm run dev)
 #   Platform  http://localhost:5175  (cd platform; npm run dev)  [optional — skipped if down]
-#   database/database.sqlite
+#   PostgreSQL (docker compose up -d)
 #
 # Usage:
 #   powershell -NoProfile -File scripts/run-complete-all-tests.ps1
@@ -24,6 +24,10 @@ Set-Location $Root
 
 $Api = if ($env:HRM_API) { $env:HRM_API } else { "http://127.0.0.1:3001" }
 $env:HRM_API = $Api
+$env:HRM_EMAIL = if ($env:HRM_EMAIL) { $env:HRM_EMAIL } else { "info@retaildaddy.in" }
+$env:HRM_PASSWORD = if ($env:HRM_PASSWORD) { $env:HRM_PASSWORD } else { "password" }
+$env:HRM_ORG_SLUG = if ($env:HRM_ORG_SLUG) { $env:HRM_ORG_SLUG } else { "mashuptech" }
+$env:PLATFORM_ADMIN_PASSWORD = if ($env:PLATFORM_ADMIN_PASSWORD) { $env:PLATFORM_ADMIN_PASSWORD } else { "retaildaddy@0123" }
 $Fe = "http://localhost:5174"
 $Platform = "http://localhost:5175"
 $Results = @()
@@ -84,8 +88,14 @@ if (-not (Test-Url "$Api/api/health")) {
     Write-Host "ERROR: Backend not reachable at $Api" -ForegroundColor Red
     exit 1
 }
-if (-not (Test-Path "database/database.sqlite")) {
-    Write-Host "ERROR: database/database.sqlite not found" -ForegroundColor Red
+try {
+    $health = Invoke-RestMethod -Uri "$Api/api/health" -TimeoutSec 5
+    if ($health.database.backend -ne "postgres") {
+        Write-Host "ERROR: Backend must use PostgreSQL. Run: docker compose up -d; restart backend" -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Write-Host "ERROR: Backend health check failed at $Api" -ForegroundColor Red
     exit 1
 }
 
@@ -100,6 +110,10 @@ if (-not $SkipPlatform -and -not $platformUp) {
 }
 
 $ok = $true
+
+$ok = (Run-Step "Pre-production connectivity (health/mail/AWS/tenant)" {
+    python scripts/test-preproduction-connectivity.py
+}) -and $ok
 
 # Database health first (integrity, indexes, WAL, concurrency)
 $ok = (Run-Step "Database health & optimization (19 checks)" {
@@ -145,6 +159,28 @@ if (-not $SkipRust) {
         Push-Location backend
         try { cargo test } finally { Pop-Location }
     }) -and $ok
+
+    $ok = (Run-Step "Frontend unit tests (vitest)" {
+        Push-Location frontend
+        try {
+            Remove-Item Env:VITE_API_URL -ErrorAction SilentlyContinue
+            Remove-Item Env:VITE_PLATFORM_APP_URL -ErrorAction SilentlyContinue
+            npm run test
+        } finally { Pop-Location }
+    }) -and $ok
+
+    $pwE2eMain = Join-Path $Root "frontend\node_modules\playwright\index.mjs"
+    if (Test-Path $pwE2eMain) {
+        $ok = (Run-Step "Playwright E2E (auth + tenant smoke)" {
+            Push-Location frontend
+            try {
+                Remove-Item Env:VITE_API_URL -ErrorAction SilentlyContinue
+                npx playwright test
+            } finally { Pop-Location }
+        }) -and $ok
+    } else {
+        Run-Step-Skip "Playwright E2E (auth + tenant smoke)" "playwright not installed"
+    }
 }
 
 if (-not $SkipFrontend) {

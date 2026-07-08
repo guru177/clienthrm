@@ -435,11 +435,9 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
          FROM users u
          LEFT JOIN departments d ON d.id = u.department_id
          LEFT JOIN designations des ON des.id = u.designation_id
-         WHERE {} ORDER BY u.name LIMIT ? OFFSET ?",
+         WHERE {} ORDER BY u.name LIMIT {per_page} OFFSET {offset}",
         where_clause
     );
-    params.push(crate::db::into_param_value(per_page));
-    params.push(crate::db::into_param_value(offset));
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let stmt = conn.prepare(&sql).unwrap();

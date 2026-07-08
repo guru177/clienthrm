@@ -1,6 +1,6 @@
-import * as faceapi from '@vladmandic/face-api';
 import { Camera, CheckCircle2, Loader2, MapPin, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import type * as FaceApi from '@vladmandic/face-api';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -24,6 +24,15 @@ const FACE_MODEL_PATH_CANDIDATES = [
 const FACE_DISTANCE_THRESHOLD = 0.50;
 // Number of consecutive camera frames that must all pass
 const VERIFICATION_FRAMES = 3;
+
+let faceApiModule: typeof FaceApi | null = null;
+
+async function loadFaceApi(): Promise<typeof FaceApi> {
+    if (!faceApiModule) {
+        faceApiModule = await import('@vladmandic/face-api');
+    }
+    return faceApiModule;
+}
 
 type GeoLocationPayload = {
     lat: number;
@@ -252,6 +261,7 @@ export default function ClockInFaceDialog({
 
         setModelsLoading(true);
         try {
+            const faceapi = await loadFaceApi();
             const modelPath = activeModelPathRef.current ?? (await resolveWorkingModelPath());
             if (!modelPath) {
                 setError(
@@ -427,6 +437,8 @@ export default function ClockInFaceDialog({
 
         setError(null);
         setDebugInfo(null);
+
+        const faceapi = await loadFaceApi();
 
         const video = videoRef.current;
         const canvas = canvasRef.current;

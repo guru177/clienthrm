@@ -1,6 +1,6 @@
 # Attendance module API flow test
 $Base = "http://localhost:5174/api"
-$Email = "admin@mashuptech.in"
+$Email = "info@retaildaddy.in"
 $Password = "password"
 $Results = @()
 

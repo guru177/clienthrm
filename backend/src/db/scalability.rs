@@ -10,9 +10,9 @@ const SCALABILITY_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_leave_requests_org_status_start ON leave_requests(organization_id, status, start_date)",
     "CREATE INDEX IF NOT EXISTS idx_payslips_org_period ON payslips(organization_id, year, month)",
     "CREATE INDEX IF NOT EXISTS idx_holidays_org_date ON holidays(organization_id, date)",
-    "CREATE INDEX IF NOT EXISTS idx_bio_punches_org_time ON biometric_punches(organization_id, punch_time)",
     "CREATE INDEX IF NOT EXISTS idx_bio_punches_user_time ON biometric_punches(user_id, punch_time)",
     "CREATE INDEX IF NOT EXISTS idx_users_org_active ON users(organization_id) WHERE deleted_at IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_role_user_user ON role_user(user_id)",
 ];
 
 /// Indexes for attendance, leave, payroll hot paths (SQLite + PostgreSQL).

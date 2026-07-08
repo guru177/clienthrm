@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { storageUrl } from '@/lib/storage-url';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 
 interface OrgNotificationBannerProps {
     imageUrl?: string | null;
@@ -16,7 +16,8 @@ export function OrgNotificationBanner({
     imgClassName,
     alt = '',
 }: OrgNotificationBannerProps) {
-    const src = previewSrc?.trim() || (imageUrl?.trim() ? storageUrl(imageUrl) : '');
+    const storageSrc = useStorageSrc(imageUrl);
+    const src = previewSrc?.trim() || storageSrc;
     if (!src) return null;
 
     return (

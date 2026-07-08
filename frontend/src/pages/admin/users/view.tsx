@@ -18,6 +18,7 @@ import {
     Users,
     Upload,
     Camera,
+    MapPin,
     Banknote,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
@@ -32,8 +33,46 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
+
+const EMPLOYMENT_TYPES = [
+    { value: 'full_time', label: 'Full-time' },
+    { value: 'part_time', label: 'Part-time' },
+    { value: 'contract', label: 'Contract' },
+    { value: 'intern', label: 'Intern' },
+    { value: 'probation', label: 'Probation' },
+] as const;
+
+const GENDER_OPTIONS = [
+    { value: 'male', label: 'Male' },
+    { value: 'female', label: 'Female' },
+    { value: 'other', label: 'Other' },
+] as const;
+
+const TAX_REGIMES = [
+    { value: 'new', label: 'New regime' },
+    { value: 'old', label: 'Old regime' },
+] as const;
+
+function toDateInput(value?: string | null): string {
+    if (!value) return '';
+    return value.length >= 10 ? value.slice(0, 10) : value;
+}
+
+function formatDisplayDate(value?: string | null): string {
+    const d = toDateInput(value);
+    if (!d) return '';
+    const [y, m, day] = d.split('-');
+    if (!y || !m || !day) return d;
+    return `${day}/${m}/${y}`;
+}
+
+function employmentLabel(value?: string | null): string {
+    if (!value) return '';
+    return EMPLOYMENT_TYPES.find((t) => t.value === value)?.label ?? value.replace(/_/g, ' ');
+}
 
 interface User {
     id: number;
@@ -41,6 +80,18 @@ interface User {
     email: string;
     employee_id?: string;
     phone?: string;
+    date_of_birth?: string;
+    gender?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    postal_code?: string;
+    bio?: string;
+    employment_type?: string;
+    work_location?: string;
+    work_state?: string;
+    tax_regime?: string;
     department_id?: number;
     designation_id?: number;
     department?: {
@@ -61,6 +112,7 @@ interface User {
     account_number?: string;
     ifsc_code?: string;
     bank_name?: string;
+    account_type?: string;
     pan_number?: string;
     esi_number?: string;
     pf_number?: string;
@@ -70,6 +122,42 @@ interface User {
     reporting_manager?: {
         id: number;
         name: string;
+    };
+    roles?: { id: number; name: string }[];
+}
+
+function userToEditForm(user: User) {
+    return {
+        name: user.name || '',
+        email: user.email || '',
+        employee_id: user.employee_id || '',
+        phone: user.phone || '',
+        date_of_birth: toDateInput(user.date_of_birth),
+        gender: user.gender || '',
+        address: user.address || '',
+        city: user.city || '',
+        state: user.state || '',
+        country: user.country || 'India',
+        postal_code: user.postal_code || '',
+        employment_type: user.employment_type || '',
+        work_location: user.work_location || '',
+        work_state: user.work_state || '',
+        tax_regime: user.tax_regime || 'new',
+        department_id: user.department_id?.toString() || '',
+        designation_id: user.designation_id?.toString() || '',
+        reporting_manager_id: user.reporting_manager_id?.toString() || '',
+        account_number: user.account_number || '',
+        ifsc_code: user.ifsc_code || '',
+        bank_name: user.bank_name || '',
+        account_type: user.account_type || '',
+        pan_number: user.pan_number || '',
+        esi_number: user.esi_number || '',
+        pf_number: user.pf_number || '',
+        aadhar_number: user.aadhar_number || '',
+        date_of_joining: toDateInput(user.date_of_joining),
+        date_of_exit: toDateInput(user.date_of_exit),
+        password: '',
+        photo: null as File | null,
     };
 }
 
@@ -146,26 +234,7 @@ export default function ViewUser() {
     
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const [editForm, setEditForm] = useState({
-        name: '',
-        email: '',
-        employee_id: '',
-        phone: '',
-        department_id: '',
-        designation_id: '',
-        reporting_manager_id: '',
-        account_number: '',
-        ifsc_code: '',
-        bank_name: '',
-        pan_number: '',
-        esi_number: '',
-        pf_number: '',
-        aadhar_number: '',
-        date_of_joining: '',
-        date_of_exit: '',
-        password: '',
-        photo: null as File | null,
-    });
+    const [editForm, setEditForm] = useState(userToEditForm({ id: 0, name: '', email: '', status: '', created_at: '', updated_at: '' }));
     const [updating, setUpdating] = useState(false);
 
     useEffect(() => {
@@ -180,27 +249,7 @@ export default function ViewUser() {
                 
                 const userData = userRes.data.data;
                 setUser(userData);
-                
-                setEditForm({
-                    name: userData.name,
-                    email: userData.email,
-                    employee_id: userData.employee_id || '',
-                    phone: userData.phone || '',
-                    department_id: userData.department_id?.toString() || '',
-                    designation_id: userData.designation_id?.toString() || '',
-                    reporting_manager_id: userData.reporting_manager_id?.toString() || '',
-                    account_number: userData.account_number || '',
-                    ifsc_code: userData.ifsc_code || '',
-                    bank_name: userData.bank_name || '',
-                    pan_number: userData.pan_number || '',
-                    esi_number: userData.esi_number || '',
-                    pf_number: userData.pf_number || '',
-                    aadhar_number: userData.aadhar_number || '',
-                    date_of_joining: userData.date_of_joining || '',
-                    date_of_exit: userData.date_of_exit || '',
-                    password: '',
-                    photo: null,
-                });
+                setEditForm(userToEditForm(userData));
                 
                 setPhotoPreview(userData.photo ? storageUrl(userData.photo) : null);
                 
@@ -238,12 +287,24 @@ export default function ViewUser() {
             formData.append('email', editForm.email);
             formData.append('employee_id', editForm.employee_id || '');
             formData.append('phone', editForm.phone || '');
+            formData.append('date_of_birth', editForm.date_of_birth || '');
+            formData.append('gender', editForm.gender || '');
+            formData.append('address', editForm.address || '');
+            formData.append('city', editForm.city || '');
+            formData.append('state', editForm.state || '');
+            formData.append('country', editForm.country || '');
+            formData.append('postal_code', editForm.postal_code || '');
+            formData.append('employment_type', editForm.employment_type || '');
+            formData.append('work_location', editForm.work_location || '');
+            formData.append('work_state', editForm.work_state || '');
+            formData.append('tax_regime', editForm.tax_regime || '');
             formData.append('department_id', editForm.department_id || '');
             formData.append('designation_id', editForm.designation_id || '');
             formData.append('reporting_manager_id', editForm.reporting_manager_id || '');
             formData.append('account_number', editForm.account_number || '');
             formData.append('ifsc_code', editForm.ifsc_code || '');
             formData.append('bank_name', editForm.bank_name || '');
+            formData.append('account_type', editForm.account_type || '');
             formData.append('pan_number', editForm.pan_number || '');
             formData.append('esi_number', editForm.esi_number || '');
             formData.append('pf_number', editForm.pf_number || '');
@@ -280,26 +341,7 @@ export default function ViewUser() {
 
     const handleCancelEdit = () => {
         if (!user) return;
-        setEditForm({
-            name: user.name,
-            email: user.email,
-            employee_id: user.employee_id || '',
-            phone: user.phone || '',
-            department_id: user.department_id?.toString() || '',
-            designation_id: user.designation_id?.toString() || '',
-            reporting_manager_id: user.reporting_manager_id?.toString() || '',
-            account_number: user.account_number || '',
-            ifsc_code: user.ifsc_code || '',
-            bank_name: user.bank_name || '',
-            pan_number: user.pan_number || '',
-            esi_number: user.esi_number || '',
-            pf_number: user.pf_number || '',
-            aadhar_number: user.aadhar_number || '',
-            date_of_joining: user.date_of_joining || '',
-            date_of_exit: user.date_of_exit || '',
-            password: '',
-            photo: null,
-        });
+        setEditForm(userToEditForm(user));
         setPhotoPreview(user.photo ? storageUrl(user.photo) : null);
         setIsEditing(false);
     };
@@ -370,7 +412,7 @@ export default function ViewUser() {
 
     const breadcrumbs = [
         { title: 'Users', href: '/admin/users' },
-        { title: user.name, href: '' },
+        { title: user.name?.trim() ? user.name : `User #${user.id}`, href: '' },
     ];
 
     return (
@@ -388,7 +430,9 @@ export default function ViewUser() {
                             <ArrowLeft className="h-4 w-4" />
                         </Button>
                         <div>
-                            <h1 className="text-3xl font-bold tracking-tight">{user.name}</h1>
+                            <h1 className="text-3xl font-bold tracking-tight">
+                                {user.name?.trim() ? user.name : `User #${user.id}`}
+                            </h1>
                             <p className="text-muted-foreground">
                                 User #{user.id} • Created{' '}
                                 {new Date(user.created_at).toLocaleDateString()}
@@ -436,7 +480,7 @@ export default function ViewUser() {
                                     <Avatar className="h-24 w-24">
                                         <AvatarImage src={photoPreview || ''} alt={user.name} />
                                         <AvatarFallback className="text-2xl">
-                                            {user.name.charAt(0).toUpperCase()}
+                                            {(user.name?.trim()?.charAt(0) || '#').toUpperCase()}
                                         </AvatarFallback>
                                     </Avatar>
                                     {isEditing && (
@@ -539,6 +583,102 @@ export default function ViewUser() {
                                         )}
                                     </div>
 
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Date of Birth</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                type="date"
+                                                value={editForm.date_of_birth}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, date_of_birth: e.target.value })
+                                                }
+                                            />
+                                        ) : user.date_of_birth ? (
+                                            <p className="font-medium">{formatDisplayDate(user.date_of_birth)}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Gender</Label>
+                                        {isEditing ? (
+                                            <Select
+                                                value={editForm.gender || 'none'}
+                                                onValueChange={(value) =>
+                                                    setEditForm({
+                                                        ...editForm,
+                                                        gender: value === 'none' ? '' : value,
+                                                    })
+                                                }
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Select gender" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Not specified</SelectItem>
+                                                    {GENDER_OPTIONS.map((g) => (
+                                                        <SelectItem key={g.value} value={g.value}>
+                                                            {g.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : user.gender ? (
+                                            <p className="font-medium capitalize">{user.gender.replace(/_/g, ' ')}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Date of Birth</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                type="date"
+                                                value={editForm.date_of_birth}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, date_of_birth: e.target.value })
+                                                }
+                                            />
+                                        ) : user.date_of_birth ? (
+                                            <p className="font-medium">{formatDisplayDate(user.date_of_birth)}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Gender</Label>
+                                        {isEditing ? (
+                                            <Select
+                                                value={editForm.gender || 'none'}
+                                                onValueChange={(value) =>
+                                                    setEditForm({
+                                                        ...editForm,
+                                                        gender: value === 'none' ? '' : value,
+                                                    })
+                                                }
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Select gender" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Not specified</SelectItem>
+                                                    {GENDER_OPTIONS.map((g) => (
+                                                        <SelectItem key={g.value} value={g.value}>
+                                                            {g.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : user.gender ? (
+                                            <p className="font-medium capitalize">{user.gender.replace(/_/g, ' ')}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+
                                     {isEditing && (
                                         <div className="space-y-2">
                                             <Label className="text-sm text-muted-foreground">
@@ -557,6 +697,98 @@ export default function ViewUser() {
                             </CardContent>
                         </Card>
 
+                        {/* Contact & Address */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <MapPin className="h-5 w-5" />
+                                    Contact &amp; Address
+                                </CardTitle>
+                                <CardDescription>Residential address for records and compliance</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="grid gap-4 sm:grid-cols-2">
+                                    <div className="space-y-2 sm:col-span-2">
+                                        <Label className="text-sm text-muted-foreground">Address</Label>
+                                        {isEditing ? (
+                                            <Textarea
+                                                value={editForm.address}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, address: e.target.value })
+                                                }
+                                                placeholder="Street, area, landmark"
+                                                rows={2}
+                                            />
+                                        ) : user.address ? (
+                                            <p className="font-medium whitespace-pre-wrap">{user.address}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">City</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.city}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, city: e.target.value })
+                                                }
+                                            />
+                                        ) : user.city ? (
+                                            <p className="font-medium">{user.city}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">State</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.state}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, state: e.target.value })
+                                                }
+                                            />
+                                        ) : user.state ? (
+                                            <p className="font-medium">{user.state}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Country</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.country}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, country: e.target.value })
+                                                }
+                                            />
+                                        ) : user.country ? (
+                                            <p className="font-medium">{user.country}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">PIN / Postal Code</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.postal_code}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, postal_code: e.target.value })
+                                                }
+                                            />
+                                        ) : user.postal_code ? (
+                                            <p className="font-medium">{user.postal_code}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+
                         {/* Employment Details */}
                         <Card>
                             <CardHeader>
@@ -570,6 +802,98 @@ export default function ViewUser() {
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-4 sm:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Employment Type</Label>
+                                        {isEditing ? (
+                                            <Select
+                                                value={editForm.employment_type || 'none'}
+                                                onValueChange={(value) =>
+                                                    setEditForm({
+                                                        ...editForm,
+                                                        employment_type: value === 'none' ? '' : value,
+                                                    })
+                                                }
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Select type" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Not specified</SelectItem>
+                                                    {EMPLOYMENT_TYPES.map((t) => (
+                                                        <SelectItem key={t.value} value={t.value}>
+                                                            {t.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : user.employment_type ? (
+                                            <p className="font-medium">{employmentLabel(user.employment_type)}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not assigned</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Work Location</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.work_location}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, work_location: e.target.value })
+                                                }
+                                                placeholder="Branch / office"
+                                            />
+                                        ) : user.work_location ? (
+                                            <p className="font-medium">{user.work_location}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not assigned</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Work State (PT)</Label>
+                                        {isEditing ? (
+                                            <Input
+                                                value={editForm.work_state}
+                                                onChange={(e) =>
+                                                    setEditForm({ ...editForm, work_state: e.target.value })
+                                                }
+                                                placeholder="e.g. Karnataka"
+                                            />
+                                        ) : user.work_state ? (
+                                            <p className="font-medium">{user.work_state}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not assigned</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Income Tax Regime</Label>
+                                        {isEditing ? (
+                                            <Select
+                                                value={editForm.tax_regime || 'new'}
+                                                onValueChange={(value) =>
+                                                    setEditForm({ ...editForm, tax_regime: value })
+                                                }
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {TAX_REGIMES.map((r) => (
+                                                        <SelectItem key={r.value} value={r.value}>
+                                                            {r.label}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : user.tax_regime ? (
+                                            <p className="font-medium capitalize">{user.tax_regime} regime</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">New regime</p>
+                                        )}
+                                    </div>
+
                                     <div className="space-y-2">
                                         <Label className="text-sm text-muted-foreground">Department</Label>
                                         {isEditing ? (
@@ -688,7 +1012,7 @@ export default function ViewUser() {
                                             />
                                         ) : user.date_of_joining ? (
                                             <p className="font-medium">
-                                                {new Date(user.date_of_joining).toLocaleDateString()}
+                                                {formatDisplayDate(user.date_of_joining)}
                                             </p>
                                         ) : (
                                             <p className="text-muted-foreground">Not provided</p>
@@ -710,7 +1034,7 @@ export default function ViewUser() {
                                             />
                                         ) : user.date_of_exit ? (
                                             <p className="font-medium">
-                                                {new Date(user.date_of_exit).toLocaleDateString()}
+                                                {formatDisplayDate(user.date_of_exit)}
                                             </p>
                                         ) : (
                                             <p className="text-muted-foreground">Currently employed</p>
@@ -788,6 +1112,34 @@ export default function ViewUser() {
                                             />
                                         ) : user.bank_name ? (
                                             <p className="font-medium">{user.bank_name}</p>
+                                        ) : (
+                                            <p className="text-muted-foreground">Not provided</p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm text-muted-foreground">Account Type</Label>
+                                        {isEditing ? (
+                                            <Select
+                                                value={editForm.account_type || 'none'}
+                                                onValueChange={(value) =>
+                                                    setEditForm({
+                                                        ...editForm,
+                                                        account_type: value === 'none' ? '' : value,
+                                                    })
+                                                }
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Select type" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Not specified</SelectItem>
+                                                    <SelectItem value="savings">Savings</SelectItem>
+                                                    <SelectItem value="current">Current</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        ) : user.account_type ? (
+                                            <p className="font-medium capitalize">{user.account_type}</p>
                                         ) : (
                                             <p className="text-muted-foreground">Not provided</p>
                                         )}
@@ -1017,6 +1369,24 @@ export default function ViewUser() {
 
                     {/* Sidebar */}
                     <div className="space-y-6">
+                        {user.roles && user.roles.length > 0 && (
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Shield className="h-5 w-5" />
+                                        Roles
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="flex flex-wrap gap-2">
+                                    {user.roles.map((role) => (
+                                        <Badge key={role.id} variant="secondary">
+                                            {role.name}
+                                        </Badge>
+                                    ))}
+                                </CardContent>
+                            </Card>
+                        )}
+
                         {/* Status Card */}
                         <Card>
                             <CardHeader>

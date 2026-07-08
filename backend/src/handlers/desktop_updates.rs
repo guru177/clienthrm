@@ -21,6 +21,7 @@ fn allowed_desktop_update_name(name: &str) -> bool {
         || lower.ends_with(".blockmap")
         || lower.ends_with(".dmg")
         || lower.ends_with(".zip")
+        || lower == "ui-bundle.zip"
         || lower.ends_with(".appimage")
 }
 

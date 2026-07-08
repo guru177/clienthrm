@@ -43,6 +43,7 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
+getrandom = "0.2"
 genpdf = "0.2"
 qrcode = "0.14"
 redis = { version = "0.27", default-features = false }

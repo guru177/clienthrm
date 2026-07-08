@@ -25,7 +25,7 @@ type NavEntry = NavItemWithPerm | NavGroupWithPerm;
 const mainNavItems: NavEntry[] = [
     { title: 'Dashboard', href: '/admin/dashboard', icon: LayoutGrid, permission: 'view-dashboard', module: 'dashboard' },
     { title: 'Users & Roles', href: '/admin/users', icon: Users, permission: 'view-users', module: 'users' },
-    { title: 'Centers', href: '/admin/centers', icon: MapPin, permission: 'manage-settings', module: 'centers' },
+    { title: 'Branches', href: '/admin/centers', icon: MapPin, permission: 'manage-settings', module: 'centers' },
     { title: 'Departments', href: '/admin/departments', icon: Building, permission: 'view-departments', module: 'departments' },
     { title: 'Designations', href: '/admin/designations', icon: Award, permission: 'view-designations', module: 'designations' },
     { title: 'Job Postings', href: '/admin/careers', icon: Briefcase, permission: 'view-jobs', module: 'careers' },
@@ -111,7 +111,7 @@ export function AppSidebar() {
             <SidebarHeader>
                 <SidebarMenu>
                     <SidebarMenuItem>
-                        <SidebarMenuButton size="lg" asChild>
+                        <SidebarMenuButton size="lg" asChild className="h-auto min-h-12 justify-start overflow-visible py-2">
                             <Link to={homeHref}>
                                 <AppLogo />
                             </Link>

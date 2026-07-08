@@ -9,17 +9,8 @@ use uuid::Uuid;
 
 const TOKEN_TTL_SECS: i64 = 3600;
 
-fn token_pepper() -> String {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "hrm-otp-pepper".into())
-}
-
 fn hash_token(token: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in token_pepper().as_bytes().iter().chain(token.as_bytes()) {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", h)
+    crate::otp_hash::hash_secret(token)
 }
 
 pub fn tenant_app_url() -> String {

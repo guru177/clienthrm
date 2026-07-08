@@ -20,8 +20,5 @@ pub use pool::{init_pool, init_read_pool, DbPool};
 pub use row::Row;
 
 pub fn run_migrations(pool: &DbPool) {
-    match pool.backend() {
-        Backend::Sqlite => migrations::run_sqlite_migrations(pool),
-        Backend::Postgres => postgres_bootstrap::ensure_postgres_schema(pool),
-    }
+    postgres_bootstrap::ensure_postgres_schema(pool);
 }

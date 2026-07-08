@@ -5,7 +5,7 @@
 import { chromium } from '../frontend/node_modules/playwright/index.mjs';
 
 const BASE = process.env.FE_URL || 'http://localhost:5174';
-const EMAIL = process.env.HRM_EMAIL || 'admin@mashuptech.in';
+const EMAIL = process.env.HRM_EMAIL || 'info@retaildaddy.in';
 const PASSWORD = process.env.HRM_PASSWORD || 'password';
 
 const MODULES = [
@@ -46,15 +46,6 @@ function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
 }
 
-// #region agent log
-const DBG = 'http://127.0.0.1:7803/ingest/149eb4ce-a431-44e0-a315-d66a52298de3';
-const SID = '8e5db3';
-function dbgLog(hypothesisId, location, message, data = {}) {
-    const payload = { sessionId: SID, runId: 'e2e-nav', hypothesisId, location, message, data, timestamp: Date.now() };
-    fetch(DBG, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': SID }, body: JSON.stringify(payload) }).catch(() => {});
-}
-// #endregion
-
 async function main() {
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
@@ -63,18 +54,12 @@ async function main() {
     let loggedIn = false;
 
     async function doLogin() {
-        // #region agent log
-        dbgLog('H1', 'frontend-module-check:login', 'login_start', { base: BASE });
-        // #endregion
         await page.goto(`${BASE}/login`, { waitUntil: 'networkidle', timeout: 30000 });
         await page.fill('#email', EMAIL);
         await page.fill('#password', PASSWORD);
         await page.click('button[type="submit"]');
         await page.waitForURL(/\/admin\//, { timeout: 20000 });
         loggedIn = true;
-        // #region agent log
-        dbgLog('H1', 'frontend-module-check:login', 'login_ok', { url: page.url() });
-        // #endregion
     }
 
     for (const mod of MODULES) {
@@ -138,10 +123,6 @@ async function main() {
                 note: notes.join(' | ') || 'Page loaded',
             };
             results.push(row);
-            // #region agent log
-            const hid = reactCrash ? 'H4' : unauthorized || loginRedirect ? 'H2' : apiFails.some((f) => f.status >= 500) ? 'H3' : apiFails.length ? 'H3' : 'H5';
-            dbgLog(hid, `frontend-module-check:${mod.path}`, 'module_result', row);
-            // #endregion
         } catch (err) {
             const row = {
                 module: mod.module,
@@ -152,9 +133,6 @@ async function main() {
                 note: err.message?.slice(0, 120) || String(err),
             };
             results.push(row);
-            // #region agent log
-            dbgLog('H2', `frontend-module-check:${mod.path}`, 'module_error', row);
-            // #endregion
         } finally {
             page.removeListener('console', handler);
             page.removeListener('response', respHandler);
@@ -177,10 +155,6 @@ async function main() {
     const warn = results.filter((r) => r.status === 'WARN').length;
     const fail = results.filter((r) => r.status === 'FAIL').length;
     console.log(`\nSummary: ${ok} OK | ${warn} WARN | ${fail} FAIL | ${results.length} modules\n`);
-    // #region agent log
-    dbgLog('H5', 'frontend-module-check:summary', 'e2e_complete', { ok, warn, fail, total: results.length });
-    // #endregion
-    await sleep(500);
     process.exit(fail > 0 ? 1 : 0);
 }
 

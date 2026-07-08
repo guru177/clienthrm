@@ -1,29 +1,9 @@
-use actix_web::HttpRequest;
+//! User presence tracking (IP, geo, last active).
+
 use crate::db::Connection;
 
-pub fn client_ip(req: &HttpRequest) -> String {
-    if let Some(forwarded) = req.headers().get("X-Forwarded-For") {
-        if let Ok(value) = forwarded.to_str() {
-            if let Some(first) = value.split(',').next() {
-                let ip = first.trim();
-                if !ip.is_empty() {
-                    return ip.to_string();
-                }
-            }
-        }
-    }
-    if let Some(real_ip) = req.headers().get("X-Real-IP") {
-        if let Ok(value) = real_ip.to_str() {
-            let ip = value.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-    }
-    req.peer_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
+/// Re-export shared client IP resolution (honors TRUST_PROXY).
+pub use crate::rate_limit::client_ip;
 
 pub fn upsert_user_presence(
     conn: &Connection,
@@ -37,33 +17,38 @@ pub fn upsert_user_presence(
     accuracy_meters: Option<f64>,
 ) -> crate::db::Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    conn.execute(
-        "INSERT INTO user_presence (user_id, organization_id, ip_address, latitude, longitude, city, region, accuracy_meters, last_active_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-         ON CONFLICT(user_id) DO UPDATE SET
-            ip_address = excluded.ip_address,
-            latitude = CASE
-                WHEN excluded.latitude IS NOT NULL AND excluded.longitude IS NOT NULL
-                THEN excluded.latitude ELSE user_presence.latitude END,
-            longitude = CASE
-                WHEN excluded.latitude IS NOT NULL AND excluded.longitude IS NOT NULL
-                THEN excluded.longitude ELSE user_presence.longitude END,
-            city = COALESCE(excluded.city, user_presence.city),
-            region = COALESCE(excluded.region, user_presence.region),
-            accuracy_meters = COALESCE(excluded.accuracy_meters, user_presence.accuracy_meters),
-            last_active_at = excluded.last_active_at,
-            updated_at = excluded.updated_at",
-        crate::params![
-            user_id,
-            organization_id,
-            ip_address,
-            latitude,
-            longitude,
-            city,
-            region,
-            accuracy_meters,
-            &now
-        ],
+
+    let updated = conn.execute(
+        "UPDATE user_presence SET ip_address = ?2, organization_id = ?3, last_active_at = ?4, updated_at = ?5 WHERE user_id = ?1",
+        crate::params![user_id, ip_address, organization_id, &now, &now],
     )?;
+
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO user_presence (user_id, organization_id, ip_address, last_active_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            crate::params![user_id, organization_id, ip_address, &now],
+        )?;
+    }
+
+    if latitude.is_some() && longitude.is_some() {
+        let _ = conn.execute(
+            "UPDATE user_presence SET
+                latitude = ?2, longitude = ?3,
+                city = COALESCE(?4, city), region = COALESCE(?5, region),
+                accuracy_meters = COALESCE(?6, accuracy_meters), updated_at = ?7
+             WHERE user_id = ?1",
+            crate::params![
+                user_id,
+                latitude,
+                longitude,
+                city,
+                region,
+                accuracy_meters,
+                &now
+            ],
+        );
+    }
+
     Ok(())
 }

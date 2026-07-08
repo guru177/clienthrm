@@ -30,5 +30,5 @@ if (copied === 0) {
     process.exit(1);
 }
 
-console.log(`\nPublished ${copied} file(s) to ${destDir}`);
+console.log(`\nPublished to ${destDir}`);
 console.log('Feed URL: http://<your-api-host>:3001/api/public/desktop/updates');

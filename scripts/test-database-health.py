@@ -302,7 +302,7 @@ def main() -> int:
         # Query plan uses index on org-scoped user lookup
         plan_rows = conn.execute(
             "EXPLAIN QUERY PLAN SELECT id FROM users WHERE organization_id = 1 AND email = ?",
-            ("admin@mashuptech.in",),
+            ("info@retaildaddy.in",),
         ).fetchall()
         plan_text = " ".join(str(tuple(row)) for row in plan_rows).lower()
         uses_index = "idx_users_org" in plan_text or "using index" in plan_text

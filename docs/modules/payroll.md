@@ -118,8 +118,9 @@ End-to-end compensation: salary components, employee CTC profiles, payroll previ
 
 1. Select month → `POST /api/admin/payroll/preview`.
 2. Review LOP, leave overlap, statutory lines (`payroll_logic`, `statutory_logic`).
-3. `POST /api/admin/payroll/generate` creates payslip rows (`send_emails: true` optionally emails PDFs).
-4. Employees view via **My Payslips**; HR can email, download PDF, or bulk ZIP.
+3. **Advance recovery:** For employees with active advances, open the salary popup and set **Recover this month** per advance row (defaults to `min(monthly_emi, balance)`). Preview accepts `advance_allocations` (map of `user_id` → `[{ advance_id, amount }]`); values are stored on the draft payslip in `adjustments.advance_allocations`.
+4. `POST /api/admin/payroll/generate` creates payslip rows and deducts the chosen per-advance amounts from `employee_advances.balance` (`send_emails: true` optionally emails PDFs). Unlock restores balances from stored allocations.
+5. Employees view via **My Payslips**; HR can email, download PDF, or bulk ZIP.
 
 See [Payslip distribution](../PAYSLIP-DISTRIBUTION.md) for SMTP, PDF, and email details.
 

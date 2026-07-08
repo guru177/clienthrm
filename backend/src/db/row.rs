@@ -1,5 +1,43 @@
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use crate::db::error::{DbError, Result};
+
+fn postgres_timestamp_string(row: &postgres::Row, col: &str) -> Result<Option<String>> {
+    if let Ok(v) = row.try_get::<_, Option<String>>(col) {
+        return Ok(v);
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(col) {
+        return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<DateTime<Utc>>>(col) {
+        return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(col) {
+        return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveTime>>(col) {
+        return Ok(v.map(|t| t.format("%H:%M:%S").to_string()));
+    }
+    row.try_get::<_, Option<String>>(col).map_err(DbError::from)
+}
+
+fn postgres_timestamp_string_idx(row: &postgres::Row, idx: usize) -> Result<Option<String>> {
+    if let Ok(v) = row.try_get::<_, Option<String>>(idx) {
+        return Ok(v);
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(idx) {
+        return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<DateTime<Utc>>>(idx) {
+        return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(idx) {
+        return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
+    }
+    if let Ok(v) = row.try_get::<_, Option<NaiveTime>>(idx) {
+        return Ok(v.map(|t| t.format("%H:%M:%S").to_string()));
+    }
+    row.try_get::<_, Option<String>>(idx).map_err(DbError::from)
+}
 
 /// Unified row accessor for SQLite and PostgreSQL.
 pub enum Row<'a> {
@@ -25,6 +63,28 @@ impl Row<'_> {
         match self {
             Row::Sqlite(r) => T::from_sqlite_idx(r, idx),
             Row::Postgres(r) => T::from_postgres_idx(r, idx),
+        }
+    }
+
+    /// Read bool-ish columns stored as bool / smallint / int in PostgreSQL or SQLite.
+    pub fn get_boolish(&self, col: &str) -> Result<bool> {
+        match self.get::<Option<i64>>(col) {
+            Ok(Some(v)) => Ok(v != 0),
+            Ok(None) => Ok(false),
+            Err(_) => match self.get::<Option<bool>>(col) {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Ok(false),
+                Err(e) => Err(e),
+            },
+        }
+    }
+
+    /// Read a required string column (text or timestamp).
+    pub fn get_string_flex(&self, col: &str) -> Result<String> {
+        match self.get::<Option<String>>(col) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Ok(String::new()),
+            Err(e) => Err(e),
         }
     }
 }
@@ -60,10 +120,65 @@ macro_rules! impl_row_get {
     };
 }
 
-impl_row_get!(i64);
+/// PostgreSQL `INTEGER` (INT4) vs `BIGINT` (INT8): accept both when callers use `i64`.
+impl RowGet for i64 {
+    fn from_sqlite(row: &rusqlite::Row<'_>, col: &str) -> Result<Self> {
+        row.get(col).map_err(DbError::from)
+    }
+    fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
+        if let Ok(v) = row.try_get::<_, i64>(col) {
+            return Ok(v);
+        }
+        if let Ok(v) = row.try_get::<_, i32>(col) {
+            return Ok(i64::from(v));
+        }
+        let v: i16 = row.try_get(col).map_err(DbError::from)?;
+        Ok(i64::from(v))
+    }
+}
+
+impl RowGetIdx for i64 {
+    fn from_sqlite_idx(row: &rusqlite::Row<'_>, idx: usize) -> Result<Self> {
+        row.get(idx).map_err(DbError::from)
+    }
+    fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
+        if let Ok(v) = row.try_get::<_, i64>(idx) {
+            return Ok(v);
+        }
+        if let Ok(v) = row.try_get::<_, i32>(idx) {
+            return Ok(i64::from(v));
+        }
+        let v: i16 = row.try_get(idx).map_err(DbError::from)?;
+        Ok(i64::from(v))
+    }
+}
+
+impl RowGet for String {
+    fn from_sqlite(row: &rusqlite::Row<'_>, col: &str) -> Result<Self> {
+        row.get(col).map_err(DbError::from)
+    }
+    fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
+        match postgres_timestamp_string(row, col)? {
+            Some(v) => Ok(v),
+            None => Ok(String::new()),
+        }
+    }
+}
+
+impl RowGetIdx for String {
+    fn from_sqlite_idx(row: &rusqlite::Row<'_>, idx: usize) -> Result<Self> {
+        row.get(idx).map_err(DbError::from)
+    }
+    fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
+        match postgres_timestamp_string_idx(row, idx)? {
+            Some(v) => Ok(v),
+            None => Ok(String::new()),
+        }
+    }
+}
+
 impl_row_get!(i32);
 impl_row_get!(f64);
-impl_row_get!(String);
 impl_row_get!(bool);
 impl_row_get!(Vec<u8>);
 
@@ -72,19 +187,7 @@ impl RowGet for Option<String> {
         row.get(col).map_err(DbError::from)
     }
     fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
-        // Direct string
-        if let Ok(v) = row.try_get::<_, Option<String>>(col) {
-            return Ok(v);
-        }
-        // timestamp / timestamp without time zone  -> NaiveDateTime
-        if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(col) {
-            return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
-        }
-        // date -> NaiveDate
-        if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(col) {
-            return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
-        }
-        row.try_get::<_, Option<String>>(col).map_err(DbError::from)
+        postgres_timestamp_string(row, col)
     }
 }
 
@@ -93,16 +196,7 @@ impl RowGetIdx for Option<String> {
         row.get(idx).map_err(DbError::from)
     }
     fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
-        if let Ok(v) = row.try_get::<_, Option<String>>(idx) {
-            return Ok(v);
-        }
-        if let Ok(v) = row.try_get::<_, Option<NaiveDateTime>>(idx) {
-            return Ok(v.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()));
-        }
-        if let Ok(v) = row.try_get::<_, Option<NaiveDate>>(idx) {
-            return Ok(v.map(|d| d.format("%Y-%m-%d").to_string()));
-        }
-        row.try_get::<_, Option<String>>(idx).map_err(DbError::from)
+        postgres_timestamp_string_idx(row, idx)
     }
 }
 
@@ -111,7 +205,15 @@ impl RowGet for Option<i64> {
         row.get(col).map_err(DbError::from)
     }
     fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
-        row.try_get(col).map_err(DbError::from)
+        if let Ok(v) = row.try_get::<_, Option<i64>>(col) {
+            return Ok(v);
+        }
+        if let Ok(v) = row.try_get::<_, Option<i32>>(col) {
+            return Ok(v.map(i64::from));
+        }
+        row.try_get::<_, Option<i16>>(col)
+            .map(|opt| opt.map(i64::from))
+            .map_err(DbError::from)
     }
 }
 
@@ -120,7 +222,15 @@ impl RowGetIdx for Option<i64> {
         row.get(idx).map_err(DbError::from)
     }
     fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
-        row.try_get(idx).map_err(DbError::from)
+        if let Ok(v) = row.try_get::<_, Option<i64>>(idx) {
+            return Ok(v);
+        }
+        if let Ok(v) = row.try_get::<_, Option<i32>>(idx) {
+            return Ok(v.map(i64::from));
+        }
+        row.try_get::<_, Option<i16>>(idx)
+            .map(|opt| opt.map(i64::from))
+            .map_err(DbError::from)
     }
 }
 

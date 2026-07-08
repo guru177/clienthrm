@@ -219,7 +219,7 @@ pub async fn update_password(
         return HttpResponse::BadRequest().json(ApiError::new("Current password is incorrect"));
     }
 
-    let new_hash = match bcrypt::hash(&body.password, bcrypt::DEFAULT_COST) {
+    let new_hash = match bcrypt::hash(&body.password, 12) {
         Ok(h) => h,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Failed to hash password")),
     };

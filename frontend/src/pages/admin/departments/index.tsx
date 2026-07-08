@@ -29,6 +29,7 @@ interface Department {
     name: string;
     slug: string;
     description?: string;
+    center_id?: number;
     is_active: boolean;
 }
 
@@ -137,7 +138,7 @@ export default function DepartmentsIndex() {
                                     Departments
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                    Manage organizational departments
+                                    Manage departments per branch
                                 </p>
                             </div>
                         </div>

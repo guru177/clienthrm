@@ -28,6 +28,14 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import AppLayout from '@/layouts/app-layout';
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
 import { bulkSendPayslipEmails, downloadBulkPayslipsZip, openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import { usePermissions } from '@/hooks/use-permissions';
@@ -89,6 +97,7 @@ interface Employee {
     salary_structure?: SalaryStructure;
     gross_salary?: number;
     net_salary?: number;
+    active_advances?: ActiveAdvance[];
     payslip_id?: number;
     payslip_status?: string;
 }
@@ -97,6 +106,33 @@ interface Adjustment {
     type: 'addition' | 'deduction';
     label: string;
     amount: number;
+}
+
+interface ActiveAdvance {
+    id: number;
+    amount: number;
+    balance: number;
+    monthly_emi: number;
+    description?: string | null;
+}
+
+interface AdvanceAllocation {
+    advance_id: number;
+    amount: number;
+}
+
+function defaultAdvanceAmount(adv: ActiveAdvance): number {
+    return Math.round(Math.min(adv.monthly_emi, adv.balance) * 100) / 100;
+}
+
+function defaultAdvanceAllocations(advances: ActiveAdvance[]): AdvanceAllocation[] {
+    return advances
+        .map((a) => ({ advance_id: a.id, amount: defaultAdvanceAmount(a) }))
+        .filter((a) => a.amount > 0);
+}
+
+function sumAdvanceAllocations(allocs: AdvanceAllocation[]): number {
+    return Math.round(allocs.reduce((s, a) => s + (a.amount || 0), 0) * 100) / 100;
 }
 
 interface CommonAdjustment {
@@ -124,15 +160,27 @@ const monthNames = [
 function SalaryPopup({
     employee,
     adjustments,
+    advanceAllocations,
     onSave,
     onClose,
 }: {
     employee: Employee;
     adjustments: Adjustment[];
-    onSave: (adj: Adjustment[]) => void;
+    advanceAllocations: AdvanceAllocation[];
+    onSave: (adj: Adjustment[], advances: AdvanceAllocation[]) => void;
     onClose: () => void;
 }) {
     const [adjs, setAdjs] = useState<Adjustment[]>(adjustments);
+    const activeAdvances = employee.active_advances ?? [];
+    const [advanceRows, setAdvanceRows] = useState<AdvanceAllocation[]>(() => {
+        if (advanceAllocations.length > 0) {
+            return advanceAllocations;
+        }
+        return activeAdvances.map((a) => ({
+            advance_id: a.id,
+            amount: defaultAdvanceAmount(a),
+        }));
+    });
 
     const addRow = () =>
         setAdjs([...adjs, { type: 'addition', label: '', amount: 0 }]);
@@ -161,12 +209,28 @@ function SalaryPopup({
         setAdjs(adjs.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
 
     const ss = employee.salary_structure;
+    const defaultAdvance = ss?.advance_deduction ?? 0;
+    const customAdvance = sumAdvanceAllocations(advanceRows);
+    const advanceDelta = customAdvance - defaultAdvance;
     const totalAdditions = adjs.filter(a => a.type === 'addition').reduce((s, a) => s + (a.amount || 0), 0);
     const totalDeductions = adjs.filter(a => a.type === 'deduction').reduce((s, a) => s + (a.amount || 0), 0);
     // total_deductions from backend includes LOP and statutory (not auto shift penalties)
     const adjustedNet = ss
-        ? Math.max(0, (ss.gross_salary || 0) + totalAdditions - (ss.total_deductions || 0) - totalDeductions)
+        ? Math.max(
+              0,
+              (ss.gross_salary || 0) +
+                  totalAdditions -
+                  (ss.total_deductions || 0) -
+                  totalDeductions -
+                  advanceDelta,
+          )
         : null;
+
+    const updateAdvanceAmount = (advanceId: number, amount: number) => {
+        setAdvanceRows((prev) =>
+            prev.map((r) => (r.advance_id === advanceId ? { ...r, amount } : r)),
+        );
+    };
 
     return (
         <Dialog open onOpenChange={onClose}>
@@ -215,6 +279,12 @@ function SalaryPopup({
                                         <span className="font-medium">{fmt(c.amount)}</span>
                                     </div>
                                 ))}
+                                {ss.advance_deduction != null && ss.advance_deduction > 0 && (
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-muted-foreground">Advance recovery (default)</span>
+                                        <span className="font-medium">{fmt(ss.advance_deduction)}</span>
+                                    </div>
+                                )}
                                 <div className="border-t pt-2 flex justify-between text-sm font-semibold">
                                     <span className="text-muted-foreground">Attendance</span>
                                     <span>{employee.present_days}/{employee.working_days} days</span>
@@ -259,11 +329,68 @@ function SalaryPopup({
                                 <div className="text-xs text-muted-foreground">
                                     Gross: {fmt(ss.gross_salary)}
                                     {ss.total_deductions > 0 && <span className="text-red-600"> −Ded {fmt(ss.total_deductions)}</span>}
+                                    {advanceDelta !== 0 && (
+                                        <span className="text-red-600">
+                                            {' '}
+                                            {advanceDelta > 0 ? '−' : '+'}
+                                            {fmt(Math.abs(advanceDelta))} advance
+                                        </span>
+                                    )}
                                     {totalAdditions > 0 && <span className="text-green-600"> +{fmt(totalAdditions)}</span>}
                                     {totalDeductions > 0 && <span className="text-red-600"> −{fmt(totalDeductions)}</span>}
                                 </div>
                             </div>
                         </div>
+
+                        {activeAdvances.length > 0 && (
+                            <div>
+                                <h4 className="font-semibold text-sm mb-3">Advance recovery</h4>
+                                <div className="rounded-md border overflow-x-auto">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>Description</TableHead>
+                                                <TableHead>Balance</TableHead>
+                                                <TableHead>Monthly EMI</TableHead>
+                                                <TableHead>Recover this month</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {activeAdvances.map((adv) => {
+                                                const rowAmount =
+                                                    advanceRows.find((r) => r.advance_id === adv.id)?.amount ?? 0;
+                                                return (
+                                                    <TableRow key={adv.id}>
+                                                        <TableCell>{adv.description || `Advance #${adv.id}`}</TableCell>
+                                                        <TableCell>{fmt(adv.balance)}</TableCell>
+                                                        <TableCell>{fmt(adv.monthly_emi)}</TableCell>
+                                                        <TableCell>
+                                                            <Input
+                                                                type="number"
+                                                                min={0}
+                                                                max={adv.balance}
+                                                                step="0.01"
+                                                                value={rowAmount || ''}
+                                                                onChange={(e) =>
+                                                                    updateAdvanceAmount(
+                                                                        adv.id,
+                                                                        parseFloat(e.target.value) || 0,
+                                                                    )
+                                                                }
+                                                                className="w-32"
+                                                            />
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-2">
+                                    Total advance recovery this month: {fmt(customAdvance)}
+                                </p>
+                            </div>
+                        )}
 
                         {/* Adjustments */}
                         <div>
@@ -323,7 +450,7 @@ function SalaryPopup({
                         {/* Save */}
                         <div className="flex justify-end gap-2 pt-2 border-t">
                             <Button variant="outline" onClick={onClose}>Cancel</Button>
-                            <Button onClick={() => { onSave(adjs); onClose(); }}>Save Adjustments</Button>
+                            <Button onClick={() => { onSave(adjs, advanceRows); onClose(); }}>Save Adjustments</Button>
                         </div>
                     </div>
                 ) : (
@@ -871,6 +998,7 @@ export default function PayrollPage() {
     // Selection & adjustments
     const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
     const [adjustments, setAdjustments] = useState<Record<number, Adjustment[]>>({});
+    const [advanceAllocations, setAdvanceAllocations] = useState<Record<number, AdvanceAllocation[]>>({});
 
     // Popups
     const [salaryEmployee, setSalaryEmployee] = useState<Employee | null>(null);
@@ -893,9 +1021,10 @@ export default function PayrollPage() {
     }, [month, year]);
 
     // Fetch departments
-    const fetchDepartments = useCallback(async () => {
+    const fetchDepartments = useCallback(async (centerId?: string | number) => {
         try {
-            const r = await axios.get('/admin/departments/list');
+            const params = centerId ? { center_id: centerId } : undefined;
+            const r = await axios.get('/admin/departments/list', { params });
             setDepartments(r.data?.data?.data ?? r.data?.data ?? []);
         } catch (e) { /* ignore */ }
     }, []);
@@ -903,7 +1032,7 @@ export default function PayrollPage() {
     // Fetch centers
     const fetchCenters = useCallback(async () => {
         try {
-            const r = await axios.get('/admin/api/settings/centers');
+            const r = await axios.get('/admin/settings/centers');
             if (r.data.success) setCenters(r.data.data ?? []);
         } catch (e) { /* ignore */ }
     }, []);
@@ -929,6 +1058,14 @@ export default function PayrollPage() {
 
     useEffect(() => { fetchStats(); }, [fetchStats]);
     useEffect(() => { fetchDepartments(); fetchCenters(); }, []);
+
+    useEffect(() => {
+        if (filterMode === 'centers' && selectedCenter) {
+            fetchDepartments(selectedCenter.id);
+        } else {
+            fetchDepartments();
+        }
+    }, [filterMode, selectedCenter, fetchDepartments]);
 
     // Load employees when filter changes
     useEffect(() => {
@@ -964,8 +1101,9 @@ export default function PayrollPage() {
         setCheckedIds(checked ? new Set(employees.map(e => e.id)) : new Set());
     };
 
-    const handleSaveAdj = (empId: number, adjs: Adjustment[]) => {
-        setAdjustments(prev => ({ ...prev, [empId]: adjs }));
+    const handleSaveAdj = (empId: number, adjs: Adjustment[], advances: AdvanceAllocation[]) => {
+        setAdjustments((prev) => ({ ...prev, [empId]: adjs }));
+        setAdvanceAllocations((prev) => ({ ...prev, [empId]: advances }));
     };
 
     const generatedPayslipIds = employees
@@ -1019,8 +1157,10 @@ export default function PayrollPage() {
         setProceeding(true);
         try {
             const adjPayload: Record<number, Adjustment[]> = {};
+            const advancePayload: Record<number, AdvanceAllocation[]> = {};
             checkedIds.forEach(id => {
                 if (adjustments[id]?.length) adjPayload[id] = adjustments[id];
+                if (advanceAllocations[id]?.length) advancePayload[id] = advanceAllocations[id];
             });
 
             const response = await axios.post('/admin/payroll/preview', {
@@ -1028,6 +1168,7 @@ export default function PayrollPage() {
                 year,
                 employee_ids: Array.from(checkedIds),
                 adjustments: adjPayload,
+                advance_allocations: advancePayload,
             });
 
             if (response.data.success) {
@@ -1172,7 +1313,7 @@ export default function PayrollPage() {
                             {([
                                 { mode: 'all', icon: LayoutGrid, label: 'All Employees' },
                                 { mode: 'departments', icon: Building2, label: 'Departments' },
-                                { mode: 'centers', icon: MapPin, label: 'Centers' },
+                                { mode: 'centers', icon: MapPin, label: 'Branches' },
                             ] as const).map(({ mode, icon: Icon, label }) => (
                                 <button
                                     key={mode}
@@ -1195,7 +1336,7 @@ export default function PayrollPage() {
                         <div className="w-52 shrink-0 border rounded-xl bg-card overflow-hidden flex flex-col">
                             <div className="p-3 border-b bg-muted/30">
                                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                    {filterMode === 'departments' ? 'Departments' : 'Centers'}
+                                    {filterMode === 'departments' ? 'Departments' : 'Branches'}
                                 </h3>
                             </div>
                             <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -1234,7 +1375,7 @@ export default function PayrollPage() {
                                     <p className="text-sm text-muted-foreground text-center py-4">No departments</p>
                                 )}
                                 {filterMode === 'centers' && centers.length === 0 && (
-                                    <p className="text-sm text-muted-foreground text-center py-4">No centers</p>
+                                    <p className="text-sm text-muted-foreground text-center py-4">No branches</p>
                                 )}
                             </div>
                         </div>
@@ -1316,7 +1457,8 @@ export default function PayrollPage() {
                 <SalaryPopup
                     employee={salaryEmployee}
                     adjustments={adjustments[salaryEmployee.id] ?? []}
-                    onSave={(adjs) => handleSaveAdj(salaryEmployee.id, adjs)}
+                    advanceAllocations={advanceAllocations[salaryEmployee.id] ?? []}
+                    onSave={(adjs, advances) => handleSaveAdj(salaryEmployee.id, adjs, advances)}
                     onClose={() => setSalaryEmployee(null)}
                 />
             )}
@@ -1331,6 +1473,7 @@ export default function PayrollPage() {
                     onGenerate={() => {
                         setCheckedIds(new Set());
                         setAdjustments({});
+                        setAdvanceAllocations({});
                         setEmployees([]);
                         fetchStats();
                         fetchEmployees();

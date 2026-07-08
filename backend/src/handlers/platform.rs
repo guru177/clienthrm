@@ -623,8 +623,8 @@ pub async fn organizations_store(
         )?;
         tx.execute(
             "INSERT INTO users (name, email, password, organization_id, is_super_admin, email_verified_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5, ?5)",
-            crate::params![admin_name, admin_email, hashed, org_id, &now],
+             VALUES (?1, ?2, ?3, ?4, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            crate::params![admin_name, admin_email, hashed, org_id],
         )?;
         let user_id = tx.last_insert_rowid();
         Ok((org_id, user_id))

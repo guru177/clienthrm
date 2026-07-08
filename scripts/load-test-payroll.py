@@ -12,7 +12,7 @@ import urllib.request
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 LOGIN = {
-    "email": os.environ.get("HRM_EMAIL", "admin@mashuptech.in"),
+    "email": os.environ.get("HRM_EMAIL", "info@retaildaddy.in"),
     "password": os.environ.get("HRM_PASSWORD", "password"),
     "org_slug": os.environ.get("HRM_ORG", "mashuptech"),
 }

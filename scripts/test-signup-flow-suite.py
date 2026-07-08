@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
-TENANT_LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+TENANT_LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 TS = datetime.now().strftime("%Y%m%d%H%M%S")
 
 

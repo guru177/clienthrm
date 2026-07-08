@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
-import { storageUrl } from '@/lib/storage-url';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import {
     Search,
     RefreshCw,
@@ -57,6 +57,22 @@ import {
 } from '@/components/ui/table';
 import { usePermissions } from '@/hooks/use-permissions';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
+
+function UserRowAvatar({ photo, name }: { photo?: string | null; name: string }) {
+    const src = useStorageSrc(photo);
+    const initials = name
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .toUpperCase()
+        .substring(0, 2);
+    return (
+        <Avatar className="h-10 w-10">
+            <AvatarImage src={src || undefined} alt={name} />
+            <AvatarFallback>{initials}</AvatarFallback>
+        </Avatar>
+    );
+}
 
 interface User {
     id: number;
@@ -338,16 +354,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                         </TableCell>
                                     </TableRow>
                                 ) : (
-                                    users.map((user) => {
-                                        const userPhotoUrl = user.photo ? storageUrl(user.photo) : null;
-                                        const initials = user.name
-                                            .split(' ')
-                                            .map(n => n[0])
-                                            .join('')
-                                            .toUpperCase()
-                                            .substring(0, 2);
-
-                                        return (
+                                    users.map((user) => (
                                             <TableRow
                                                 key={user.id}
                                                 className="hover:bg-blue-50/60 dark:hover:bg-blue-900/10 transition-colors duration-150 border-b border-blue-50 dark:border-white/5">
@@ -355,12 +362,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                                 <TableCell className="font-medium">{user.id}</TableCell>
                                                 <TableCell>
                                                     <div className="flex items-center gap-3">
-                                                        <Avatar className="h-10 w-10">
-                                                            <AvatarImage src={userPhotoUrl || undefined} alt={user.name} />
-                                                            <AvatarFallback className="bg-primary/10 text-primary">
-                                                                {initials}
-                                                            </AvatarFallback>
-                                                        </Avatar>
+                                                        <UserRowAvatar photo={user.photo} name={user.name} />
                                                         <span className="font-medium">{user.name}</span>
                                                     </div>
                                                 </TableCell>
@@ -410,8 +412,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                                     </DropdownMenu>
                                                 </TableCell>
                                             </TableRow>
-                                        );
-                                    })
+                                    ))
                                 )}
                             </TableBody>
                         </Table>

@@ -6,7 +6,7 @@ import CentersManager from '@/components/centers-manager';
 
 const breadcrumbs = [
     { label: 'Management', href: '#' },
-    { label: 'Centers' },
+    { label: 'Branches' },
 ];
 
 export default function CentersPage() {
@@ -29,10 +29,10 @@ export default function CentersPage() {
                         </div>
                         <div>
                             <h1 className="text-xl font-bold tracking-tight text-[#001f3f] dark:text-white">
-                                Centers Management
+                                Branches Management
                             </h1>
                             <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                Manage all centers and locations for your company
+                                Manage all branches and locations for your company
                             </p>
                         </div>
                     </div>

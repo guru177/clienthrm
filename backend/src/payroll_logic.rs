@@ -945,6 +945,53 @@ pub fn approved_leave_days_by_type_in_month(
         .collect()
 }
 
+/// Parse per-employee advance allocation overrides from preview request body.
+pub fn parse_advance_allocation_map(
+    advance_allocations: &Option<serde_json::Value>,
+) -> HashMap<i64, Vec<crate::statutory_logic::AdvanceAllocation>> {
+    let mut map = HashMap::new();
+    let Some(obj) = advance_allocations.as_ref().and_then(|v| v.as_object()) else {
+        return map;
+    };
+    for (key, val) in obj {
+        let Ok(uid) = key.parse::<i64>() else { continue };
+        let Some(arr) = val.as_array() else { continue };
+        let allocs: Vec<crate::statutory_logic::AdvanceAllocation> = arr
+            .iter()
+            .filter_map(|item| {
+                Some(crate::statutory_logic::AdvanceAllocation {
+                    advance_id: item.get("advance_id")?.as_i64()?,
+                    amount: item.get("amount")?.as_f64()?,
+                })
+            })
+            .collect();
+        if !allocs.is_empty() {
+            map.insert(uid, allocs);
+        }
+    }
+    map
+}
+
+/// Apply default or custom per-advance recovery to payslip totals.
+pub fn apply_advance_override(
+    default_advance: f64,
+    net: f64,
+    total_deductions: f64,
+    active_advances: &[crate::statutory_logic::EmployeeAdvance],
+    user_overrides: Option<&[crate::statutory_logic::AdvanceAllocation]>,
+) -> Result<(f64, f64, f64, Vec<crate::statutory_logic::AdvanceAllocation>), String> {
+    let allocations = if let Some(overrides) = user_overrides {
+        crate::statutory_logic::validate_advance_allocations(active_advances, overrides)?
+    } else {
+        crate::statutory_logic::default_advance_allocations(active_advances)
+    };
+    let custom_advance = crate::statutory_logic::sum_advance_allocations(&allocations);
+    let delta = crate::salary_split::round2(custom_advance - default_advance);
+    let total_deductions = crate::salary_split::round2((total_deductions + delta).max(0.0));
+    let net = crate::salary_split::round2((net - delta).max(0.0));
+    Ok((custom_advance, net, total_deductions, allocations))
+}
+
 /// Parse per-employee adjustments from preview request body.
 pub fn parse_employee_adjustments(
     adjustments: &Option<serde_json::Value>,
@@ -1073,6 +1120,28 @@ mod tests {
         let (net, ded, _) = apply_adjustment_list(1000.0, 800.0, 200.0, &adjs);
         assert_eq!(net, 750.0);
         assert_eq!(ded, 250.0);
+    }
+
+    #[test]
+    fn apply_advance_override_partial_recovery() {
+        let advances = vec![
+            crate::statutory_logic::EmployeeAdvance {
+                id: 1,
+                amount: 10_000.0,
+                balance: 6_000.0,
+                monthly_emi: 2_000.0,
+                description: None,
+            },
+        ];
+        let overrides = vec![crate::statutory_logic::AdvanceAllocation {
+            advance_id: 1,
+            amount: 500.0,
+        }];
+        let (adv, net, ded, _) =
+            apply_advance_override(2_000.0, 18_000.0, 4_000.0, &advances, Some(&overrides)).unwrap();
+        assert_eq!(adv, 500.0);
+        assert_eq!(ded, 2_500.0);
+        assert_eq!(net, 19_500.0);
     }
 
     #[test]

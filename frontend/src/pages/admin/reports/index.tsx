@@ -2,6 +2,8 @@ import axios from '@/lib/axios';
 import { BarChart3 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import AttendanceRegisterReport from '@/components/reports/attendance-register-report';
+import SalarySplitReport from '@/components/reports/salary-split-report';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError } from '@/lib/toast';
+import { earningColumnKind, type DeductionColumn, type EarningColumn, type SalarySplitTotals } from '@/lib/salary-split-excel';
 
 export default function ReportsPage() {
     const now = new Date();
@@ -17,12 +20,17 @@ export default function ReportsPage() {
     const [attendance, setAttendance] = useState<any[]>([]);
     const [payroll, setPayroll] = useState<any[]>([]);
     const [payrollSplit, setPayrollSplit] = useState<any[]>([]);
+    const [payrollSplitTotals, setPayrollSplitTotals] = useState<SalarySplitTotals>({});
+    const [earningColumns, setEarningColumns] = useState<EarningColumn[]>([]);
+    const [deductionColumns, setDeductionColumns] = useState<DeductionColumn[]>([]);
     const [leave, setLeave] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
+    const [activeTab, setActiveTab] = useState('attendance');
 
     useEffect(() => {
+        if (activeTab === 'attendance-register') return;
         void loadReports();
-    }, [month, year]);
+    }, [month, year, activeTab]);
 
     const loadReports = async () => {
         setLoading(true);
@@ -36,6 +44,54 @@ export default function ReportsPage() {
             setAttendance(att.data.data?.employees || []);
             setPayroll(pay.data.data?.payslips || []);
             setPayrollSplit(split.data.data?.rows || []);
+            setPayrollSplitTotals(split.data.data?.totals || {});
+            let columns: EarningColumn[] = split.data.data?.earning_columns || [];
+            if (columns.length === 0) {
+                try {
+                    const compRes = await axios.get('/admin/salaries/components/list', {
+                        params: { type: 'earning' },
+                    });
+                    if (compRes.data.success) {
+                        columns = (compRes.data.data || [])
+                            .filter((c: { is_active?: boolean }) => c.is_active !== false)
+                            .map((c: { id: number; name: string; slug?: string }) => ({
+                                id: c.id,
+                                name: c.name,
+                                slug: c.slug,
+                                kind: earningColumnKind(c.slug, c.name),
+                            }));
+                    }
+                } catch {
+                    /* keep empty — payroll-split is primary source */
+                }
+            }
+            setEarningColumns(columns);
+            let deductions: DeductionColumn[] = split.data.data?.deduction_columns || [];
+            if (deductions.length === 0) {
+                try {
+                    const compRes = await axios.get('/admin/salaries/components/list', {
+                        params: { type: 'deduction' },
+                    });
+                    if (compRes.data.success) {
+                        deductions = (compRes.data.data || [])
+                            .filter((c: { is_active?: boolean; name?: string; slug?: string }) => {
+                                const s = (c.slug || '').toLowerCase();
+                                const n = (c.name || '').toLowerCase();
+                                return c.is_active !== false && !s.includes('employer') && !n.includes('employer');
+                            })
+                            .map((c: { id: number; name: string; slug?: string; is_pre_tax?: boolean }) => ({
+                                id: c.id,
+                                name: c.name,
+                                slug: c.slug,
+                                is_pre_tax: c.is_pre_tax,
+                                kind: 'deduct' as const,
+                            }));
+                    }
+                } catch {
+                    /* keep empty */
+                }
+            }
+            setDeductionColumns(deductions);
             setLeave(lev.data.data || []);
         } catch (error) {
             handleApiError(error);
@@ -55,20 +111,23 @@ export default function ReportsPage() {
                     </div>
                 </div>
 
-                <div className="flex gap-4 items-end">
-                    <div className="space-y-2">
-                        <Label>Month</Label>
-                        <Input type="number" min={1} max={12} value={month} onChange={(e) => setMonth(Number(e.target.value))} className="w-24" />
+                {activeTab !== 'attendance-register' && (
+                    <div className="flex gap-4 items-end">
+                        <div className="space-y-2">
+                            <Label>Month</Label>
+                            <Input type="number" min={1} max={12} value={month} onChange={(e) => setMonth(Number(e.target.value))} className="w-24" />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Year</Label>
+                            <Input type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} className="w-28" />
+                        </div>
                     </div>
-                    <div className="space-y-2">
-                        <Label>Year</Label>
-                        <Input type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} className="w-28" />
-                    </div>
-                </div>
+                )}
 
-                <Tabs defaultValue="attendance">
+                <Tabs value={activeTab} onValueChange={setActiveTab}>
                     <TabsList>
                         <TabsTrigger value="attendance">Attendance</TabsTrigger>
+                        <TabsTrigger value="attendance-register">Attendance Register</TabsTrigger>
                         <TabsTrigger value="payroll">Payroll Register</TabsTrigger>
                         <TabsTrigger value="split">Salary Split</TabsTrigger>
                         <TabsTrigger value="leave">Leave Balance</TabsTrigger>
@@ -104,6 +163,10 @@ export default function ReportsPage() {
                         </Card>
                     </TabsContent>
 
+                    <TabsContent value="attendance-register">
+                        <AttendanceRegisterReport />
+                    </TabsContent>
+
                     <TabsContent value="payroll">
                         <Card>
                             <CardHeader><CardTitle>Payroll Register</CardTitle></CardHeader>
@@ -137,45 +200,16 @@ export default function ReportsPage() {
                     </TabsContent>
 
                     <TabsContent value="split">
-                        <Card>
-                            <CardHeader><CardTitle>Salary Split (CTC / LOP / Statutory)</CardTitle></CardHeader>
-                            <CardContent className="overflow-x-auto">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead>Employee</TableHead>
-                                            <TableHead>Yearly CTC</TableHead>
-                                            <TableHead>Basic</TableHead>
-                                            <TableHead>HRA</TableHead>
-                                            <TableHead>Conv</TableHead>
-                                            <TableHead>Gross</TableHead>
-                                            <TableHead>LOP</TableHead>
-                                            <TableHead>PF</TableHead>
-                                            <TableHead>ESI</TableHead>
-                                            <TableHead>Prof Tax</TableHead>
-                                            <TableHead>Net</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {payrollSplit.map((r) => (
-                                            <TableRow key={r.user_id}>
-                                                <TableCell>{r.name}</TableCell>
-                                                <TableCell>{r.yearly_ctc ? `₹${Number(r.yearly_ctc).toLocaleString('en-IN')}` : '—'}</TableCell>
-                                                <TableCell>{r.basic != null ? `₹${Number(r.basic).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.hra != null ? `₹${Number(r.hra).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.conveyance != null ? `₹${Number(r.conveyance).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.gross_salary != null ? `₹${Number(r.gross_salary).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.lop_deduction != null ? `₹${Number(r.lop_deduction).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.pf_deduction != null ? `₹${Number(r.pf_deduction).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.esi_deduction != null ? `₹${Number(r.esi_deduction).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell>{r.prof_tax != null ? `₹${Number(r.prof_tax).toFixed(0)}` : '—'}</TableCell>
-                                                <TableCell className="font-medium">{r.net_salary != null ? `₹${Number(r.net_salary).toFixed(0)}` : '—'}</TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </CardContent>
-                        </Card>
+                        <SalarySplitReport
+                            month={month}
+                            year={year}
+                            earningColumns={earningColumns}
+                            deductionColumns={deductionColumns}
+                            rows={payrollSplit}
+                            totals={payrollSplitTotals}
+                            loading={loading}
+                            onReload={() => void loadReports()}
+                        />
                     </TabsContent>
 
                     <TabsContent value="leave">

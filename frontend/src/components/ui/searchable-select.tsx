@@ -17,6 +17,12 @@ interface SearchableSelectProps {
     searchPlaceholder?: string;
     className?: string;
     emptyMessage?: string;
+    loading?: boolean;
+    disabled?: boolean;
+    /** When false, options are shown as-is (e.g. already filtered by the server). */
+    filterLocally?: boolean;
+    onQueryChange?: (query: string) => void;
+    onOpenChange?: (open: boolean) => void;
 }
 
 interface PanelPosition {
@@ -34,6 +40,11 @@ export function SearchableSelect({
     searchPlaceholder = 'Search…',
     className,
     emptyMessage = 'No results found',
+    loading = false,
+    disabled = false,
+    filterLocally = true,
+    onQueryChange,
+    onOpenChange,
 }: SearchableSelectProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
@@ -50,6 +61,7 @@ export function SearchableSelect({
     const selected = options.find((o) => o.value === value);
 
     const filtered = useMemo(() => {
+        if (!filterLocally) return options;
         const q = query.trim().toLowerCase();
         if (!q) return options;
         return options.filter(
@@ -57,7 +69,7 @@ export function SearchableSelect({
                 o.label.toLowerCase().includes(q) ||
                 o.value.toLowerCase().includes(q),
         );
-    }, [options, query]);
+    }, [options, query, filterLocally]);
 
     function updatePosition() {
         const trigger = triggerRef.current;
@@ -98,8 +110,7 @@ export function SearchableSelect({
                 !rootRef.current?.contains(target) &&
                 !panelRef.current?.contains(target)
             ) {
-                setOpen(false);
-                setQuery('');
+                closePanel();
             }
         }
 
@@ -107,10 +118,25 @@ export function SearchableSelect({
         return () => document.removeEventListener('mousedown', handlePointerDown);
     }, [open]);
 
-    function selectOption(option: SearchableSelectOption) {
-        onValueChange(option.value);
+    function closePanel() {
         setOpen(false);
         setQuery('');
+        onOpenChange?.(false);
+    }
+
+    function togglePanel() {
+        if (disabled) return;
+        setOpen((wasOpen) => {
+            const next = !wasOpen;
+            onOpenChange?.(next);
+            if (!next) setQuery('');
+            return next;
+        });
+    }
+
+    function selectOption(option: SearchableSelectOption) {
+        onValueChange(option.value);
+        closePanel();
     }
 
     const panel = open ? (
@@ -127,20 +153,27 @@ export function SearchableSelect({
             <div className="border-b p-2">
                 <Input
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={(e) => {
+                        const next = e.target.value;
+                        setQuery(next);
+                        onQueryChange?.(next);
+                    }}
                     placeholder={searchPlaceholder}
                     autoFocus
                     className="h-9"
                     onKeyDown={(e) => {
                         if (e.key === 'Escape') {
-                            setOpen(false);
-                            setQuery('');
+                            closePanel();
                         }
                     }}
                 />
             </div>
             <ul role="listbox" className="overflow-y-auto p-1" style={{ maxHeight: position.maxHeight - 52 }}>
-                {filtered.length === 0 ? (
+                {loading ? (
+                    <li className="px-3 py-6 text-center text-sm text-muted-foreground">
+                        Loading…
+                    </li>
+                ) : filtered.length === 0 ? (
                     <li className="px-3 py-6 text-center text-sm text-muted-foreground">
                         {emptyMessage}
                     </li>
@@ -182,14 +215,15 @@ export function SearchableSelect({
                 type="button"
                 aria-expanded={open}
                 aria-haspopup="listbox"
-                onClick={() => setOpen((v) => !v)}
+                disabled={disabled}
+                onClick={togglePanel}
                 className={cn(
-                    'border-input flex h-10 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]',
+                    'border-input flex h-10 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50',
                     !selected && 'text-muted-foreground',
                 )}
             >
                 <span className="truncate text-left">
-                    {selected?.label ?? placeholder}
+                    {loading && !selected ? 'Loading…' : (selected?.label ?? placeholder)}
                 </span>
                 <ChevronDownIcon className="size-4 shrink-0 opacity-50" />
             </button>

@@ -10,7 +10,7 @@ use crate::tenant::org_id_from_claims;
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     let stmt = conn.prepare("SELECT * FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
     let items: Vec<Designation> = stmt.query_map([org_id], Designation::from_row);
     HttpResponse::Ok().json(ApiResponse::success(items))
@@ -19,7 +19,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     match conn.query_row(
         "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
         crate::params![path.into_inner(), org_id],
@@ -33,7 +33,7 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
 pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<CreateDesignationRequest>) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
         Ok(n) => n,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
@@ -54,7 +54,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
 pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<CreateDesignationRequest>) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
         Ok(n) => n,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
@@ -76,7 +76,7 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
 pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     match conn.execute(
         "DELETE FROM designations WHERE id = ?1 AND organization_id = ?2",
         crate::params![path.into_inner(), org_id],
@@ -116,7 +116,7 @@ fn designation_json(row: &crate::db::Row) -> crate::db::Result<serde_json::Value
 pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM designations WHERE organization_id = ?1", [org_id], |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
@@ -149,7 +149,7 @@ pub async fn list(
 ) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
+    let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
 
     let mut sql = String::from(
         "SELECT d.*,
@@ -196,7 +196,8 @@ pub async fn list(
     let per_page = query.per_page.unwrap_or(10).clamp(1, 100);
 
     if use_pagination {
-        sql.push_str(" LIMIT ? OFFSET ?");
+        let offset = (page - 1) * per_page;
+        sql.push_str(&format!(" LIMIT {per_page} OFFSET {offset}"));
     }
 
     let count_sql = sql
@@ -213,21 +214,13 @@ pub async fn list(
         .query_row(&count_sql, &params, |row| row.get_idx::<i64>(0))
         .unwrap_or(0);
 
-    if use_pagination {
-        let offset = (page - 1) * per_page;
-        params.push(crate::db::into_param_value(per_page));
-        params.push(crate::db::into_param_value(offset));
-    }
-
-    let stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
+    let items: Vec<serde_json::Value> = match conn.query_map_result(&sql, &params, designation_json) {
+        Ok(rows) => rows,
         Err(e) => {
-            return HttpResponse::InternalServerError()
-                .json(ApiError::new(&format!("Query error: {e}")))
+            log::warn!("designations list row mapping failed: {e}");
+            Vec::new()
         }
     };
-
-    let items: Vec<serde_json::Value> = stmt.query_map(&params, designation_json);
 
     if use_pagination {
         let last_page = ((total as f64) / (per_page as f64)).ceil().max(1.0) as i64;

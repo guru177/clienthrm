@@ -5,7 +5,7 @@
 import { chromium } from 'playwright';
 
 const BASE = 'http://localhost:5174';
-const EMAIL = 'admin@mashuptech.in';
+const EMAIL = 'info@retaildaddy.in';
 const PASSWORD = 'password';
 
 const routes = [

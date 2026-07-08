@@ -7,7 +7,7 @@ import { dismissAnnouncements, loginTenant } from '../frontend/scripts/playwrigh
 
 const BASE = process.env.FE_URL || 'http://localhost:5174';
 const API = process.env.HRM_API || 'http://127.0.0.1:3001';
-const EMAIL = process.env.HRM_EMAIL || 'admin@mashuptech.in';
+const EMAIL = process.env.HRM_EMAIL || 'info@retaildaddy.in';
 const PASSWORD = process.env.HRM_PASSWORD || 'password';
 const ORG_SLUG = process.env.HRM_ORG_SLUG || 'mashuptech';
 
@@ -228,7 +228,11 @@ async function main() {
     try {
         await flowForgotPassword(page);
         await flowSignup(page);
-        await login(page);
+        if (page.url().includes('/admin/')) {
+            await dismissAnnouncements(page);
+        } else {
+            await login(page);
+        }
         await flowPayroll(page);
         await flowWorkflow(page);
     } catch (e) {

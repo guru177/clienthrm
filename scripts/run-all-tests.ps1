@@ -1,5 +1,5 @@
 # Run all HRM automated test suites (integration + API + frontend + Rust unit tests).
-# Prerequisites: backend on :3001, frontend on :5174 (Vite proxy), database/database.sqlite
+# Prerequisites: backend on :3001, frontend on :5174 (Vite proxy), PostgreSQL (docker compose up -d)
 #
 # Usage:
 #   powershell -NoProfile -File scripts/run-all-tests.ps1
@@ -91,8 +91,14 @@ if (-not (Test-Url "$Api/api/health")) {
     Write-Host "ERROR: Backend not reachable at $Api - start with: cd backend; cargo run" -ForegroundColor Red
     exit 1
 }
-if (-not (Test-Path "database/database.sqlite")) {
-    Write-Host "ERROR: database/database.sqlite not found" -ForegroundColor Red
+try {
+    $health = Invoke-RestMethod -Uri "$Api/api/health" -TimeoutSec 5
+    if ($health.database.backend -ne "postgres") {
+        Write-Host "ERROR: Backend must use PostgreSQL. Run: docker compose up -d; restart backend (cargo run)" -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Write-Host "ERROR: Backend health check failed at $Api" -ForegroundColor Red
     exit 1
 }
 if (-not $SkipFrontend -and -not (Test-Url $Fe)) {

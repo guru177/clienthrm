@@ -28,9 +28,16 @@ impl ParamValue {
                 let n: Option<i32> = None;
                 Box::new(n)
             }
-            ParamValue::I64(v) => Box::new(*v),
+            ParamValue::I64(v) => {
+                // PostgreSQL `INTEGER` (INT4) parameters reject bare `i64` in the `postgres` crate.
+                if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) {
+                    Box::new(*v as i32)
+                } else {
+                    Box::new(*v)
+                }
+            }
             ParamValue::I32(v) => Box::new(*v),
-            ParamValue::F64(v) => Box::new(*v),
+            ParamValue::F64(v) => Box::new(*v as f32),
             ParamValue::Bool(v) => Box::new(*v),
             ParamValue::Text(v) => Box::new(v.clone()),
             ParamValue::Blob(v) => Box::new(v.clone()),

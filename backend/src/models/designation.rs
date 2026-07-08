@@ -6,7 +6,7 @@ pub struct Designation {
     pub name: String,
     pub slug: String,
     pub description: Option<String>,
-    pub level: Option<i64>,
+    pub level: Option<String>,
     pub is_active: bool,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -16,7 +16,7 @@ pub struct Designation {
 pub struct CreateDesignationRequest {
     pub name: String,
     pub description: Option<String>,
-    pub level: Option<i64>,
+    pub level: Option<String>,
     pub is_active: Option<bool>,
 }
 

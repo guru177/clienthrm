@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
-TENANT_LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+TENANT_LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 PLATFORM_LOGIN = {
     "email": os.environ.get("PLATFORM_ADMIN_EMAIL", "admin@retaildaddy.in"),
     "password": os.environ.get("PLATFORM_ADMIN_PASSWORD", "retaildaddy@0123"),
@@ -160,10 +160,16 @@ def main() -> int:
         suite.record(case_id, name, expect_bad(code, body), f"HTTP {code}")
 
     # Optional fields allowed when essentials present
+    code_centers, centers_body = http("GET", f"{API}/api/admin/settings/centers", headers=auth)
+    center_id = 1
+    if code_centers == 200 and isinstance(centers_body, dict):
+        rows = centers_body.get("data")
+        if isinstance(rows, list) and rows:
+            center_id = rows[0].get("id", 1)
     code, body = http(
         "POST",
         f"{API}/api/admin/departments",
-        {"name": f"Val Dept {TS}", "description": ""},
+        {"name": f"Val Dept {TS}", "description": "", "center_id": center_id},
         auth,
     )
     suite.record("VAL-20", "Department optional description empty", expect_ok(code), f"HTTP {code}")

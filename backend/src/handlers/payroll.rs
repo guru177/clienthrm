@@ -21,6 +21,7 @@ pub struct PayrollPreviewRequest {
     pub year: i32,
     pub employee_ids: Vec<i64>,
     pub adjustments: Option<serde_json::Value>,
+    pub advance_allocations: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,7 +164,8 @@ pub fn build_employee_payroll(
         && comp.has_esi;
 
     let statutory_cfg = crate::statutory_logic::load_statutory_config(conn, org_id);
-    let advance = crate::statutory_logic::advance_emi_for_month(conn, user_id);
+    let active_advances = crate::statutory_logic::list_active_advances(conn, user_id);
+    let advance = crate::statutory_logic::default_advance_recovery(&active_advances);
 
     let (penalty_days, suggested_shift_penalty) =
         crate::salary_logic::suggested_shift_penalty_for_month(
@@ -382,6 +384,10 @@ pub fn build_employee_payroll(
     obj.insert("arrears_amount".to_string(), serde_json::json!(arrears.amount));
     obj.insert("payroll_hold".to_string(), serde_json::json!(on_hold));
     obj.insert("payroll_hold_reason".to_string(), serde_json::json!(hold_reason));
+    obj.insert(
+        "active_advances".to_string(),
+        serde_json::to_value(&active_advances).unwrap_or(serde_json::json!([])),
+    );
     obj.insert("lop_gross".to_string(), serde_json::json!(lop_base));
     obj.insert("net_salary".to_string(), serde_json::json!(net));
     obj.insert("payroll_detail".to_string(), payroll_detail.clone());
@@ -607,8 +613,8 @@ fn refresh_draft_payslip(
     }
 
     let gross = emp.get("gross_salary").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let net = emp.get("net_salary").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let total_deductions = emp
+    let mut net = emp.get("net_salary").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let mut total_deductions = emp
         .get("salary_structure")
         .and_then(|v| v.get("total_deductions"))
         .and_then(|v| v.as_f64())
@@ -635,7 +641,7 @@ fn refresh_draft_payslip(
     let pf = ss.and_then(|v| v.get("pf_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
     let esi = ss.and_then(|v| v.get("esi_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
     let prof_tax = ss.and_then(|v| v.get("prof_tax")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let advance = ss
+    let default_advance = ss
         .and_then(|v| v.get("advance_deduction"))
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
@@ -667,6 +673,23 @@ fn refresh_draft_payslip(
         )
     } else {
         (0.0, 0.0, 0.0, 0.0)
+    };
+
+    let active_advances = crate::statutory_logic::list_active_advances(conn, user_id);
+    let stored_allocs = crate::statutory_logic::parse_advance_allocations(existing_adj);
+    let (advance, net, total_deductions) = if stored_allocs.is_empty() {
+        (default_advance, net, total_deductions)
+    } else {
+        match payroll_logic::apply_advance_override(
+            default_advance,
+            net,
+            total_deductions,
+            &active_advances,
+            Some(&stored_allocs),
+        ) {
+            Ok((adv, n, td, _)) => (adv, n, td),
+            Err(e) => return Err(e),
+        }
     };
 
     let updated = conn
@@ -719,7 +742,6 @@ fn refresh_draft_payslip(
     if updated == 0 {
         return Err("Draft payslip not found or already generated".into());
     }
-    let _ = existing_adj; // preserve adjustments column separately on unlock
     Ok(())
 }
 
@@ -740,6 +762,7 @@ pub async fn preview(
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let adj_map = payroll_logic::parse_employee_adjustments(&body.adjustments);
+    let advance_alloc_map = payroll_logic::parse_advance_allocation_map(&body.advance_allocations);
     let mut previews = Vec::new();
 
     prepare_attendance_for_payroll(&conn, org_id, body.month, body.year);
@@ -805,7 +828,7 @@ pub async fn preview(
         let pf = ss.and_then(|v| v.get("pf_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
         let esi = ss.and_then(|v| v.get("esi_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
         let prof_tax = ss.and_then(|v| v.get("prof_tax")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let advance = ss.and_then(|v| v.get("advance_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let default_advance = ss.and_then(|v| v.get("advance_deduction")).and_then(|v| v.as_f64()).unwrap_or(0.0);
         let lw_employee = ss
             .and_then(|v| v.get("statutory"))
             .and_then(|v| v.get("lw_employee"))
@@ -834,10 +857,36 @@ pub async fn preview(
         };
 
         let user_adjs = adj_map.get(user_id).map(|v| v.as_slice()).unwrap_or(&[]);
-        let (adj_net, adj_ded, adj_json) =
+        let (adj_net, adj_ded, mut adj_json) =
             payroll_logic::apply_adjustment_list(gross, net, total_deductions, user_adjs);
         net = adj_net;
         total_deductions = adj_ded;
+
+        let active_advances = crate::statutory_logic::list_active_advances(&conn, *user_id);
+        let user_overrides = advance_alloc_map.get(user_id).map(|v| v.as_slice());
+        let (advance, advance_allocs) = match payroll_logic::apply_advance_override(
+            default_advance,
+            net,
+            total_deductions,
+            &active_advances,
+            user_overrides,
+        ) {
+            Ok((adv, n, td, allocs)) => {
+                net = n;
+                total_deductions = td;
+                (adv, allocs)
+            }
+            Err(e) => {
+                previews.push(serde_json::json!({
+                    "user_id": user_id,
+                    "user_name": name,
+                    "skipped": true,
+                    "reason": e,
+                }));
+                continue;
+            }
+        };
+        adj_json = crate::statutory_logic::merge_advance_allocations(&adj_json, &advance_allocs);
 
         let existing: Option<(i64, String)> = conn
             .query_row(
@@ -1004,7 +1053,7 @@ pub async fn generate(
                 |r| Ok((r.get_idx::<f64>(0)?, r.get_idx::<f64>(1)?, r.get_idx::<f64>(2)?, r.get_idx::<String>(3)?, r.get_idx::<i64>(4)?, r.get_idx::<f64>(5)?)),
             ).ok();
 
-        let Some((_, _, _, existing_adj, user_id, advance)) = row else {
+        let Some((_, _, _, existing_adj, user_id, _advance)) = row else {
             skipped += 1;
             results.push(serde_json::json!({"id": payslip_id, "status": "not_found"}));
             continue;
@@ -1027,9 +1076,10 @@ pub async fn generate(
             continue;
         }
 
-        let refreshed: Option<(f64, f64, f64, String)> = conn
+        let refreshed: Option<(f64, f64, f64, String, f64)> = conn
             .query_row(
-                "SELECT p.gross_salary, p.net_salary, p.total_deductions, COALESCE(p.adjustments,'[]')
+                "SELECT p.gross_salary, p.net_salary, p.total_deductions, COALESCE(p.adjustments,'[]'),
+                        COALESCE(p.advance_deduction, 0)
                  FROM payslips p
                  INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?2
                  WHERE p.id = ?1 AND p.status = 'draft' AND p.month = ?3 AND p.year = ?4",
@@ -1040,12 +1090,13 @@ pub async fn generate(
                         r.get_idx::<f64>(1)?,
                         r.get_idx::<f64>(2)?,
                         r.get_idx::<String>(3)?,
+                        r.get_idx::<f64>(4)?,
                     ))
                 },
             )
             .ok();
 
-        let Some((gross, mut net, mut total_deductions, existing_adj)) = refreshed else {
+        let Some((gross, mut net, mut total_deductions, existing_adj, advance)) = refreshed else {
             skipped += 1;
             results.push(serde_json::json!({"id": payslip_id, "status": "not_found"}));
             continue;
@@ -1068,9 +1119,32 @@ pub async fn generate(
         }
 
         let mut advance_deducted = false;
-        if advance > 0.0 && user_id > 0 {
-            match crate::statutory_logic::deduct_advances_for_payslip(&conn, user_id, &now) {
-                Ok((_, allocs)) if !allocs.is_empty() => {
+        let stored_allocs = crate::statutory_logic::parse_advance_allocations(&adj_json);
+        let allocs_ref = if stored_allocs.is_empty() {
+            None
+        } else {
+            Some(stored_allocs.as_slice())
+        };
+        if (advance > 0.0 || allocs_ref.is_some()) && user_id > 0 {
+            match crate::statutory_logic::deduct_advances_for_payslip(
+                &conn,
+                user_id,
+                &now,
+                allocs_ref,
+            ) {
+                Ok((deducted_total, allocs)) if !allocs.is_empty() => {
+                    if advance > 0.0 && (deducted_total - advance).abs() > 0.02 {
+                        skipped += 1;
+                        results.push(serde_json::json!({
+                            "id": payslip_id,
+                            "status": "advance_deduction_failed",
+                            "error": format!(
+                                "Advance recovery {:.2} does not match payslip {:.2}",
+                                deducted_total, advance
+                            ),
+                        }));
+                        continue;
+                    }
                     adj_json = crate::statutory_logic::merge_advance_allocations(&adj_json, &allocs);
                     advance_deducted = true;
                 }

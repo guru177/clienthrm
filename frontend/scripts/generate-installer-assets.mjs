@@ -1,5 +1,5 @@
 /**
- * Generate Raintech HRM branded assets for electron-builder / NSIS installer.
+ * Generate HR Daddy branded assets for electron-builder / NSIS installer.
  * Run: node scripts/generate-installer-assets.mjs
  */
 import fs from 'fs';
@@ -29,6 +29,10 @@ const BRAND = {
     accent: '#3b82f6',
     white: '#ffffff',
 };
+
+function resolveIconSource() {
+    return resolveLogo();
+}
 
 function resolveFavicon() {
     for (const candidate of faviconCandidates) {
@@ -144,22 +148,22 @@ function headerSvg() {
   </defs>
   <rect width="150" height="57" fill="url(#hdr)"/>
   <rect y="54" width="150" height="3" fill="#ffffff" fill-opacity="0.2"/>
-  <text x="58" y="26" fill="${BRAND.white}" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700">Raintech HRM</text>
+  <text x="58" y="26" fill="${BRAND.white}" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700">HR Daddy</text>
   <text x="58" y="42" fill="#b8d9ff" font-family="Segoe UI, Arial, sans-serif" font-size="8">Desktop Client Setup</text>
 </svg>`;
 }
 
-const LICENSE_TEXT = `Raintech HRM - End User License Agreement
+const LICENSE_TEXT = `HR Daddy - End User License Agreement
 
 Copyright (c) Raintech Software. All rights reserved.
 
-Raintech HRM is human resource management software for attendance,
+HR Daddy is human resource management software for attendance,
 payroll, leave, workflows, and team collaboration.
 
 By installing this software you agree to use it only for lawful business
 purposes and in accordance with your organization's policies.
 
-This software connects to your organization's Raintech HRM server. Your
+This software connects to your organization's HR Daddy server. Your
 administrator controls access, data retention, and feature availability.
 
 Raintech Software provides this application "as is" without warranty of
@@ -170,16 +174,18 @@ Press "I Agree" to continue with installation.
 
 async function main() {
     fs.mkdirSync(buildDir, { recursive: true });
+    const brandingDir = path.join(root, 'electron', 'branding');
+    fs.mkdirSync(brandingDir, { recursive: true });
     fs.writeFileSync(path.join(buildDir, 'license.txt'), LICENSE_TEXT, 'ascii');
-    const faviconPath = resolveFavicon();
+    const iconSource = resolveIconSource();
     const logoPath = resolveLogo();
 
-    await sharp(faviconPath)
+    await sharp(iconSource)
         .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
         .png()
         .toFile(path.join(buildDir, 'icon.png'));
 
-    await sharp(faviconPath)
+    await sharp(iconSource)
         .resize(256, 256, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
         .png()
         .toFile(path.join(buildDir, 'icon-256.png'));
@@ -187,13 +193,19 @@ async function main() {
     const iconSizes = [16, 24, 32, 48, 64, 128, 256];
     const pngBuffers = await Promise.all(
         iconSizes.map((size) =>
-            sharp(faviconPath)
+            sharp(iconSource)
                 .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
                 .png()
                 .toBuffer(),
         ),
     );
-    fs.writeFileSync(path.join(buildDir, 'icon.ico'), await toIco(pngBuffers));
+    const iconIco = await toIco(pngBuffers);
+    fs.writeFileSync(path.join(buildDir, 'icon.ico'), iconIco);
+
+    // Packaged Electron runtime reads icons from resources/branding (outside asar).
+    fs.copyFileSync(iconSource, path.join(brandingDir, 'logo.png'));
+    fs.copyFileSync(path.join(buildDir, 'icon-256.png'), path.join(brandingDir, 'icon-256.png'));
+    fs.writeFileSync(path.join(brandingDir, 'icon.ico'), iconIco);
 
     const sidebarLogo = centeredLogoPlacement(SIDEBAR_CIRCLE.rInner * 2 - 4);
 
@@ -218,7 +230,7 @@ async function main() {
         path.join(buildDir, 'uninstallerSidebar.bmp'),
     );
 
-    console.log('Raintech HRM installer assets generated in build/');
+    console.log('HR Daddy installer assets generated in build/');
 }
 
 main().catch((err) => {

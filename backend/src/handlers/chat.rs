@@ -241,6 +241,96 @@ fn build_attachments_json(conn: &crate::db::Connection, message_id: i64) -> Stri
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
 }
 
+fn batch_reactions_for_space(
+    conn: &crate::db::Connection,
+    space_id: i64,
+    org_id: i64,
+    viewer_id: i64,
+) -> std::collections::HashMap<i64, Vec<ChatReaction>> {
+    use std::collections::HashMap;
+    let sql = "SELECT r.message_id, r.emoji, GROUP_CONCAT(r.user_id)
+               FROM chat_message_reactions r
+               INNER JOIN chat_messages m ON m.id = r.message_id
+               WHERE m.space_id = ?1 AND m.organization_id = ?2
+               GROUP BY r.message_id, r.emoji";
+    let stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let mut by_message: HashMap<i64, HashMap<String, Vec<i64>>> = HashMap::new();
+    let rows = stmt.query_map(crate::params![space_id, org_id], |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            row.get_idx::<String>(1)?,
+            row.get_idx::<Option<String>>(2)?,
+        ))
+    });
+    for row in rows {
+        let (message_id, emoji, ids_raw) = row;
+        let user_ids: Vec<i64> = ids_raw
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        by_message
+            .entry(message_id)
+            .or_default()
+            .insert(emoji, user_ids);
+    }
+    by_message
+        .into_iter()
+        .map(|(mid, emojis)| {
+            let reactions: Vec<ChatReaction> = emojis
+                .into_iter()
+                .map(|(emoji, user_ids)| {
+                    let count = user_ids.len() as i64;
+                    let reacted_by_me = user_ids.contains(&viewer_id);
+                    ChatReaction {
+                        emoji,
+                        count,
+                        user_ids,
+                        reacted_by_me,
+                    }
+                })
+                .collect();
+            (mid, reactions)
+        })
+        .collect()
+}
+
+fn batch_attachments_for_space(
+    conn: &crate::db::Connection,
+    space_id: i64,
+    org_id: i64,
+) -> std::collections::HashMap<i64, Vec<crate::models::chat::ChatAttachment>> {
+    use std::collections::HashMap;
+    let sql = "SELECT a.message_id, a.id, a.file_name, a.file_url, a.file_size, a.mime_type
+               FROM chat_message_attachments a
+               INNER JOIN chat_messages m ON m.id = a.message_id
+               WHERE m.space_id = ?1 AND m.organization_id = ?2";
+    let stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let mut by_message: HashMap<i64, Vec<crate::models::chat::ChatAttachment>> = HashMap::new();
+    let rows = stmt.query_map(crate::params![space_id, org_id], |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            crate::models::chat::ChatAttachment {
+                id: row.get_idx::<i64>(1)?,
+                file_name: row.get_idx::<String>(2)?,
+                file_url: row.get_idx::<String>(3)?,
+                file_size: row.get_idx::<i64>(4)?,
+                mime_type: row.get_idx::<Option<String>>(5)?,
+            },
+        ))
+    });
+    for row in rows {
+        by_message.entry(row.0).or_default().push(row.1);
+    }
+    by_message
+}
+
 fn fetch_message(
     conn: &crate::db::Connection,
     message_id: i64,
@@ -281,16 +371,16 @@ fn fetch_message(
                 user_photo: row.get("user_photo")?,
                 parent_id: row.get("parent_id")?,
                 content: row.get("content")?,
-                is_edited: row.get::<i64>("is_edited")? != 0,
-                is_deleted: row.get::<i64>("is_deleted")? != 0,
-                is_pinned: row.get::<i64>("is_pinned")? != 0,
-                is_starred: row.get::<i64>("is_starred")? != 0,
+                is_edited: row.get_boolish("is_edited")?,
+                is_deleted: row.get_boolish("is_deleted")?,
+                is_pinned: row.get_boolish("is_pinned")?,
+                is_starred: row.get_boolish("is_starred")?,
                 thread_count: row.get("thread_count")?,
                 reactions,
                 attachments,
                 mentions,
-                created_at: row.get("created_at")?,
-                updated_at: row.get("updated_at")?,
+                created_at: row.get_string_flex("created_at")?,
+                updated_at: row.get_string_flex("updated_at")?,
             })
         },
     )
@@ -323,7 +413,7 @@ pub async fn spaces_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
     };
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -392,7 +482,7 @@ pub async fn channels_store(
     }
     let slug = slugify(name);
     let is_private = body.is_private.unwrap_or(false);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -472,7 +562,7 @@ pub async fn channels_update(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -526,7 +616,7 @@ pub async fn channels_join(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -561,7 +651,7 @@ pub async fn channels_leave(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -598,7 +688,7 @@ pub async fn channels_add_members(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -639,7 +729,7 @@ pub async fn dm_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json
         return HttpResponse::BadRequest().json(ApiError::new("Select at least one other person"));
     }
 
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -751,16 +841,10 @@ pub async fn messages_index(
          LEFT JOIN chat_pinned_messages p ON p.message_id = m.id
          LEFT JOIN chat_starred_messages st ON st.message_id = m.id AND st.user_id = ?3
          WHERE m.space_id = ?1 AND m.organization_id = ?2 {parent_filter} {before_filter}
-         ORDER BY m.id DESC LIMIT ?4"
+         ORDER BY m.id DESC LIMIT {limit}"
     );
 
-    let stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
-
-    let mut messages: Vec<ChatMessage> = stmt
-        .query_map(crate::params![space_id, org_id, user_id, limit], |row| {
+    let mut messages: Vec<ChatMessage> = match conn.query_map_result(&sql, crate::params![space_id, org_id, user_id], |row| {
             let message_id: i64 = row.get("id")?;
             let mentions_raw: Option<String> = row.get("mentions_json")?;
             let mentions: Vec<i64> = mentions_raw
@@ -776,24 +860,37 @@ pub async fn messages_index(
                 user_photo: row.get("user_photo")?,
                 parent_id: row.get("parent_id")?,
                 content: row.get("content")?,
-                is_edited: row.get::<i64>("is_edited")? != 0,
-                is_deleted: row.get::<i64>("is_deleted")? != 0,
-                is_pinned: row.get::<i64>("is_pinned")? != 0,
-                is_starred: row.get::<i64>("is_starred")? != 0,
+                is_edited: row.get_boolish("is_edited")?,
+                is_deleted: row.get_boolish("is_deleted")?,
+                is_pinned: row.get_boolish("is_pinned")?,
+                is_starred: row.get_boolish("is_starred")?,
                 thread_count: row.get("thread_count")?,
                 reactions: Vec::new(),
                 attachments: Vec::new(),
                 mentions,
-                created_at: row.get("created_at")?,
-                updated_at: row.get("updated_at")?,
+                created_at: row.get_string_flex("created_at")?,
+                updated_at: row.get_string_flex("updated_at")?,
             })
-        });
+        }) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("chat messages row mapping failed for space {space_id}: {e}");
+            Vec::new()
+        }
+    };
+
+    let reactions_map = batch_reactions_for_space(&conn, space_id, org_id, user_id);
+    let attachments_map = batch_attachments_for_space(&conn, space_id, org_id);
 
     for msg in &mut messages {
-        msg.reactions =
-            serde_json::from_str(&build_reactions_json(&conn, msg.id, user_id)).unwrap_or_default();
-        msg.attachments =
-            serde_json::from_str(&build_attachments_json(&conn, msg.id)).unwrap_or_default();
+        msg.reactions = reactions_map
+            .get(&msg.id)
+            .cloned()
+            .unwrap_or_default();
+        msg.attachments = attachments_map
+            .get(&msg.id)
+            .cloned()
+            .unwrap_or_default();
     }
     messages.reverse();
 
@@ -819,7 +916,7 @@ pub async fn messages_store(
     if content.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new("Message cannot be empty"));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -903,7 +1000,7 @@ pub async fn messages_update(
     if content.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new("Message cannot be empty"));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -969,7 +1066,7 @@ pub async fn messages_destroy(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let message_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1025,7 +1122,7 @@ pub async fn messages_react(
     if emoji.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new("Emoji required"));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1088,7 +1185,7 @@ pub async fn messages_pin(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let message_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1149,7 +1246,7 @@ pub async fn messages_star(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let message_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1204,7 +1301,7 @@ pub async fn spaces_mark_read(
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1236,7 +1333,7 @@ pub async fn search(pool: web::Data<DbPool>, req: HttpRequest, query: web::Query
     if term.len() < 2 {
         return HttpResponse::BadRequest().json(ApiError::new("Search term too short"));
     }
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1272,7 +1369,7 @@ pub async fn pins_index(pool: web::Data<DbPool>, req: HttpRequest, path: web::Pa
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
     let space_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1303,7 +1400,7 @@ pub async fn starred_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRes
     };
     let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1330,7 +1427,7 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -1373,6 +1470,7 @@ pub async fn upload(
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
+    let org_id = org_id_from_claims(&claims);
     let user_id = claims.sub;
 
     let mut file_data: Option<(Vec<u8>, String, Option<String>)> = None;
@@ -1420,7 +1518,7 @@ pub async fn upload(
         Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
     };
 
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };

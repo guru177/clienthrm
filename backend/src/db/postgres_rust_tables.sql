@@ -179,8 +179,6 @@ CREATE TABLE IF NOT EXISTS password_reset_otp_challenges (
 CREATE INDEX IF NOT EXISTS idx_password_reset_otp_user ON password_reset_otp_challenges(user_id);
 CREATE INDEX IF NOT EXISTS idx_password_reset_otp_expires ON password_reset_otp_challenges(expires_at);
 
-CREATE INDEX IF NOT EXISTS idx_password_reset_otp_expires ON password_reset_otp_challenges(expires_at);
-
 CREATE TABLE IF NOT EXISTS payroll_variable_items (
     id BIGSERIAL PRIMARY KEY,
     organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -320,3 +318,23 @@ ALTER TABLE payslips ADD COLUMN IF NOT EXISTS arrears_amount DOUBLE PRECISION DE
 ALTER TABLE payslips ADD COLUMN IF NOT EXISTS employer_cost_json TEXT;
 
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS contact_person TEXT;
+
+CREATE TABLE IF NOT EXISTS user_presence (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    ip_address TEXT,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    city TEXT,
+    region TEXT,
+    country TEXT,
+    accuracy_meters DOUBLE PRECISION,
+    last_active_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_presence_org ON user_presence(organization_id);
+CREATE INDEX IF NOT EXISTS idx_user_presence_last_active ON user_presence(last_active_at);
+
+ALTER TABLE departments ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
+CREATE INDEX IF NOT EXISTS idx_departments_center ON departments(organization_id, center_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_org_center_slug ON departments(organization_id, center_id, slug);

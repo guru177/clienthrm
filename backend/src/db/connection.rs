@@ -7,6 +7,7 @@ use crate::db::dialect::{adapt_sql, Backend};
 use crate::db::error::{DbError, Result};
 use crate::db::params::{Params, ToParams};
 use crate::db::row::Row;
+use crate::db::tenant_rls;
 
 fn sqlite_cb_err(e: DbError) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(e))
@@ -98,14 +99,18 @@ impl Connection {
         let Some(pg_mutex) = self.postgres.take() else {
             return;
         };
-        let pg = match pg_mutex.into_inner() {
+        let mut pg = match pg_mutex.into_inner() {
             Ok(c) => c,
             Err(p) => p.into_inner(),
         };
         if tokio::runtime::Handle::try_current().is_ok() {
-            // Return connection to r2d2 off the async runtime (sync postgres cannot drop on Tokio).
-            std::thread::spawn(move || drop(pg));
+            // Session reset + pool return must run off the Tokio runtime (sync postgres crate).
+            std::thread::spawn(move || {
+                tenant_rls::reset_pooled_session(&mut pg);
+                drop(pg);
+            });
         } else {
+            tenant_rls::reset_pooled_session(&mut pg);
             drop(pg);
         }
     }
@@ -170,15 +175,22 @@ impl Connection {
 
     fn execute_insert_returning_id(&self, sql: &str, params: Params) -> Result<usize> {
         let returning_sql = format!("{} RETURNING id", sql.trim().trim_end_matches(';'));
-        match self.query_row(&returning_sql, params.clone(), |row| row.get_idx::<i64>(0)) {
-            Ok(id) => {
-                *self.last_insert_id.lock().unwrap() = Some(id);
+        match self.query_row(&returning_sql, params.clone(), |row| -> Result<Option<i64>> {
+            if let Ok(id) = row.get_idx::<i64>(0) {
+                return Ok(Some(id));
+            }
+            // TEXT/UUID primary keys (e.g. signup_otp_challenges.id)
+            if row.get_idx::<String>(0).is_ok() {
+                return Ok(None);
+            }
+            Err(DbError::Other("unreadable RETURNING id".into()))
+        }) {
+            Ok(id_opt) => {
+                *self.last_insert_id.lock().unwrap() = id_opt;
                 Ok(1)
             }
-            // No row returned (e.g. `ON CONFLICT DO NOTHING` hit an existing row) or the
-            // table has no integer `id` column (TEXT/composite PK). Fall back to a plain
-            // INSERT so the row is still written; last_insert_id is left unset.
-            Err(_) => {
+            // No row returned (e.g. ON CONFLICT DO NOTHING) — try plain INSERT.
+            Err(DbError::NotFound) => {
                 *self.last_insert_id.lock().unwrap() = None;
                 let boxes = params.postgres_boxes();
                 self.with_postgres(|pg| {
@@ -188,6 +200,7 @@ impl Connection {
                         .map(|n| n as usize)
                 })
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -325,7 +338,9 @@ impl Drop for Connection {
 
 fn is_insert_without_returning(sql: &str) -> bool {
     let upper = sql.trim().to_ascii_uppercase();
-    upper.starts_with("INSERT") && !upper.contains("RETURNING")
+    upper.starts_with("INSERT")
+        && !upper.contains("RETURNING")
+        && !upper.contains("ON CONFLICT")
 }
 
 pub struct Transaction<'conn> {

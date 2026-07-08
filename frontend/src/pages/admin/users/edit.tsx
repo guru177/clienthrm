@@ -1,8 +1,8 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
 import { storageUrl } from '@/lib/storage-url';
-import { ArrowLeft, Banknote, Briefcase, Building2, Camera, Save, Trash2, Upload, Users } from 'lucide-react';
-import { useRef, useState, useEffect } from 'react';
+import { ArrowLeft, Banknote, Briefcase, Building2, Camera, IdCard, MapPin, Save, Trash2, Upload, Users } from 'lucide-react';
+import { useRef, useState, useEffect, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
@@ -18,9 +18,34 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { SalaryTabsPanel } from '@/components/salary-tabs-panel';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+
+const EMPLOYMENT_TYPES = [
+    { value: 'full_time', label: 'Full-time' },
+    { value: 'part_time', label: 'Part-time' },
+    { value: 'contract', label: 'Contract' },
+    { value: 'intern', label: 'Intern' },
+    { value: 'probation', label: 'Probation' },
+] as const;
+
+const GENDER_OPTIONS = [
+    { value: 'male', label: 'Male' },
+    { value: 'female', label: 'Female' },
+    { value: 'other', label: 'Other' },
+] as const;
+
+const TAX_REGIMES = [
+    { value: 'new', label: 'New regime' },
+    { value: 'old', label: 'Old regime' },
+] as const;
+
+function toDateInput(value?: string | null): string {
+    if (!value) return '';
+    return value.length >= 10 ? value.slice(0, 10) : value;
+}
 
 interface Role {
     id: number;
@@ -32,6 +57,7 @@ interface Role {
 interface Department {
     id: number;
     name: string;
+    center_id?: number;
 }
 
 interface Designation {
@@ -51,14 +77,28 @@ interface User {
     status: string;
     roles: Role[];
     created_at: string;
-    // Employment
+    date_of_birth?: string;
+    gender?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    postal_code?: string;
+    bio?: string;
+    employment_type?: string;
     date_of_joining?: string;
+    date_of_exit?: string;
     work_location?: string;
-    // Bank
+    work_state?: string;
+    tax_regime?: string;
     bank_name?: string;
     account_number?: string;
     ifsc_code?: string;
     account_type?: string;
+    pan_number?: string;
+    esi_number?: string;
+    pf_number?: string;
+    aadhar_number?: string;
 }
 
 interface Center {
@@ -80,7 +120,7 @@ interface EditUserPageProps {
 export default function EditUserPage() {
     const navigate = useNavigate();
     const { id } = useParams();
-    const isSuperAdmin = false; // managed via Settings > Centers
+    const isSuperAdmin = false; // managed via Settings > Branches
 
     const [user, setUser] = useState<User | null>(null);
     const [roles, setRoles] = useState<Role[]>([]);
@@ -94,16 +134,32 @@ export default function EditUserPage() {
         email: '',
         employee_id: '',
         phone: '',
+        date_of_birth: '',
+        gender: '',
+        address: '',
+        city: '',
+        state: '',
+        country: 'India',
+        postal_code: '',
+        bio: '',
         department_id: '' as string | number,
         designation_id: '' as string | number,
         status: 'active',
         roles: [] as number[],
+        employment_type: '',
         date_of_joining: '',
+        date_of_exit: '',
         work_location: '',
+        work_state: '',
+        tax_regime: 'new',
         bank_name: '',
         account_number: '',
         ifsc_code: '',
         account_type: '',
+        pan_number: '',
+        esi_number: '',
+        pf_number: '',
+        aadhar_number: '',
     });
     const [photoFile, setPhotoFile] = useState<File | null>(null);
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -117,6 +173,13 @@ export default function EditUserPage() {
     const [webcamOpen, setWebcamOpen] = useState(false);
     const [webcamStarting, setWebcamStarting] = useState(false);
     const [webcamError, setWebcamError] = useState<string | null>(null);
+
+    const departmentsForBranch = useMemo(() => {
+        if (!formData.work_location) return [];
+        return departments.filter(
+            (d) => String(d.center_id ?? '') === String(formData.work_location),
+        );
+    }, [departments, formData.work_location]);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -141,16 +204,32 @@ export default function EditUserPage() {
                     email: userData.email,
                     employee_id: userData.employee_id || '',
                     phone: userData.phone || '',
+                    date_of_birth: toDateInput(userData.date_of_birth),
+                    gender: userData.gender || '',
+                    address: userData.address || '',
+                    city: userData.city || '',
+                    state: userData.state || '',
+                    country: userData.country || 'India',
+                    postal_code: userData.postal_code || '',
+                    bio: userData.bio || '',
                     department_id: userData.department_id || '',
                     designation_id: userData.designation_id || '',
                     status: userData.status || 'active',
-                    roles: userData.roles?.map((r: any) => r.id) || [],
-                    date_of_joining: userData.date_of_joining || '',
+                    roles: userData.roles?.map((r: Role) => r.id) || [],
+                    employment_type: userData.employment_type || '',
+                    date_of_joining: toDateInput(userData.date_of_joining),
+                    date_of_exit: toDateInput(userData.date_of_exit),
                     work_location: userData.work_location || '',
+                    work_state: userData.work_state || '',
+                    tax_regime: userData.tax_regime || 'new',
                     bank_name: userData.bank_name || '',
                     account_number: userData.account_number || '',
                     ifsc_code: userData.ifsc_code || '',
                     account_type: userData.account_type || '',
+                    pan_number: userData.pan_number || '',
+                    esi_number: userData.esi_number || '',
+                    pf_number: userData.pf_number || '',
+                    aadhar_number: userData.aadhar_number || '',
                 });
 
                 if (userData.photo) {
@@ -284,6 +363,25 @@ export default function EditUserPage() {
         try {
             let response;
 
+            const extendedFields = {
+                date_of_birth: formData.date_of_birth,
+                gender: formData.gender,
+                address: formData.address,
+                city: formData.city,
+                state: formData.state,
+                country: formData.country,
+                postal_code: formData.postal_code,
+                bio: formData.bio,
+                employment_type: formData.employment_type,
+                work_state: formData.work_state,
+                tax_regime: formData.tax_regime,
+                date_of_exit: formData.date_of_exit,
+                pan_number: formData.pan_number,
+                esi_number: formData.esi_number,
+                pf_number: formData.pf_number,
+                aadhar_number: formData.aadhar_number,
+            };
+
             if (photoFile || removePhoto) {
                 const fd = new FormData();
                 fd.append('name', formData.name);
@@ -300,6 +398,7 @@ export default function EditUserPage() {
                 fd.append('ifsc_code', formData.ifsc_code);
                 fd.append('account_type', formData.account_type);
                 fd.append('roles', JSON.stringify(formData.roles));
+                Object.entries(extendedFields).forEach(([key, value]) => fd.append(key, value || ''));
                 if (photoFile) fd.append('photo', photoFile);
                 if (removePhoto) fd.append('remove_photo', '1');
 
@@ -320,6 +419,7 @@ export default function EditUserPage() {
                     ifsc_code: formData.ifsc_code,
                     account_type: formData.account_type,
                     roles: formData.roles,
+                    ...extendedFields,
                 };
                 response = await axios.put(`/admin/users/${user.id}`, payload);
             }
@@ -381,7 +481,7 @@ export default function EditUserPage() {
 
     const breadcrumbs = [
         { label: 'Users', href: '/admin/users' },
-        { label: user.name, href: `/admin/users/${user.id}` },
+        { label: user.name?.trim() || `User #${user.id}`, href: `/admin/users/${user.id}` },
         { label: 'Edit', href: '#' },
     ];
 
@@ -627,26 +727,36 @@ export default function EditUserPage() {
 
                                 <div className="space-y-2">
                                     <Label htmlFor="department">Department</Label>
-                                    <Select
-                                        value={String(formData.department_id) || ''}
-                                        onValueChange={(value) =>
-                                            setFormData({
-                                                ...formData,
-                                                department_id: value ? parseInt(value) : '',
-                                            })
-                                        }
-                                    >
-                                        <SelectTrigger id="department">
-                                            <SelectValue placeholder="Select department" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {departments.map((dept) => (
-                                                <SelectItem key={dept.id} value={String(dept.id)}>
-                                                    {dept.name}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
+                                    {!formData.work_location ? (
+                                        <p className="text-sm text-muted-foreground italic py-2">
+                                            Select a branch first to choose a department.
+                                        </p>
+                                    ) : departmentsForBranch.length === 0 ? (
+                                        <p className="text-sm text-muted-foreground italic py-2">
+                                            No departments for this branch yet.
+                                        </p>
+                                    ) : (
+                                        <Select
+                                            value={String(formData.department_id) || ''}
+                                            onValueChange={(value) =>
+                                                setFormData({
+                                                    ...formData,
+                                                    department_id: value ? parseInt(value) : '',
+                                                })
+                                            }
+                                        >
+                                            <SelectTrigger id="department">
+                                                <SelectValue placeholder="Select department" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {departmentsForBranch.map((dept) => (
+                                                    <SelectItem key={dept.id} value={String(dept.id)}>
+                                                        {dept.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    )}
                                     {errors.department_id && (
                                         <p className="text-sm text-destructive">
                                             {errors.department_id[0]}
@@ -686,6 +796,104 @@ export default function EditUserPage() {
                         </CardContent>
                     </Card>
 
+                    {/* Personal Details */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Personal Details</CardTitle>
+                            <CardDescription>Date of birth and gender</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="date_of_birth">Date of Birth</Label>
+                                    <Input
+                                        id="date_of_birth"
+                                        type="date"
+                                        value={formData.date_of_birth}
+                                        onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="gender">Gender</Label>
+                                    <Select
+                                        value={formData.gender || 'none'}
+                                        onValueChange={(v) =>
+                                            setFormData({ ...formData, gender: v === 'none' ? '' : v })
+                                        }
+                                    >
+                                        <SelectTrigger id="gender">
+                                            <SelectValue placeholder="Select gender" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">Not specified</SelectItem>
+                                            {GENDER_OPTIONS.map((g) => (
+                                                <SelectItem key={g.value} value={g.value}>
+                                                    {g.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* Contact & Address */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <MapPin className="h-5 w-5" />
+                                Contact & Address
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="address">Address</Label>
+                                <Textarea
+                                    id="address"
+                                    value={formData.address}
+                                    onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                                    placeholder="Street address"
+                                    rows={2}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="city">City</Label>
+                                    <Input
+                                        id="city"
+                                        value={formData.city}
+                                        onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="state">State</Label>
+                                    <Input
+                                        id="state"
+                                        value={formData.state}
+                                        onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="country">Country</Label>
+                                    <Input
+                                        id="country"
+                                        value={formData.country}
+                                        onChange={(e) => setFormData({ ...formData, country: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="postal_code">PIN / Postal Code</Label>
+                                    <Input
+                                        id="postal_code"
+                                        value={formData.postal_code}
+                                        onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
                     {/* Employment Details */}
                     <Card>
                         <CardHeader>
@@ -697,6 +905,28 @@ export default function EditUserPage() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="employment_type">Employment Type</Label>
+                                    <Select
+                                        value={formData.employment_type || 'none'}
+                                        onValueChange={(v) =>
+                                            setFormData({ ...formData, employment_type: v === 'none' ? '' : v })
+                                        }
+                                    >
+                                        <SelectTrigger id="employment_type">
+                                            <SelectValue placeholder="Select type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">Not specified</SelectItem>
+                                            {EMPLOYMENT_TYPES.map((t) => (
+                                                <SelectItem key={t.value} value={t.value}>
+                                                    {t.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
                                 <div className="space-y-2">
                                     <Label htmlFor="date_of_joining">Date of Joining</Label>
                                     <Input
@@ -710,24 +940,37 @@ export default function EditUserPage() {
                                     )}
                                 </div>
 
-                                {/* Center Dropdown */}
+                                {/* Branch Dropdown */}
                                 <div className="space-y-2">
-                                    <Label htmlFor="work_location">Center</Label>
+                                    <Label htmlFor="work_location">Branch</Label>
                                     {centers.length === 0 ? (
                                         <p className="text-sm text-muted-foreground italic py-2">
-                                            No centers configured. Contact admin to add centers via Settings → General Settings.
+                                            No branches configured. Add branches under Branches in the sidebar.
                                         </p>
                                     ) : (
                                         <Select
                                             value={formData.work_location as string}
-                                            onValueChange={(v) => setFormData({ ...formData, work_location: v })}
+                                            onValueChange={(v) =>
+                                                setFormData((prev) => {
+                                                    const next = { ...prev, work_location: v };
+                                                    const validDept = departments.some(
+                                                        (d) =>
+                                                            d.id === Number(prev.department_id) &&
+                                                            String(d.center_id ?? '') === v,
+                                                    );
+                                                    if (!validDept) {
+                                                        next.department_id = '';
+                                                    }
+                                                    return next;
+                                                })
+                                            }
                                         >
                                             <SelectTrigger id="work_location">
-                                                <SelectValue placeholder="Select center" />
+                                                <SelectValue placeholder="Select branch" />
                                             </SelectTrigger>
                                             <SelectContent>
                                                 {centers.map((center) => (
-                                                    <SelectItem key={center.id} value={center.id}>
+                                                    <SelectItem key={center.id} value={String(center.id)}>
                                                         {center.name}{center.city ? ` — ${center.city}` : ''}
                                                     </SelectItem>
                                                 ))}
@@ -737,6 +980,45 @@ export default function EditUserPage() {
                                     {errors.work_location && (
                                         <p className="text-sm text-destructive">{errors.work_location[0]}</p>
                                     )}
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="work_state">Work State (PT)</Label>
+                                    <Input
+                                        id="work_state"
+                                        value={formData.work_state}
+                                        onChange={(e) => setFormData({ ...formData, work_state: e.target.value })}
+                                        placeholder="e.g. Maharashtra"
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="tax_regime">Tax Regime</Label>
+                                    <Select
+                                        value={formData.tax_regime || 'new'}
+                                        onValueChange={(v) => setFormData({ ...formData, tax_regime: v })}
+                                    >
+                                        <SelectTrigger id="tax_regime">
+                                            <SelectValue placeholder="Select regime" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {TAX_REGIMES.map((r) => (
+                                                <SelectItem key={r.value} value={r.value}>
+                                                    {r.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="date_of_exit">Date of Exit</Label>
+                                    <Input
+                                        id="date_of_exit"
+                                        type="date"
+                                        value={formData.date_of_exit}
+                                        onChange={(e) => setFormData({ ...formData, date_of_exit: e.target.value })}
+                                    />
                                 </div>
                             </div>
                         </CardContent>
@@ -809,6 +1091,66 @@ export default function EditUserPage() {
                                     {errors.ifsc_code && (
                                         <p className="text-sm text-destructive">{errors.ifsc_code[0]}</p>
                                     )}
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* Government IDs */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <IdCard className="h-5 w-5" />
+                                Government IDs
+                            </CardTitle>
+                            <CardDescription>PAN, Aadhaar, PF and ESI numbers for payroll and compliance</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="pan_number">PAN</Label>
+                                    <Input
+                                        id="pan_number"
+                                        value={formData.pan_number}
+                                        onChange={(e) =>
+                                            setFormData({ ...formData, pan_number: e.target.value.toUpperCase() })
+                                        }
+                                        placeholder="ABCDE1234F"
+                                        maxLength={10}
+                                        className="uppercase font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="aadhar_number">Aadhaar</Label>
+                                    <Input
+                                        id="aadhar_number"
+                                        value={formData.aadhar_number}
+                                        onChange={(e) =>
+                                            setFormData({
+                                                ...formData,
+                                                aadhar_number: e.target.value.replace(/\D/g, '').slice(0, 12),
+                                            })
+                                        }
+                                        placeholder="12-digit number"
+                                        maxLength={12}
+                                        className="font-mono"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="pf_number">PF Number</Label>
+                                    <Input
+                                        id="pf_number"
+                                        value={formData.pf_number}
+                                        onChange={(e) => setFormData({ ...formData, pf_number: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="esi_number">ESI Number</Label>
+                                    <Input
+                                        id="esi_number"
+                                        value={formData.esi_number}
+                                        onChange={(e) => setFormData({ ...formData, esi_number: e.target.value })}
+                                    />
                                 </div>
                             </div>
                         </CardContent>

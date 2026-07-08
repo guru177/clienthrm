@@ -1,5 +1,5 @@
 # Run shift + attendance + salary + payroll + workflow integration tests.
-# Prerequisites: backend on :3001, database/database.sqlite
+# Prerequisites: backend on :3001, PostgreSQL (docker compose up -d)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -7,8 +7,14 @@ Set-Location $Root
 
 $Api = if ($env:HRM_API) { $env:HRM_API } else { "http://127.0.0.1:3001" }
 $env:HRM_API = $Api
-if (-not (Test-Path "database/database.sqlite")) {
-    Write-Host "ERROR: database/database.sqlite not found" -ForegroundColor Red
+try {
+    $health = Invoke-RestMethod -Uri "http://localhost:3001/api/health" -TimeoutSec 5
+    if ($health.database.backend -ne "postgres") {
+        Write-Host "ERROR: Backend must use PostgreSQL. Run: docker compose up -d; restart backend" -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Write-Host "ERROR: Backend not reachable on :3001" -ForegroundColor Red
     exit 1
 }
 try {

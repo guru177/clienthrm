@@ -101,7 +101,6 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
         return None;
     }
     if path.starts_with("/api/admin/settings/app") || path.starts_with("/api/admin/settings/centers")
-        || path.starts_with("/api/admin/api/settings/centers")
         || path.starts_with("/api/admin/settings/leave-types")
         || path.starts_with("/api/admin/settings/leave-policy")
         || path.starts_with("/api/admin/leave-credits")
@@ -368,6 +367,11 @@ pub async fn rbac_middleware<B>(
 where
     B: MessageBody + 'static,
 {
+    if *req.method() == Method::OPTIONS {
+        let res = next.call(req).await?;
+        return Ok(res.map_into_right_body());
+    }
+
     let path = req.path().to_string();
     if !path.starts_with("/api/admin") {
         let res = next.call(req).await?;
@@ -421,4 +425,52 @@ where
 
     let res = next.call(req).await?;
     Ok(res.map_into_right_body())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::http::Method;
+
+    #[test]
+    fn has_permission_wildcard_and_exact() {
+        assert!(has_permission(&["*".into()], "view-users"));
+        assert!(has_permission(&["view-users".into()], "view-users"));
+        assert!(!has_permission(&["view-users".into()], "delete-users"));
+    }
+
+    #[test]
+    fn permission_satisfied_leave_aliases() {
+        let manage = vec!["manage-leave-requests".into()];
+        assert!(permission_satisfied(&manage, "approve-leave-requests"));
+        assert!(permission_satisfied(&manage, "reject-leave-requests"));
+
+        let approve = vec!["approve-leave-requests".into()];
+        assert!(permission_satisfied(&approve, "manage-leave-requests"));
+    }
+
+    #[test]
+    fn required_permission_users_list() {
+        assert_eq!(
+            required_permission(&Method::GET, "/api/admin/users/list"),
+            Some("view-users")
+        );
+        assert_eq!(
+            required_permission(&Method::POST, "/api/admin/users"),
+            Some("create-users")
+        );
+    }
+
+    #[test]
+    fn required_permission_public_onboarding_none() {
+        assert_eq!(
+            required_permission(&Method::POST, "/api/onboarding/complete"),
+            None
+        );
+    }
+
+    #[test]
+    fn required_permission_health_not_admin() {
+        assert_eq!(required_permission(&Method::GET, "/api/health"), None);
+    }
 }

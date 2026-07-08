@@ -69,6 +69,16 @@ pub fn clear_tenant_context(conn: &Connection) {
     let _ = conn.execute("SELECT set_config('app.current_org_id', '', false)", crate::params![]);
 }
 
+/// Clear pooled-connection session state before returning to r2d2.
+pub fn reset_pooled_session(conn: &mut r2d2_postgres::postgres::Client) {
+    if !pg_rls_enabled() {
+        return;
+    }
+    if let Err(e) = conn.batch_execute("DISCARD ALL") {
+        log::warn!("Failed to reset PostgreSQL session before pool return: {e}");
+    }
+}
+
 /// Bypass RLS for platform super-admin connections (use sparingly).
 pub fn set_platform_bypass(conn: &Connection) {
     if conn.backend() != Backend::Postgres || !pg_rls_enabled() {

@@ -56,10 +56,17 @@ interface Department {
     name: string;
     slug: string;
     description?: string;
+    center_id?: number;
+    center?: { id: number; name?: string | null };
     is_active: boolean;
     users_count: number;
     created_at: string;
     updated_at: string;
+}
+
+interface Branch {
+    id: number | string;
+    name: string;
 }
 
 interface DepartmentTableProps {
@@ -72,6 +79,8 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
+    const [branchFilter, setBranchFilter] = useState('all');
+    const [branches, setBranches] = useState<Branch[]>([]);
     const [currentPage, setCurrentPage] = useState(1);
     const [lastPage, setLastPage] = useState(1);
     const [perPage, setPerPage] = useState(10);
@@ -84,8 +93,17 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
     const [deleting, setDeleting] = useState(false);
 
     useEffect(() => {
+        axios
+            .get('/admin/settings/centers')
+            .then((res) => {
+                if (res.data.success) setBranches(res.data.data ?? []);
+            })
+            .catch(() => {});
+    }, []);
+
+    useEffect(() => {
         fetchDepartments();
-    }, [search, statusFilter, currentPage, perPage, sortBy, sortOrder]);
+    }, [search, statusFilter, branchFilter, currentPage, perPage, sortBy, sortOrder]);
 
     const fetchDepartments = async () => {
         setLoading(true);
@@ -94,6 +112,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                 params: {
                     search,
                     status: statusFilter !== 'all' ? statusFilter : undefined,
+                    center_id: branchFilter !== 'all' ? branchFilter : undefined,
                     page: currentPage,
                     per_page: perPage,
                     sort_by: sortBy,
@@ -183,6 +202,20 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                             </SelectContent>
                         </Select>
 
+                        <Select value={branchFilter} onValueChange={(value) => { setBranchFilter(value); setCurrentPage(1); }}>
+                            <SelectTrigger className="w-full sm:w-[160px] bg-white/60 dark:bg-white/5 border-blue-100/60 dark:border-white/10 rounded-lg">
+                                <SelectValue placeholder="All Branches" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Branches</SelectItem>
+                                {branches.map((branch) => (
+                                    <SelectItem key={branch.id} value={String(branch.id)}>
+                                        {branch.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+
                         {/* Per Page */}
                         <Select value={perPage.toString()} onValueChange={(value) => { setPerPage(parseInt(value)); setCurrentPage(1); }}>
                             <SelectTrigger className="w-full sm:w-[100px] bg-white/60 dark:bg-white/5 border-blue-100/60 dark:border-white/10 rounded-lg">
@@ -222,6 +255,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                                     <TableHead className="cursor-pointer select-none text-[#1e3a5f]/70 dark:text-blue-200/60 font-semibold text-xs uppercase tracking-wide hover:text-[#071b3a] dark:hover:text-blue-300 transition-colors" onClick={() => handleSort('name')}>
                                         <div className="flex items-center gap-1">Name {sortIndicator('name')}</div>
                                     </TableHead>
+                                    <TableHead className="text-[#1e3a5f]/70 dark:text-blue-200/60 font-semibold text-xs uppercase tracking-wide">Branch</TableHead>
                                     <TableHead className="text-[#1e3a5f]/70 dark:text-blue-200/60 font-semibold text-xs uppercase tracking-wide">Description</TableHead>
                                     <TableHead className="text-center text-[#1e3a5f]/70 dark:text-blue-200/60 font-semibold text-xs uppercase tracking-wide">Users</TableHead>
                                     <TableHead className="cursor-pointer select-none text-[#1e3a5f]/70 dark:text-blue-200/60 font-semibold text-xs uppercase tracking-wide hover:text-[#071b3a] dark:hover:text-blue-300 transition-colors" onClick={() => handleSort('is_active')}>
@@ -236,7 +270,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                             <TableBody>
                                 {loading ? (
                                     <TableRow>
-                                        <TableCell colSpan={7} className="text-center py-12">
+                                        <TableCell colSpan={8} className="text-center py-12">
                                             <div className="flex items-center justify-center">
                                                 <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#071b3a]/30 border-t-[#071b3a]" />
                                             </div>
@@ -244,7 +278,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                                     </TableRow>
                                 ) : departments.length === 0 ? (
                                     <TableRow>
-                                        <TableCell colSpan={7} className="text-center py-16">
+                                        <TableCell colSpan={8} className="text-center py-16">
                                             <div className="flex flex-col items-center gap-3">
                                                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#071b3a]/10 dark:bg-blue-900/30 border border-[#071b3a]/15">
                                                     <Building2 className="h-7 w-7 text-[#071b3a]/50 dark:text-blue-400/50" />
@@ -267,6 +301,9 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
                                                     </div>
                                                     <span className="font-semibold text-sm text-foreground">{department.name}</span>
                                                 </div>
+                                            </TableCell>
+                                            <TableCell className="text-sm text-muted-foreground/70">
+                                                {department.center?.name || '—'}
                                             </TableCell>
                                             <TableCell className="text-sm text-muted-foreground/70 max-w-xs truncate">
                                                 {department.description || <span className="text-muted-foreground/40">—</span>}

@@ -58,7 +58,7 @@ export default function CentersManager() {
 
     const loadCenters = async () => {
         try {
-            const response = await axios.get('/admin/api/settings/centers');
+            const response = await axios.get('/admin/settings/centers');
             if (response.data.success) {
                 setCenters(response.data.data || []);
             }
@@ -128,14 +128,14 @@ export default function CentersManager() {
 
             if (editingCenter) {
                 const response = await axios.put(
-                    `/admin/api/settings/centers/${editingCenter.id}`,
+                    `/admin/settings/centers/${editingCenter.id}`,
                     formData,
                     config
                 );
                 handleApiResponse(response);
             } else {
                 const response = await axios.post(
-                    '/admin/api/settings/centers',
+                    '/admin/settings/centers',
                     formData,
                     config
                 );
@@ -157,7 +157,7 @@ export default function CentersManager() {
         setLoading(true);
         try {
             const response = await axios.delete(
-                `/admin/api/settings/centers/${deleteTargetId}`,
+                `/admin/settings/centers/${deleteTargetId}`,
                 {
                     headers: {
                         'X-Requested-With': 'XMLHttpRequest',
@@ -186,8 +186,8 @@ export default function CentersManager() {
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 pt-5 pb-4">
                     <div>
-                        <h2 className="text-base font-semibold text-foreground">Centers</h2>
-                        <p className="text-xs text-muted-foreground/70 mt-0.5">Manage all centers for your company</p>
+                        <h2 className="text-base font-semibold text-foreground">Branches</h2>
+                        <p className="text-xs text-muted-foreground/70 mt-0.5">Manage all branches for your company</p>
                     </div>
                     <Button
                         onClick={() => handleOpenDialog()}
@@ -207,7 +207,7 @@ export default function CentersManager() {
                             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#071b3a]/10 dark:bg-blue-900/30 border border-[#071b3a]/15 dark:border-blue-700/30 mb-4">
                                 <Building2 className="h-8 w-8 text-[#071b3a]/60 dark:text-blue-400/60" />
                             </div>
-                            <p className="font-medium text-foreground/80">No centers configured yet</p>
+                            <p className="font-medium text-foreground/80">No branches configured yet</p>
                             <p className="text-sm text-muted-foreground/60 mt-1">Add a center to get started</p>
                         </div>
                     ) : (

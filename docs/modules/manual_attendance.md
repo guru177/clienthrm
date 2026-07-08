@@ -25,12 +25,16 @@ Users with `manage-attendance` from the `attendance` module can also mark manual
 
 **Components:** `manual-attendance-grid.tsx`, `manual-attendance-form.tsx`
 
+Both tabs include a search box that filters employees by name, email, department name, or phone number. The daily grid shows department and phone under each employee name.
+
 ## Backend
 
-**Handlers:** `handlers/attendance.rs` (`store_manual`, `store_manual_bulk`)
+**Handlers:** `handlers/attendance.rs` (`store_manual`, `store_manual_bulk`, `users`), `handlers/reports.rs` (`daily_attendance_register`)
 
 | Method | Path | Permission |
 |--------|------|------------|
+| GET | `/api/admin/reports/daily-attendance?date=&search=` | view-attendance or manage-attendance |
+| GET | `/api/admin/attendance/users?search=` | mark-attendance or manage-attendance |
 | POST | `/api/admin/attendance/manual` | mark-attendance or manage-attendance |
 | POST | `/api/admin/attendance/manual/bulk` | mark-attendance or manage-attendance |
 

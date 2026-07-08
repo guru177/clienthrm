@@ -60,22 +60,12 @@ pub fn signup_otp_required() -> bool {
         .unwrap_or(false)
 }
 
-fn otp_pepper() -> String {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "hrm-otp-pepper".into())
-}
-
 fn hash_otp(otp: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in otp_pepper().as_bytes().iter().chain(otp.as_bytes()) {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", h)
+    crate::otp_hash::hash_secret(otp)
 }
 
 pub fn generate_otp() -> String {
-    let n = uuid::Uuid::new_v4().as_u128() % 1_000_000;
-    format!("{:06}", n)
+    crate::otp_hash::generate_otp()
 }
 
 pub fn mask_email(email: &str) -> String {

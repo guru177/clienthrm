@@ -793,7 +793,7 @@ export default function BiometricIndex() {
                     <DialogHeader>
                         <DialogTitle className="flex items-center gap-2">
                             <Wifi className="h-4 w-4 text-blue-600" />
-                            Connect BIO-PARK D01 to Raintech HRM
+                            Connect BIO-PARK D01 to HR Daddy
                         </DialogTitle>
                         <DialogDescription>
                             Step-by-step setup for iClock / ADMS devices on your local network.

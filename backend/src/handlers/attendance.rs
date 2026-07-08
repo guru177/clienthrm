@@ -1,5 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use chrono::{Datelike, Local, NaiveDate};
+use serde::Deserialize;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
@@ -316,13 +317,11 @@ pub async fn list(
          LEFT JOIN users u ON u.id = a.user_id
          WHERE {}
          ORDER BY a.date DESC, a.id DESC
-         LIMIT ? OFFSET ?",
+         LIMIT {per_page} OFFSET {offset}",
         where_clause
     );
 
-    let mut list_params: Vec<crate::db::ParamValue> = params;
-    list_params.push(crate::db::into_param_value(per_page));
-    list_params.push(crate::db::into_param_value(offset));
+    let list_params: Vec<crate::db::ParamValue> = params;
 
     let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -381,7 +380,16 @@ pub async fn list(
     })))
 }
 
-pub async fn users(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+#[derive(Debug, Deserialize)]
+pub struct AttendanceUsersQuery {
+    pub search: Option<String>,
+}
+
+pub async fn users(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    query: web::Query<AttendanceUsersQuery>,
+) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
@@ -391,20 +399,44 @@ pub async fn users(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let stmt = match conn.prepare(
-        "SELECT id, name, email FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name",
-    ) {
-        Ok(s) => s,
+
+    let mut sql = String::from(
+        "SELECT u.id, u.name, u.email, u.phone, d.name AS department_name
+         FROM users u
+         LEFT JOIN departments d ON d.id = u.department_id AND d.organization_id = u.organization_id
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?1
+           AND TRIM(COALESCE(u.name, '')) != ''",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+
+    if let Some(ref search) = query.search {
+        let trimmed = search.trim();
+        if !trimmed.is_empty() {
+            let like = format!("%{trimmed}%");
+            sql.push_str(
+                " AND (u.name LIKE ?2 OR COALESCE(u.email, '') LIKE ?3 OR COALESCE(u.phone, '') LIKE ?4 OR COALESCE(d.name, '') LIKE ?5)",
+            );
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like.clone()));
+            params.push(crate::db::into_param_value(like));
+        }
+    }
+
+    sql.push_str(" ORDER BY u.name");
+
+    let items: Vec<serde_json::Value> = match conn.query_map_result(&sql, &params, |row| {
+        Ok(serde_json::json!({
+            "id": row.get_idx::<i64>(0)?,
+            "name": row.get_idx::<String>(1)?,
+            "email": row.get_idx::<Option<String>>(2)?,
+            "phone": row.get_idx::<Option<String>>(3)?,
+            "department_name": row.get_idx::<Option<String>>(4)?,
+        }))
+    }) {
+        Ok(rows) => rows,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let items: Vec<serde_json::Value> = stmt
-        .query_map([org_id], |row| {
-            Ok(serde_json::json!({
-                "id": row.get_idx::<i64>(0)?,
-                "name": row.get_idx::<String>(1)?,
-                "email": row.get_idx::<Option<String>>(2)?,
-            }))
-        });
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 

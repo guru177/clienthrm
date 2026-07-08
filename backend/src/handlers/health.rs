@@ -31,6 +31,7 @@ fn health_payload(pool: &DbPool, db_ok: bool) -> BlockJson {
             "pg_rls": crate::db::tenant_rls::pg_rls_enabled(),
             "version": env!("CARGO_PKG_VERSION"),
         }),
+        set_cookie: None,
     }
 }
 

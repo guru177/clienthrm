@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
-EMAIL = os.environ.get("HRM_EMAIL", "admin@mashuptech.in")
+EMAIL = os.environ.get("HRM_EMAIL", "info@retaildaddy.in")
 PASSWORD = os.environ.get("HRM_PASSWORD", "password")
 PLATFORM = {
     "email": os.environ.get("PLATFORM_ADMIN_EMAIL", "admin@retaildaddy.in"),
@@ -23,7 +23,7 @@ PLATFORM = {
 MODULE_CATALOG: list[tuple[str, str, str]] = [
     ("dashboard", "Dashboard", "/api/admin/dashboard/hr-data"),
     ("users", "Users & Roles", "/api/admin/users/list"),
-    ("centers", "Centers", "/api/admin/api/settings/centers"),
+    ("centers", "Centers", "/api/admin/settings/centers"),
     ("departments", "Departments", "/api/admin/departments/list"),
     ("designations", "Designations", "/api/admin/designations/list"),
     ("careers", "Job Postings", "/api/admin/careers/list"),

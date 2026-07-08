@@ -18,7 +18,7 @@ function blockPublicStorage(): Plugin {
 }
 
 export default defineConfig({
-    base: './',
+    base: '/',
     plugins: [
         react(),
         tailwindcss(),
@@ -32,7 +32,7 @@ export default defineConfig({
     server: {
         host: '0.0.0.0',
         port: 5174,
-        strictPort: true,
+        strictPort: false,
         proxy: {
             '/api': {
                 target: 'http://127.0.0.1:3001',
@@ -57,8 +57,10 @@ export default defineConfig({
         rollupOptions: {
             output: {
                 manualChunks(id) {
+                    if (id.includes('node_modules/@vladmandic/face-api')) return 'face-api';
                     if (id.includes('node_modules/recharts')) return 'recharts';
-                    if (id.includes('node_modules/xlsx')) return 'xlsx';
+                    if (id.includes('node_modules/xlsx') || id.includes('node_modules/xlsx-js-style')) return 'xlsx';
+                    if (id.includes('node_modules/mammoth')) return 'mammoth';
                     if (id.includes('node_modules/@radix-ui')) return 'radix';
                 },
             },

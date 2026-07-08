@@ -10,9 +10,8 @@ pub struct AppConfig {
     pub biometric_port: u16,
     /// Raw TCP port for BIO-PARK binary protocol (default 5010).
     pub bio_park_tcp_port: u16,
-    pub database_path: String,
-    /// PostgreSQL connection URL (production). When set, takes precedence over DATABASE_PATH once PG backend is enabled.
-    pub database_url: Option<String>,
+    /// PostgreSQL connection URL (required for local dev and production).
+    pub database_url: String,
     /// Comma-separated allowed CORS origins (e.g. https://app.example.com,https://platform.example.com).
     pub cors_origins: Vec<String>,
     pub jwt_secret: String,
@@ -98,9 +97,8 @@ impl AppConfig {
                 .unwrap_or_else(|_| "5010".to_string())
                 .parse()
                 .expect("BIO_PARK_TCP_PORT must be a number"),
-            database_path: std::env::var("DATABASE_PATH")
-                .unwrap_or_else(|_| "../database/database.sqlite".to_string()),
-            database_url: std::env::var("DATABASE_URL").ok().filter(|s| !s.trim().is_empty()),
+            database_url: std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL must be set (postgres://user:pass@host:5432/dbname)"),
             cors_origins: std::env::var("CORS_ORIGINS")
                 .unwrap_or_else(|_| {
                     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175,http://localhost:3000".into()
@@ -121,6 +119,12 @@ impl AppConfig {
 
     /// Refuse weak/default secrets in release builds unless explicitly allowed.
     pub fn validate_security(&self) {
+        let url = self.database_url.trim();
+        if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+            panic!(
+                "DATABASE_URL must be a PostgreSQL URL (postgres://...). SQLite is no longer supported."
+            );
+        }
         let allow_insecure = std::env::var("ALLOW_INSECURE_SECRETS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg!(debug_assertions));

@@ -40,9 +40,18 @@ pub struct User {
     pub esi_number: Option<String>,
     pub pf_number: Option<String>,
     pub aadhar_number: Option<String>,
+    pub work_state: Option<String>,
+    pub tax_regime: Option<String>,
+    pub account_type: Option<String>,
     pub email_verified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportingManagerSummary {
+    pub id: i64,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,7 +70,48 @@ pub struct UserSummary {
     pub organization_id: i64,
     pub is_super_admin: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub organization: Option<super::organization::OrganizationSummary>,
+    pub date_of_birth: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postal_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_of_joining: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_of_exit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tax_regime: Option<String>,
+    pub reporting_manager_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ifsc_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bank_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pan_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub esi_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pf_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aadhar_number: Option<String>,
     pub email_verified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -70,7 +120,11 @@ pub struct UserSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub designation: Option<super::designation::Designation>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization: Option<super::organization::OrganizationSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<super::role::Role>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reporting_manager: Option<ReportingManagerSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,7 +215,11 @@ pub struct UpdateUserRequest {
     pub esi_number: Option<String>,
     pub pf_number: Option<String>,
     pub aadhar_number: Option<String>,
-    
+    pub date_of_joining: Option<String>,
+    pub date_of_exit: Option<String>,
+    pub work_state: Option<String>,
+    pub tax_regime: Option<String>,
+
     // Roles
     pub roles: Option<Vec<i64>>,
 }
@@ -199,8 +257,8 @@ impl User {
             organization_id: row
                 .get::<Option<i64>>("organization_id")?
                 .unwrap_or(1),
-            is_super_admin: row.get::<Option<bool>>("is_super_admin")?.unwrap_or(false),
-            onboarded: row.get::<Option<bool>>("onboarded")?.unwrap_or(false),
+            is_super_admin: row.get_boolish("is_super_admin")?,
+            onboarded: row.get_boolish("onboarded")?,
             account_number: row.get("account_number")?,
             ifsc_code: row.get("ifsc_code")?,
             bank_name: row.get("bank_name")?,
@@ -208,6 +266,9 @@ impl User {
             esi_number: row.get("esi_number")?,
             pf_number: row.get("pf_number")?,
             aadhar_number: row.get("aadhar_number")?,
+            work_state: row.get("work_state").ok().flatten(),
+            tax_regime: row.get("tax_regime").ok().flatten(),
+            account_type: row.get("account_type").ok().flatten(),
             email_verified_at: row.get("email_verified_at")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
@@ -229,6 +290,28 @@ impl User {
             status: self.status.clone(),
             organization_id: self.organization_id,
             is_super_admin: self.is_super_admin,
+            date_of_birth: self.date_of_birth.clone(),
+            gender: self.gender.clone(),
+            address: self.address.clone(),
+            city: self.city.clone(),
+            state: self.state.clone(),
+            country: self.country.clone(),
+            postal_code: self.postal_code.clone(),
+            bio: self.bio.clone(),
+            date_of_joining: self.date_of_joining.clone(),
+            date_of_exit: self.date_of_exit.clone(),
+            work_location: self.work_location.clone(),
+            work_state: self.work_state.clone(),
+            tax_regime: self.tax_regime.clone(),
+            reporting_manager_id: self.reporting_manager_id,
+            account_number: self.account_number.clone(),
+            ifsc_code: self.ifsc_code.clone(),
+            bank_name: self.bank_name.clone(),
+            account_type: self.account_type.clone(),
+            pan_number: self.pan_number.clone(),
+            esi_number: self.esi_number.clone(),
+            pf_number: self.pf_number.clone(),
+            aadhar_number: self.aadhar_number.clone(),
             email_verified_at: self.email_verified_at.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
@@ -236,6 +319,7 @@ impl User {
             designation: None,
             organization: None,
             roles: None,
+            reporting_manager: None,
         }
     }
 }

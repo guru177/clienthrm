@@ -1,5 +1,5 @@
 import axios from '@/lib/axios';
-import { CalendarDays, Save } from 'lucide-react';
+import { CalendarDays, Save, Search } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -32,6 +32,8 @@ interface DailyRow {
     user_id: number;
     name: string;
     employee_id?: string | null;
+    phone?: string | null;
+    department_name?: string | null;
     check_in?: string | null;
     check_out?: string | null;
     attendance_status: 'present' | 'open' | 'absent' | 'scheduled_off';
@@ -42,6 +44,8 @@ interface GridRow {
     user_id: number;
     name: string;
     employee_id?: string | null;
+    phone?: string | null;
+    department_name?: string | null;
     existing_check_in?: string | null;
     existing_check_out?: string | null;
     session_count: number;
@@ -74,20 +78,31 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
     const canManage = hasPermission('manage-attendance');
 
     const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+    const [search, setSearch] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
     const [rows, setRows] = useState<GridRow[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
 
+    useEffect(() => {
+        const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+        return () => window.clearTimeout(timer);
+    }, [search]);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await axios.get('/admin/reports/daily-attendance', { params: { date } });
+            const res = await axios.get('/admin/reports/daily-attendance', {
+                params: { date, search: debouncedSearch || undefined },
+            });
             const employees: DailyRow[] = res.data.data?.employees ?? [];
             setRows(
                 employees.map((row) => ({
                     user_id: row.user_id,
                     name: row.name,
                     employee_id: row.employee_id,
+                    phone: row.phone,
+                    department_name: row.department_name,
                     existing_check_in: row.check_in,
                     existing_check_out: row.check_out,
                     session_count: row.session_count,
@@ -104,7 +119,7 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
         } finally {
             setLoading(false);
         }
-    }, [date]);
+    }, [date, debouncedSearch]);
 
     useEffect(() => {
         void load();
@@ -157,7 +172,21 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
                         saving adds new manual entries.
                     </p>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+                    <div className="space-y-1">
+                        <Label htmlFor="manual_grid_search">Search</Label>
+                        <div className="relative">
+                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                            <Input
+                                id="manual_grid_search"
+                                type="search"
+                                placeholder="Search by name, department, or phone"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                className="w-full min-w-[280px] sm:w-[320px] pl-8"
+                            />
+                        </div>
+                    </div>
                     <div className="space-y-1">
                         <Label htmlFor="manual_grid_date">Date</Label>
                         <Input
@@ -219,6 +248,12 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
                                         <TableCell>
                                             <div>
                                                 <p className="font-medium">{row.name}</p>
+                                                {row.department_name && (
+                                                    <p className="text-xs text-muted-foreground">{row.department_name}</p>
+                                                )}
+                                                {row.phone && (
+                                                    <p className="text-xs text-muted-foreground">{row.phone}</p>
+                                                )}
                                                 {row.employee_id && (
                                                     <p className="text-xs text-muted-foreground">{row.employee_id}</p>
                                                 )}

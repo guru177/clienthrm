@@ -28,7 +28,7 @@ from test_date_pools import core_integration_leave_range
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 DB = os.path.join(_SCRIPT_DIR, "..", "database", "database.sqlite")
-LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 TS = int(datetime.now().timestamp() * 1000)
 TEST_DAY = "2026-06-15"
 PAYROLL_MONTH, PAYROLL_YEAR = 6, 2026

@@ -7,17 +7,8 @@ const OTP_TTL_SECS: i64 = 600;
 const RESET_WINDOW_SECS: i64 = 1800;
 const MAX_ATTEMPTS: i32 = 5;
 
-fn otp_pepper() -> String {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "hrm-otp-pepper".into())
-}
-
 fn hash_otp(otp: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in otp_pepper().as_bytes().iter().chain(otp.as_bytes()) {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", h)
+    crate::otp_hash::hash_secret(otp)
 }
 
 pub fn debug_enabled() -> bool {
@@ -32,6 +23,14 @@ pub fn mask_email(email: &str) -> String {
     };
     let visible = local.chars().take(1).collect::<String>();
     format!("{visible}***@{domain}")
+}
+
+pub fn mask_phone(phone: &str) -> String {
+    crate::signup_otp::mask_phone(phone)
+}
+
+pub async fn send_otp_whatsapp(phone: &str, otp: &str) -> Result<(), String> {
+    crate::signup_otp::send_whatsapp_otp(phone, otp).await
 }
 
 pub fn store_challenge(

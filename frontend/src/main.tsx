@@ -4,6 +4,7 @@ import { StrictMode, lazy, Suspense, Component, type ReactNode, type ErrorInfo }
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { isElectronApp } from '@/lib/is-electron';
+import { ElectronSplashLoader } from '@/components/electron-splash-loader';
 import { BreadcrumbProvider, useBreadcrumbs } from '@/contexts/BreadcrumbContext';
 import AppLayoutTemplate from '@/layouts/app/app-sidebar-layout';
 import { Outlet } from 'react-router-dom';
@@ -123,6 +124,10 @@ const NotificationsAdminPage = lazy(() => import('@/pages/admin/notifications/in
 
 // ── Loading Spinner ──
 function PageLoader() {
+    if (isElectronApp()) {
+        return <ElectronSplashLoader />;
+    }
+
     return (
         <div className="flex min-h-screen items-center justify-center bg-background">
             <div className="flex flex-col items-center gap-4">

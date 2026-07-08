@@ -59,7 +59,7 @@ export function DesktopUpdateBanner() {
 
     let message = 'Checking for updates…';
     if (event.status === 'available') {
-        message = `Raintech HRM ${event.version ?? ''} is available.`.trim();
+        message = `HR Daddy ${event.version ?? ''} is available.`.trim();
     } else if (event.status === 'download-progress') {
         message = `Downloading update… ${Math.round(event.percent ?? 0)}%`;
     } else if (event.status === 'downloaded') {

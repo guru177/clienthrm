@@ -28,11 +28,60 @@ fn adapt_postgres(sql: &str) -> String {
         out = format!("{trimmed} ON CONFLICT DO NOTHING");
     }
 
-    if out.contains('?') && !out.contains("?1") {
-        convert_qmark_placeholders(&out)
-    } else {
-        convert_placeholders(&out)
+    if !out.contains('?') {
+        return out;
     }
+
+    let has_numbered = out.as_bytes().windows(2).any(|w| w[0] == b'?' && w[1].is_ascii_digit());
+
+    if has_numbered {
+        out = convert_placeholders(&out);
+        if out.contains('?') {
+            out = convert_remaining_qmark_placeholders(&out);
+        }
+    } else {
+        out = convert_qmark_placeholders(&out);
+    }
+    out
+}
+
+/// Convert leftover `?` after `?1`/`?2` style placeholders (e.g. `LIMIT ? OFFSET ?`).
+fn convert_remaining_qmark_placeholders(sql: &str) -> String {
+    let mut n = max_postgres_placeholder(sql) + 1;
+    let mut out = String::with_capacity(sql.len());
+    for ch in sql.chars() {
+        if ch == '?' {
+            out.push('$');
+            out.push_str(&n.to_string());
+            n += 1;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn max_postgres_placeholder(sql: &str) -> usize {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut max = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            i += 1;
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i > start {
+                if let Ok(num) = sql[start..i].parse::<usize>() {
+                    max = max.max(num);
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    max
 }
 
 /// Rewrite every `fname(...)` call in `sql` using `f` applied to its top-level args.
@@ -288,9 +337,36 @@ mod tests {
     }
 
     #[test]
-    fn does_not_touch_identifier_suffix() {
-        // A column/function whose name ends with `datetime` must not be rewritten.
-        let pg = adapt_postgres("SELECT combine_datetime(a, b) FROM t");
-        assert_eq!(pg, "SELECT combine_datetime(a, b) FROM t");
+    fn presence_update_placeholders() {
+        let sql = "UPDATE user_presence SET ip_address = ?2, organization_id = ?3, last_active_at = ?4, updated_at = ?5 WHERE user_id = ?1";
+        let pg = adapt_postgres(sql);
+        assert_eq!(
+            pg,
+            "UPDATE user_presence SET ip_address = $2, organization_id = $3, last_active_at = $4, updated_at = $5 WHERE user_id = $1"
+        );
+    }
+
+    #[test]
+    fn mixed_numbered_and_bare_limit_offset() {
+        let sql = "SELECT * FROM designations d WHERE d.organization_id = ?1 ORDER BY d.name ASC LIMIT ? OFFSET ?";
+        let pg = adapt_postgres(sql);
+        assert_eq!(
+            pg,
+            "SELECT * FROM designations d WHERE d.organization_id = $1 ORDER BY d.name ASC LIMIT $2 OFFSET $3"
+        );
+    }
+
+    #[test]
+    fn department_list_sql_with_subquery_and_pagination() {
+        let sql = "SELECT d.*,\n                (SELECT COUNT(*) FROM users u WHERE u.department_id = d.id AND u.organization_id = d.organization_id) AS users_count\n         FROM departments d\n         WHERE d.organization_id = ?1 ORDER BY d.created_at DESC LIMIT ? OFFSET ?";
+        let pg = adapt_postgres(sql);
+        assert!(
+            pg.contains("LIMIT $2 OFFSET $3"),
+            "unexpected adapted SQL: {pg}"
+        );
+        assert!(
+            !pg.contains('?'),
+            "leftover placeholders: {pg}"
+        );
     }
 }

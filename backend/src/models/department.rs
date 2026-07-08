@@ -6,6 +6,7 @@ pub struct Department {
     pub name: String,
     pub slug: String,
     pub description: Option<String>,
+    pub center_id: Option<i64>,
     pub is_active: bool,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -14,6 +15,7 @@ pub struct Department {
 #[derive(Debug, Deserialize)]
 pub struct CreateDepartmentRequest {
     pub name: String,
+    pub center_id: i64,
     pub description: Option<String>,
     pub is_active: Option<bool>,
 }
@@ -34,6 +36,7 @@ impl Department {
             name: row.get("name")?,
             slug: row.get("slug")?,
             description: row.get("description")?,
+            center_id: row.get("center_id").ok(),
             is_active: Self::is_active_from_row(row),
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,

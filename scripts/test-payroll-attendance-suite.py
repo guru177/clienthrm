@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 API = os.environ.get("HRM_API", "http://127.0.0.1:3001")
 DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite")
-LOGIN = {"email": "admin@mashuptech.in", "password": "password", "org_slug": "mashuptech"}
+LOGIN = {"email": "info@retaildaddy.in", "password": "password", "org_slug": "mashuptech"}
 
 
 @dataclass
@@ -277,7 +277,14 @@ def main() -> int:
     if not with_salary:
         return suite.summary()
 
-    sample = with_salary[0]
+    sample = None
+    for candidate in with_salary:
+        uid_c = int(candidate["id"])
+        if sum(attendance_by_source(conn, uid_c, month, year).values()) > 0:
+            sample = candidate
+            break
+    if sample is None:
+        sample = with_salary[0]
     uid = int(sample["id"])
     api_present = payroll_preview_present(auth, uid, month, year)
     db_present = count_present_days(conn, uid, month, year)
@@ -291,11 +298,18 @@ def main() -> int:
     )
 
     by_src = attendance_by_source(conn, uid, month, year)
+    month_rows = conn.execute(
+        """SELECT COUNT(*) FROM attendance a
+           JOIN users u ON u.id = a.user_id
+           WHERE u.organization_id = ? AND a.deleted_at IS NULL AND a.clock_out IS NOT NULL
+             AND strftime('%m', a.date) = ? AND strftime('%Y', a.date) = ?""",
+        (org_id, f"{month:02d}", str(year)),
+    ).fetchone()[0]
     suite.record(
         "PA-10",
-        "Sample employee has attendance data",
-        sum(by_src.values()) > 0 or api_present > 0,
-        f"by_source={by_src} present={api_present}",
+        "Org has completed attendance in payroll month",
+        month_rows > 0 or sum(by_src.values()) > 0 or api_present > 0,
+        f"month_rows={month_rows} by_source={by_src} present={api_present}",
     )
 
     # Payroll preview

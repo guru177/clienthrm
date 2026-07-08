@@ -107,7 +107,7 @@ fn employer_statutory(
     (pf, esi, round2(lw), round2(pf + esi + lw))
 }
 
-fn is_employer_deduction(d: &LoadedDeduction) -> bool {
+pub fn is_employer_deduction(d: &LoadedDeduction) -> bool {
     let s = d.slug.to_lowercase();
     let n = d.name.to_lowercase();
     s.contains("employer") || n.contains("employer")

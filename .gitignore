@@ -10,17 +10,46 @@ backend/target/
 frontend/node_modules/
 frontend/dist/
 frontend/release/
+frontend/release-build*/
+frontend/electron/branding/
+frontend/e2e/.auth-state.json
+frontend/e2e/.e2e-credentials.json
+frontend/test-results/
+frontend/playwright-report/
 
-# Database (local dev only)
+# PostgreSQL (local dev data under database/pgdata/)
+database/pgdata/
+database/*.sql
+!database/init/
+
+# Legacy SQLite (removed)
 database/database.sqlite
 database/*.sqlite-shm
 database/*.sqlite-wal
+database/*.sqlite.bak
 
 # Deploy secrets (generated per environment)
 deploy/.env
+
+# SSH keys / certs (never commit)
+*.pem
+*.ppk
+
+# Test artifacts
+frontend/coverage/
+reports/*.log
+reports/full-test-run*.md
+scripts/last-complete-test-run.txt
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# Debug / runtime logs (do not commit)
+.cursor/debug-*.log
+debug-*.log
+backend/*.log
+reports/full-test-run*.log
+scripts/last-complete-test-run.txt

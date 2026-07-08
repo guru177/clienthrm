@@ -5,7 +5,7 @@
 import { chromium } from '../frontend/node_modules/playwright/index.mjs';
 
 const BASE = process.env.FE_URL || 'http://localhost:5174';
-const EMAIL = process.env.HRM_EMAIL || 'admin@mashuptech.in';
+const EMAIL = process.env.HRM_EMAIL || 'info@retaildaddy.in';
 const PASSWORD = process.env.HRM_PASSWORD || 'password';
 
 const MODULES = [

@@ -1309,6 +1309,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "genpdf",
+ "getrandom 0.2.17",
  "hex",
  "hmac 0.12.1",
  "jsonwebtoken",

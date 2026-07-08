@@ -158,8 +158,8 @@ export default function JobApplicationsIndex() {
     });
 
     const { settings } = useAuth();
-    const appName = settings?.app_name || "Raintech HRM";
-    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : staticAssetUrl('images/logo.webp');
+    const appName = settings?.app_name || "HR Daddy";
+    const appLogo = settings?.app_logo ? storageUrl(settings.app_logo) : staticAssetUrl('images/logo.png');
 
 
 

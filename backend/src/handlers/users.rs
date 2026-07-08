@@ -3,7 +3,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
-use crate::models::user::{User, CreateUserRequest, UpdateUserRequest, UserSummary};
+use crate::models::user::{User, CreateUserRequest, UpdateUserRequest, UserSummary, ReportingManagerSummary};
 use crate::storage;
 use crate::tenant::{
     department_in_organization, designation_in_organization, org_id_from_claims,
@@ -11,6 +11,36 @@ use crate::tenant::{
 };
 use futures_util::StreamExt;
 use std::collections::HashMap;
+
+fn departments_map(
+    conn: &crate::db::Connection,
+    org_id: i64,
+) -> HashMap<i64, crate::models::department::Department> {
+    conn.prepare("SELECT * FROM departments WHERE organization_id = ?1")
+        .ok()
+        .map(|stmt| {
+            stmt.query_map([org_id], crate::models::department::Department::from_row)
+                .into_iter()
+                .map(|d| (d.id, d))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn designations_map(
+    conn: &crate::db::Connection,
+    org_id: i64,
+) -> HashMap<i64, crate::models::designation::Designation> {
+    conn.prepare("SELECT * FROM designations WHERE organization_id = ?1")
+        .ok()
+        .map(|stmt| {
+            stmt.query_map([org_id], crate::models::designation::Designation::from_row)
+                .into_iter()
+                .map(|d| (d.id, d))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 fn load_user_summary(conn: &crate::db::Connection, user_id: i64, org_id: i64) -> Option<UserSummary> {
     let user = conn
@@ -46,6 +76,20 @@ fn load_user_summary(conn: &crate::db::Connection, user_id: i64, org_id: i64) ->
         .query_map([user_id], crate::models::role::Role::from_row)
         ;
     summary.roles = Some(roles);
+    if let Some(rmid) = user.reporting_manager_id {
+        summary.reporting_manager = conn
+            .query_row(
+                "SELECT id, name FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+                crate::params![rmid, org_id],
+                |row| {
+                    Ok(ReportingManagerSummary {
+                        id: row.get_idx::<i64>(0)?,
+                        name: row.get_idx::<String>(1)?,
+                    })
+                },
+            )
+            .ok();
+    }
     Some(summary)
 }
 
@@ -167,25 +211,16 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         if search.is_some() { 4 } else { 3 },
     );
 
+    let depts = departments_map(&conn, org_id);
+    let desgs = designations_map(&conn, org_id);
+
     let enrich_user = |user: User| -> serde_json::Value {
         let mut summary = user.to_summary();
         if let Some(dept_id) = summary.department_id {
-            summary.department = conn
-                .query_row(
-                    "SELECT * FROM departments WHERE id = ?1 AND organization_id = ?2",
-                    crate::params![dept_id, org_id],
-                    crate::models::department::Department::from_row,
-                )
-                .ok();
+            summary.department = depts.get(&dept_id).cloned();
         }
         if let Some(desg_id) = summary.designation_id {
-            summary.designation = conn
-                .query_row(
-                    "SELECT * FROM designations WHERE id = ?1 AND organization_id = ?2",
-                    crate::params![desg_id, org_id],
-                    crate::models::designation::Designation::from_row,
-                )
-                .ok();
+            summary.designation = desgs.get(&desg_id).cloned();
         }
         serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)
     };
@@ -345,7 +380,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
 
     let result = conn.execute(
         "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         crate::params![
             name, email, hashed, phone,
             body.department_id, body.designation_id,
@@ -354,7 +389,6 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
             status,
             org_id,
             body.manager_id, body.reporting_manager_id,
-            &now, &now, &now,
         ],
     );
 
@@ -453,6 +487,10 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     maybe_set!(employment_type, "employment_type");
     maybe_set!(status, "status");
     maybe_set!(work_location, "work_location");
+    maybe_set!(work_state, "work_state");
+    maybe_set!(tax_regime, "tax_regime");
+    maybe_set!(date_of_joining, "date_of_joining");
+    maybe_set!(date_of_exit, "date_of_exit");
     if body.employee_id.is_some() {
         let employee_id = normalize_optional_string(body.employee_id.clone());
         if let Some(ref eid) = employee_id {
@@ -679,6 +717,17 @@ pub async fn update_form(
     set_field!("name", "name");
     set_field!("email", "email");
     set_field!("phone", "phone");
+    set_field!("date_of_birth", "date_of_birth");
+    set_field!("gender", "gender");
+    set_field!("address", "address");
+    set_field!("city", "city");
+    set_field!("state", "state");
+    set_field!("country", "country");
+    set_field!("postal_code", "postal_code");
+    set_field!("bio", "bio");
+    set_field!("employment_type", "employment_type");
+    set_field!("work_state", "work_state");
+    set_field!("tax_regime", "tax_regime");
     if fields.contains_key("employee_id") {
         let employee_id = normalize_string_field(fields.get("employee_id").map(|s| s.as_str()).unwrap_or(""));
         if let Some(ref eid) = employee_id {

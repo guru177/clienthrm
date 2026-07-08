@@ -1,20 +1,31 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { staticAssetUrl } from '@/lib/static-asset';
 import { useStorageSrc } from '@/hooks/use-storage-src';
+import { cn } from '@/lib/utils';
 
-export default function AppLogo() {
+type AppLogoProps = {
+    showName?: boolean;
+    className?: string;
+};
+
+export default function AppLogo({ showName = true, className }: AppLogoProps) {
     const { settings } = useAuth();
-    const appName = settings?.app_name || "Raintech HRM";
+    const appName = settings?.app_name || 'HR Daddy';
     const logoSrc = useStorageSrc(settings?.app_logo);
     const appLogo = settings?.app_logo ? logoSrc : staticAssetUrl('images/logo.png');
 
     return (
-        <div className="flex min-h-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white px-2 py-1 shadow-sm ring-1 ring-border/40">
+        <div className={cn('flex min-w-0 items-center gap-2.5', className)}>
             <img
                 src={appLogo}
                 alt={appName}
-                className="h-auto w-full max-w-[120px] object-contain"
+                className="h-10 w-10 shrink-0 object-contain group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:w-8"
             />
+            {showName ? (
+                <span className="truncate text-base font-semibold leading-tight text-foreground group-data-[collapsible=icon]:hidden">
+                    {appName}
+                </span>
+            ) : null}
         </div>
     );
 }

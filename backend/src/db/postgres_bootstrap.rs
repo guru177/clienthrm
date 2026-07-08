@@ -2,6 +2,26 @@ use crate::db::dialect::{adapt_sql, Backend};
 use crate::db::pool::DbPool;
 use crate::params;
 
+const SCHEMA_VERSION: &str = "2026-06-30-audit";
+
+fn ensure_migration_ledger(conn: &crate::db::Connection) {
+    let ddl = adapt_sql(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT DEFAULT (datetime('now'))
+        )",
+        Backend::Postgres,
+    );
+    if let Err(e) = conn.execute_batch(&ddl) {
+        log::warn!("schema_migrations table: {e}");
+        return;
+    }
+    let _ = conn.execute(
+        "INSERT INTO schema_migrations (version) VALUES (?1) ON CONFLICT (version) DO NOTHING",
+        params![SCHEMA_VERSION],
+    );
+}
+
 /// Returns true when the PostgreSQL database has the base HRM schema.
 pub fn schema_ready(pool: &DbPool) -> bool {
     let Ok(conn) = pool.get() else {
@@ -98,7 +118,10 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
         log::warn!("PostgreSQL rust table migration: {e}");
     }
 
+    super::migrations::migrate_department_center_links(&conn);
+
     super::postgres_seeds::run_postgres_seeds(&conn);
+    ensure_migration_ledger(&conn);
     super::scalability::apply_scalability_indexes(&conn);
     super::scalability::analyze_postgres_stats(&conn);
     super::scalability::ensure_attendance_summary_materialized_view(&conn);

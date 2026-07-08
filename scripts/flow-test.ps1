@@ -1,6 +1,6 @@
 # HRM end-to-end API flow test (via Vite proxy)
 $Base = "http://localhost:5174/api"
-$Email = "admin@mashuptech.in"
+$Email = "info@retaildaddy.in"
 $Password = "password"
 $Results = @()
 
@@ -106,7 +106,7 @@ $endpoints = @(
     @("Projects list", "GET", "/admin/projects/list"),
     @("Workflows list", "GET", "/admin/workflows/list"),
     @("Settings app", "GET", "/admin/settings/app"),
-    @("Centers", "GET", "/admin/api/settings/centers"),
+    @("Centers", "GET", "/admin/settings/centers"),
     @("Biometric devices", "GET", "/admin/biometric/devices"),
     @("Biometric stats", "GET", "/admin/biometric/stats"),
     @("Biometric punches", "GET", "/admin/biometric/punches"),

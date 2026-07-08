@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { AlertOctagon, AlertTriangle, CheckCircle, Info, Megaphone } from 'lucide-react';
 import { apiGet } from '@/lib/api';
-import { storageUrl } from '@/lib/storage-url';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import { Button } from '@/components/ui/button';
 import {
     Dialog,
@@ -134,6 +134,7 @@ export function AnnouncementsProvider({ children }: PropsWithChildren) {
     const visibleList = manualOpen ? items : undismissed;
     const current = visibleList[index] ?? visibleList[0] ?? null;
     const dialogOpen = open && !!current;
+    const bannerSrc = useStorageSrc(current?.image_url);
 
     function dismissCurrent() {
         if (!current) return;
@@ -172,7 +173,6 @@ export function AnnouncementsProvider({ children }: PropsWithChildren) {
 
     const tone = current ? (SEVERITY[current.severity] ?? SEVERITY.info) : SEVERITY.info;
     const Icon = tone.icon;
-    const bannerSrc = current?.image_url?.trim() ? storageUrl(current.image_url) : '';
 
     return (
         <AnnouncementsContext.Provider value={{ unreadCount, openPortal, reload }}>
@@ -209,7 +209,7 @@ export function AnnouncementsProvider({ children }: PropsWithChildren) {
                                             <p className="text-xs font-medium text-white/80">
                                                 Company announcement
                                             </p>
-                                            <p className="text-sm font-semibold">Raintech HRM</p>
+                                            <p className="text-sm font-semibold">HR Daddy</p>
                                         </div>
                                     </div>
                                     <span

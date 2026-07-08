@@ -333,6 +333,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         // ── Reports ──
         .route("/api/admin/reports/attendance-summary", web::get().to(handlers::reports::attendance_summary))
         .route("/api/admin/reports/daily-attendance", web::get().to(handlers::reports::daily_attendance_register))
+        .route("/api/admin/reports/attendance-register", web::get().to(handlers::reports::attendance_register))
+        .route("/api/admin/reports/attendance", web::get().to(handlers::reports::attendance_register))
         .route("/api/admin/reports/employee-attendance-log", web::get().to(handlers::reports::employee_attendance_log))
         .route("/api/admin/reports/payroll-register", web::get().to(handlers::reports::payroll_register))
         .route("/api/admin/reports/payroll-split", web::get().to(handlers::reports::payroll_split))
@@ -387,10 +389,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
         // ── Centers (Settings) ──
         .route("/api/admin/settings/centers", web::get().to(handlers::centers::index))
-        .route("/api/admin/api/settings/centers", web::get().to(handlers::centers::index))
-        .route("/api/admin/api/settings/centers", web::post().to(handlers::centers::store))
-        .route("/api/admin/api/settings/centers/{id}", web::put().to(handlers::centers::update))
-        .route("/api/admin/api/settings/centers/{id}", web::delete().to(handlers::centers::destroy))
         .route("/api/admin/settings/centers", web::post().to(handlers::centers::store))
         .route("/api/admin/settings/centers/{id}", web::put().to(handlers::centers::update))
         .route("/api/admin/settings/centers/{id}", web::delete().to(handlers::centers::destroy))

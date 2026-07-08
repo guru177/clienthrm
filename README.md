@@ -12,6 +12,14 @@ Rust backend plus two standalone React apps: tenant HRM (`frontend`) and platfor
 
 ## Run locally
 
+Start PostgreSQL (required):
+
+```powershell
+docker compose up -d
+```
+
+Data is stored in `database/pgdata/`. Connection: `postgres://hrm:hrm@127.0.0.1:5433/hrm` in `backend/.env`.
+
 Backend:
 
 ```powershell
@@ -88,4 +96,4 @@ docker compose -f docker-compose.production.yml up -d --build
 
 Full guide: [docs/PRODUCTION.md](docs/PRODUCTION.md)
 
-**PostgreSQL (production):** set `DATABASE_URL=postgres://...` — see `backend/.env.example`. Local dev uses SQLite (`DATABASE_PATH`) when `DATABASE_URL` is unset.
+**PostgreSQL:** set `DATABASE_URL=postgres://...` in `backend/.env` — see `backend/.env.example`. Local dev uses `docker compose` at the repo root.
