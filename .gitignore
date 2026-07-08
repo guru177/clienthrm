@@ -1,4 +1,3 @@
-.deploy/.env
 frontend/electron/production-api.json
 .env.*
 !.env.example
@@ -56,8 +55,8 @@ reports/full-test-run*.log
 scripts/last-complete-test-run.txt
 
 
-
-.deploy
-.docs
-.scripts
+# Local-only hidden copies (tracked folders remain deploy/, docs/, scripts/)
+.deploy/
+.docs/
+.scripts/
 .docker-compose.yml
