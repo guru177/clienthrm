@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read
 
 env:
   REGISTRY: ghcr.io
@@ -48,3 +49,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Publish GHCR package (public pull for production server)
+        run: |
+          gh api --method PATCH "/user/packages/container/hrm-rust-backend" -f visibility=public || \
+          gh api --method PATCH "/users/${{ github.repository_owner }}/packages/container/hrm-rust-backend" -f visibility=public || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

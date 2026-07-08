@@ -12,7 +12,8 @@ param(
     [string]$GitBranch = "main",
     [switch]$SkipBootstrap,
     [switch]$SkipElectron,
-    [switch]$UseGit
+    [switch]$UseGit,
+    [switch]$Fast
 )
 
 $ErrorActionPreference = "Stop"
@@ -180,15 +181,28 @@ Pop-Location
 Write-Host "==> Packaging project (excluding node_modules, target, release)..."
 $archive = Join-Path $env:TEMP "hrm-deploy.tgz"
 if (Test-Path $archive) { Remove-Item $archive -Force }
-& tar -czf $archive `
-    --exclude=node_modules `
-    --exclude=backend/target `
-    --exclude=frontend/release `
-    --exclude=frontend/release-build* `
-    --exclude=frontend/node_modules `
-    --exclude=platform/node_modules `
-    --exclude=.git `
-    -C $Root .
+if ($Fast) {
+    $stage = Join-Path $env:TEMP "hrm-deploy-fast"
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage "deploy") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage "frontend") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage "platform") | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $Root "deploy\*") (Join-Path $stage "deploy")
+    Copy-Item -Recurse -Force (Join-Path $Root "frontend\dist") (Join-Path $stage "frontend\dist")
+    Copy-Item -Recurse -Force (Join-Path $Root "platform\dist") (Join-Path $stage "platform\dist")
+    & tar -czf $archive -C $stage .
+    Remove-Item $stage -Recurse -Force
+} else {
+    & tar -czf $archive `
+        --exclude=node_modules `
+        --exclude=backend/target `
+        --exclude=frontend/release `
+        --exclude=frontend/release-build* `
+        --exclude=frontend/node_modules `
+        --exclude=platform/node_modules `
+        --exclude=.git `
+        -C $Root .
+}
 
 Write-Host "==> Uploading to $ServerIp..."
 & scp @scp $archive "${SshUser}@${ServerIp}:/tmp/hrm-deploy.tgz"
