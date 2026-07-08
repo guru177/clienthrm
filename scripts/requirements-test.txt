@@ -1,2 +1,0 @@
-# Optional test dependencies (PostgreSQL staging / CI)
-psycopg2-binary>=2.9.9

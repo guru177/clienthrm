@@ -28,8 +28,11 @@ database/*.sqlite-shm
 database/*.sqlite-wal
 database/*.sqlite.bak
 
-# Deploy secrets (generated per environment)
-deploy/.env
+# Local / environment-specific (not in repo)
+deploy/
+docs/
+scripts/
+docker-compose.yml
 
 # SSH keys / certs (never commit)
 *.pem
@@ -39,7 +42,6 @@ deploy/.env
 frontend/coverage/
 reports/*.log
 reports/full-test-run*.md
-scripts/last-complete-test-run.txt
 
 # OS/editor
 .DS_Store
@@ -52,11 +54,3 @@ Thumbs.db
 debug-*.log
 backend/*.log
 reports/full-test-run*.log
-scripts/last-complete-test-run.txt
-
-
-# Local-only hidden copies (tracked folders remain deploy/, docs/, scripts/)
-.deploy/
-.docs/
-.scripts/
-.docker-compose.yml
