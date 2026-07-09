@@ -1304,6 +1304,7 @@ dependencies = [
  "actix-ws",
  "base64",
  "bcrypt",
+ "bytes",
  "chrono",
  "dotenv",
  "env_logger",

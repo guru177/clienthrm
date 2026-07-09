@@ -905,11 +905,11 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
     };
 
     let user_id = path.into_inner();
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
 
     match conn.execute(
         "UPDATE users SET deleted_at = ?1 WHERE id = ?2 AND organization_id = ?3",
-        crate::params![&now, user_id, org_id],
+        crate::params![now, user_id, org_id],
     ) {
         Ok(rows) if rows > 0 => {
             crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);

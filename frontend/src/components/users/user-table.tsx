@@ -354,12 +354,14 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                         </TableCell>
                                     </TableRow>
                                 ) : (
-                                    users.map((user) => (
+                                    users.map((user, index) => (
                                             <TableRow
                                                 key={user.id}
                                                 className="hover:bg-blue-50/60 dark:hover:bg-blue-900/10 transition-colors duration-150 border-b border-blue-50 dark:border-white/5">
 
-                                                <TableCell className="font-medium">{user.id}</TableCell>
+                                                <TableCell className="font-medium">
+                                                    {(currentPage - 1) * perPage + index + 1}
+                                                </TableCell>
                                                 <TableCell>
                                                     <div className="flex items-center gap-3">
                                                         <UserRowAvatar photo={user.photo} name={user.name} />

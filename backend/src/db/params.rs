@@ -1,3 +1,32 @@
+use bytes::BytesMut;
+use postgres::types::{IsNull, ToSql, Type};
+
+/// PostgreSQL NULL that accepts any column type (text, int, date, etc.).
+#[derive(Clone, Copy, Debug)]
+struct PostgresUntypedNull;
+
+impl ToSql for PostgresUntypedNull {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        _out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(IsNull::Yes)
+    }
+
+    fn to_sql_checked(
+        &self,
+        _ty: &Type,
+        _out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(IsNull::Yes)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true
+    }
+}
+
 #[derive(Clone)]
 pub enum ParamValue {
     Null,
@@ -28,10 +57,7 @@ impl ParamValue {
 
     fn as_postgres_box(&self) -> Box<dyn postgres::types::ToSql + Sync + Send> {
         match self {
-            ParamValue::Null => {
-                let n: Option<i32> = None;
-                Box::new(n)
-            }
+            ParamValue::Null => Box::new(PostgresUntypedNull),
             ParamValue::I64(v) => {
                 // PostgreSQL `INTEGER` (INT4) parameters reject bare `i64` in the `postgres` crate.
                 if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) {
