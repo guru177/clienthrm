@@ -1439,7 +1439,7 @@ pub async fn verify_password_reset_otp(
         return HttpResponse::BadRequest().json(ApiError::new("Verification id and code are required"));
     }
 
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -1484,7 +1484,7 @@ pub async fn reset_password(
         return HttpResponse::BadRequest().json(ApiError::new("Password confirmation does not match"));
     }
 
-    let conn = match pool.get() {
+    let conn = match pool.get_platform() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
@@ -1513,14 +1513,19 @@ pub async fn reset_password(
     };
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    if conn
-        .execute(
-            "UPDATE users SET password = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
-            crate::params![&new_hash, &now, user_id],
-        )
-        .is_err()
-    {
-        return HttpResponse::InternalServerError().json(ApiError::new("Failed to update password"));
+    match conn.execute(
+        "UPDATE users SET password = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+        crate::params![&new_hash, &now, user_id],
+    ) {
+        Ok(0) => {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("Account not found or password could not be updated"));
+        }
+        Err(e) => {
+            log::error!("reset_password UPDATE users failed for user_id={user_id}: {e}");
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to update password"));
+        }
+        Ok(_) => {}
     }
 
     let _ = conn.execute(

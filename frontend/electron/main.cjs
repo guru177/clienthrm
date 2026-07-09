@@ -26,11 +26,13 @@ function readPackagedApiFile(name) {
 }
 
 function packagedApiBase() {
-    for (const name of ['production-api.json', 'production-api.json.example']) {
-        const prod = readPackagedApiFile(name);
-        if (typeof prod?.apiBase === 'string' && prod.apiBase.trim() && !isLocalApi(prod.apiBase)) {
-            return normalizeApiRoot(prod.apiBase);
-        }
+    const prod = readPackagedApiFile('production-api.json');
+    if (typeof prod?.apiBase === 'string' && prod.apiBase.trim()) {
+        return normalizeApiRoot(prod.apiBase);
+    }
+    const example = readPackagedApiFile('production-api.json.example');
+    if (typeof example?.apiBase === 'string' && example.apiBase.trim() && !isLocalApi(example.apiBase)) {
+        return normalizeApiRoot(example.apiBase);
     }
     return DEV_API_BASE;
 }

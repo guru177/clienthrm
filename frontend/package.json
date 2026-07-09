@@ -12,6 +12,7 @@
         "preview": "vite preview",
         "electron:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:5174 && electron .\"",
         "electron:build": "node scripts/ensure-production-api.mjs && node scripts/generate-installer-assets.mjs && npm run build && electron-builder",
+        "electron:build:local": "node scripts/ensure-local-api.mjs && node scripts/generate-installer-assets.mjs && npm run build && electron-builder",
         "electron:assets": "node scripts/generate-installer-assets.mjs",
         "electron:publish-local": "npm run electron:build && node scripts/publish-desktop-update.cjs",
         "test": "vitest run",

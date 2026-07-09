@@ -22,6 +22,9 @@ database/pgdata/
 database/*.sql
 !database/init/
 
+# Local DB dumps (sensitive — keep out of git)
+db/*.sql
+
 # Legacy SQLite (removed)
 database/database.sqlite
 database/*.sqlite-shm
