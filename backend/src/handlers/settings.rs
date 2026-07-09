@@ -223,10 +223,10 @@ pub async fn update_password(
         Ok(h) => h,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Failed to hash password")),
     };
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     let _ = conn.execute(
         "UPDATE users SET password=?1, updated_at=?2 WHERE id=?3",
-        crate::params![new_hash, &now, claims.sub],
+        crate::params![new_hash, now, claims.sub],
     );
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Password updated successfully"})))

@@ -77,7 +77,7 @@ struct LoginCandidate {
     is_super_admin: bool,
 }
 
-const LOGIN_USER_COLUMNS: &str = "id, email, password, organization_id, name, COALESCE(is_super_admin, 0) AS is_super_admin";
+const LOGIN_USER_COLUMNS: &str = "u.id, u.email, u.password, u.organization_id, u.name, COALESCE(u.is_super_admin, 0) AS is_super_admin";
 
 fn login_candidate_from_row(row: &crate::db::Row) -> crate::db::Result<LoginCandidate> {
     Ok(LoginCandidate {
@@ -127,7 +127,7 @@ fn login_with_pool(
         };
         match conn.query_row(
             &format!(
-                "SELECT {LOGIN_USER_COLUMNS} FROM users WHERE email = ?1 AND organization_id = ?2 AND deleted_at IS NULL"
+                "SELECT {LOGIN_USER_COLUMNS} FROM users u WHERE u.email = ?1 AND u.organization_id = ?2 AND u.deleted_at IS NULL"
             ),
             crate::params![body.email, org_id],
             login_candidate_from_row,
@@ -1512,10 +1512,10 @@ pub async fn reset_password(
         }
     };
 
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     match conn.execute(
         "UPDATE users SET password = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
-        crate::params![&new_hash, &now, user_id],
+        crate::params![new_hash, now, user_id],
     ) {
         Ok(0) => {
             return HttpResponse::BadRequest()

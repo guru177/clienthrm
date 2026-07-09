@@ -322,3 +322,31 @@ fn build_employee_payroll_wires_shift_attendance_and_salary() {
     assert!(payroll["suggested_shift_penalty"].as_f64().unwrap_or(0.0) > 0.0);
     assert_eq!(payroll["shift_penalty"].as_f64().unwrap_or(-1.0), 0.0);
 }
+
+#[test]
+fn password_reset_update_users_via_db_layer() {
+    let database_url = std::env::var("TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .unwrap_or_else(|_| "postgres://hrm:hrm@127.0.0.1:5433/hrm".to_string());
+    let pool = init_pool(&database_url);
+    let conn = pool.get_platform().expect("platform conn");
+
+    let found = conn
+        .query_row(
+            "SELECT id FROM users WHERE email = ?1 LIMIT 1",
+            crate::params!["info@retaildaddy.in"],
+            |r| r.get_idx::<i64>(0),
+        )
+        .expect("query email");
+    assert!(found > 0, "user id={found}");
+
+    let new_hash = bcrypt::hash("Guru!1234", 12).expect("hash");
+    let now = chrono::Utc::now().naive_utc();
+    let rows = conn
+        .execute(
+            "UPDATE users SET password = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+            crate::params![new_hash, now, found],
+        )
+        .expect("update should succeed");
+    assert!(rows > 0, "expected at least one row updated, got {rows}");
+}

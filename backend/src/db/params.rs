@@ -7,6 +7,7 @@ pub enum ParamValue {
     Bool(bool),
     Text(String),
     Blob(Vec<u8>),
+    NaiveDateTime(chrono::NaiveDateTime),
 }
 
 impl ParamValue {
@@ -19,6 +20,9 @@ impl ParamValue {
             ParamValue::Bool(v) => rusqlite::types::Value::Integer(if *v { 1 } else { 0 }),
             ParamValue::Text(v) => rusqlite::types::Value::Text(v.clone()),
             ParamValue::Blob(v) => rusqlite::types::Value::Blob(v.clone()),
+            ParamValue::NaiveDateTime(v) => {
+                rusqlite::types::Value::Text(v.format("%Y-%m-%d %H:%M:%S").to_string())
+            }
         }
     }
 
@@ -41,6 +45,7 @@ impl ParamValue {
             ParamValue::Bool(v) => Box::new(*v),
             ParamValue::Text(v) => Box::new(v.clone()),
             ParamValue::Blob(v) => Box::new(v.clone()),
+            ParamValue::NaiveDateTime(v) => Box::new(*v),
         }
     }
 }
@@ -140,6 +145,23 @@ impl IntoParamValue for &String {
         ParamValue::Text(self.clone())
     }
 }
+impl IntoParamValue for chrono::NaiveDateTime {
+    fn into_param_value(self) -> ParamValue {
+        ParamValue::NaiveDateTime(self)
+    }
+}
+impl IntoParamValue for &chrono::NaiveDateTime {
+    fn into_param_value(self) -> ParamValue {
+        ParamValue::NaiveDateTime(*self)
+    }
+}
+
+impl IntoParamValue for &&chrono::NaiveDateTime {
+    fn into_param_value(self) -> ParamValue {
+        ParamValue::NaiveDateTime(**self)
+    }
+}
+
 impl IntoParamValue for Vec<u8> {
     fn into_param_value(self) -> ParamValue {
         ParamValue::Blob(self)
