@@ -1,4 +1,6 @@
-const API_BASE = '/api/platform';
+import { platformApiUrl, resolvePlatformApiBase } from '@/lib/api-base';
+
+const API_BASE = resolvePlatformApiBase();
 
 const PLATFORM_TOKEN_KEY = 'hrm_platform_token';
 

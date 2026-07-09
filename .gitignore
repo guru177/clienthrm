@@ -6,7 +6,7 @@ backend/.env
 # Rust
 backend/target/
 
-# Frontend
+# Frontend (local dev / build artifacts)
 frontend/node_modules/
 frontend/dist/
 frontend/release/
@@ -16,6 +16,12 @@ frontend/e2e/.auth-state.json
 frontend/e2e/.e2e-credentials.json
 frontend/test-results/
 frontend/playwright-report/
+frontend/coverage/
+
+# Platform (local dev / build artifacts)
+platform/node_modules/
+platform/dist/
+
 
 # PostgreSQL (local dev data under database/pgdata/)
 database/pgdata/
@@ -34,15 +40,14 @@ database/*.sqlite.bak
 # Local / environment-specific (not in repo)
 deploy/
 docs/
-scripts/
+/scripts/
 docker-compose.yml
 
 # SSH keys / certs (never commit)
 *.pem
 *.ppk
 
-# Test artifacts
-frontend/coverage/
+# Test / report artifacts
 reports/*.log
 reports/full-test-run*.md
 

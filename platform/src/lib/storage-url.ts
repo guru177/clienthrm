@@ -1,4 +1,5 @@
 import { getPlatformToken } from '@/lib/platform-api';
+import { platformApiUrl, resolvePlatformApiBase } from '@/lib/api-base';
 
 /** Build an authenticated URL for a platform-stored file (announcement banners). */
 export function platformStorageUrl(path: string | null | undefined): string {
@@ -7,13 +8,15 @@ export function platformStorageUrl(path: string | null | undefined): string {
     if (!trimmed) return '';
     if (trimmed.startsWith('data:')) return trimmed;
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
-    if (trimmed.startsWith('/api/platform/files/')) {
-        return appendToken(trimmed);
+    const apiBase = resolvePlatformApiBase();
+    const filesPrefix = `${apiBase.replace(/\/$/, '')}/files/`;
+    if (trimmed.startsWith(filesPrefix) || trimmed.startsWith('/api/platform/files/')) {
+        return appendToken(trimmed.startsWith('/') ? trimmed : `/${trimmed}`);
     }
     if (trimmed.startsWith('/storage/')) {
-        return appendToken(`/api/platform/files/${trimmed.slice('/storage/'.length)}`);
+        return appendToken(platformApiUrl(`/files/${trimmed.slice('/storage/'.length)}`));
     }
-    return appendToken(`/api/platform/files/${trimmed.replace(/^\/+/, '')}`);
+    return appendToken(platformApiUrl(`/files/${trimmed.replace(/^\/+/, '')}`));
 }
 
 function appendToken(url: string): string {

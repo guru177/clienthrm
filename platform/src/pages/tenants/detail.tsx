@@ -14,6 +14,7 @@ import {
     platformPatch,
     getPlatformToken,
 } from '@/lib/platform-api';
+import { platformApiUrl } from '@/lib/api-base';
 import { defaultAdminRoute, redirectToTenantImpersonation } from '@/lib/app-urls';
 import type { OrganizationDetail } from '@/components/organizations-panel';
 import { Button } from '@/components/ui/button';
@@ -239,7 +240,7 @@ function OverviewPanel({
         setError('');
         try {
             const token = getPlatformToken();
-            const res = await fetch(`/api/platform/organizations/${orgId}/export`, {
+            const res = await fetch(platformApiUrl(`/organizations/${orgId}/export`), {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
             });
             const json = await res.json();
