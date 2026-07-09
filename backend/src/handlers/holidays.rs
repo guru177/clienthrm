@@ -29,12 +29,16 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<cr
         Ok(d) => d,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
     };
+    let holiday_date = match chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return HttpResponse::BadRequest().json(ApiError::new("Invalid date")),
+    };
     let description = crate::validation::normalize_optional(body.description.clone());
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     let is_paid = body.is_paid.unwrap_or(true);
     match conn.execute(
         "INSERT INTO holidays (name,date,description,is_paid,organization_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        crate::params![name, date, description, if is_paid { 1 } else { 0 }, org_id, &now, &now],
+        crate::params![name, holiday_date, description, if is_paid { 1 } else { 0 }, org_id, now, now],
     ) {
         Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
@@ -52,11 +56,15 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         Ok(d) => d,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
     };
+    let holiday_date = match chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return HttpResponse::BadRequest().json(ApiError::new("Invalid date")),
+    };
     let description = crate::validation::normalize_optional(body.description.clone());
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     match conn.execute(
         "UPDATE holidays SET name=?1,date=?2,description=?3,updated_at=?4 WHERE id=?5 AND organization_id=?6",
-        crate::params![name, date, description, &now, path.into_inner(), org_id],
+        crate::params![name, holiday_date, description, now, path.into_inner(), org_id],
     ) {
         Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Holiday not found")),

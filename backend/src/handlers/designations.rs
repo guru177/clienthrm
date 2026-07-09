@@ -41,10 +41,10 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
     let description = crate::validation::normalize_optional(body.description.clone());
     let slug = name.to_lowercase().replace(' ', "-");
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     match conn.execute(
         "INSERT INTO designations (name, slug, description, level, is_active, organization_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        crate::params![name, slug, description, body.level, is_active, org_id, &now, &now],
+        crate::params![name, slug, description, body.level, is_active, org_id, now, now],
     ) {
         Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {}", e))),
@@ -61,11 +61,11 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     };
     let description = crate::validation::normalize_optional(body.description.clone());
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     let slug = name.to_lowercase().replace(' ', "-");
     match conn.execute(
         "UPDATE designations SET name=?1, slug=?2, description=?3, level=?4, is_active=?5, updated_at=?6 WHERE id=?7 AND organization_id=?8",
-        crate::params![name, slug, description, body.level, is_active, &now, path.into_inner(), org_id],
+        crate::params![name, slug, description, body.level, is_active, now, path.into_inner(), org_id],
     ) {
         Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Designation not found")),

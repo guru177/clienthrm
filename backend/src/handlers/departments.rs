@@ -168,12 +168,12 @@ pub async fn store(
     let description = crate::validation::normalize_optional(body.description.clone());
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
     let slug = unique_department_slug(&conn, org_id, body.center_id, &name, None);
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
 
     match conn.execute(
         "INSERT INTO departments (name, slug, description, is_active, organization_id, center_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        crate::params![name, slug, description, is_active, org_id, body.center_id, &now, &now],
+        crate::params![name, slug, description, is_active, org_id, body.center_id, now, now],
     ) {
         Ok(_) => {
             let dept_id = conn.last_insert_rowid();
@@ -213,14 +213,14 @@ pub async fn update(
     };
     let description = crate::validation::normalize_optional(body.description.clone());
     let is_active = if body.is_active.unwrap_or(true) { 1 } else { 0 };
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = chrono::Utc::now().naive_utc();
     let id = path.into_inner();
     let slug = unique_department_slug(&conn, org_id, body.center_id, &name, Some(id));
 
     match conn.execute(
         "UPDATE departments SET name = ?1, slug = ?2, description = ?3, is_active = ?4, center_id = ?5, updated_at = ?6
          WHERE id = ?7 AND organization_id = ?8",
-        crate::params![name, slug, description, is_active, body.center_id, &now, id, org_id],
+        crate::params![name, slug, description, is_active, body.center_id, now, id, org_id],
     ) {
         Ok(n) if n > 0 => {
             let _ = crate::chat_department_channels::ensure_department_channel(

@@ -27,6 +27,59 @@ impl ToSql for PostgresUntypedNull {
     }
 }
 
+/// Binds a string parameter using the target PostgreSQL column type.
+/// Timestamp/date strings are coerced only when the column expects those types.
+#[derive(Clone, Debug)]
+struct PostgresAdaptiveText(String);
+
+impl PostgresAdaptiveText {
+    fn parse_timestamp(s: &str) -> Option<chrono::NaiveDateTime> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .or_else(|| {
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .ok()
+                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            })
+    }
+
+    fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+    }
+}
+
+impl ToSql for PostgresAdaptiveText {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.to_sql_checked(ty, out)
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if matches!(ty, &Type::TIMESTAMP | &Type::TIMESTAMPTZ) {
+            if let Some(dt) = Self::parse_timestamp(&self.0) {
+                return dt.to_sql_checked(ty, out);
+            }
+        }
+        if ty == &Type::DATE {
+            if let Some(d) = Self::parse_date(&self.0) {
+                return d.to_sql_checked(ty, out);
+            }
+        }
+        self.0.to_sql_checked(ty, out)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true
+    }
+}
+
 #[derive(Clone)]
 pub enum ParamValue {
     Null,
@@ -37,6 +90,7 @@ pub enum ParamValue {
     Text(String),
     Blob(Vec<u8>),
     NaiveDateTime(chrono::NaiveDateTime),
+    NaiveDate(chrono::NaiveDate),
 }
 
 impl ParamValue {
@@ -52,6 +106,9 @@ impl ParamValue {
             ParamValue::NaiveDateTime(v) => {
                 rusqlite::types::Value::Text(v.format("%Y-%m-%d %H:%M:%S").to_string())
             }
+            ParamValue::NaiveDate(v) => {
+                rusqlite::types::Value::Text(v.format("%Y-%m-%d").to_string())
+            }
         }
     }
 
@@ -59,19 +116,26 @@ impl ParamValue {
         match self {
             ParamValue::Null => Box::new(PostgresUntypedNull),
             ParamValue::I64(v) => {
-                // PostgreSQL `INTEGER` (INT4) parameters reject bare `i64` in the `postgres` crate.
+                // INT4/BIGINT parameters — keep i32/i64 (not i16) for id columns and counts.
                 if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) {
                     Box::new(*v as i32)
                 } else {
                     Box::new(*v)
                 }
             }
-            ParamValue::I32(v) => Box::new(*v),
-            ParamValue::F64(v) => Box::new(*v as f32),
-            ParamValue::Bool(v) => Box::new(*v),
-            ParamValue::Text(v) => Box::new(v.clone()),
+            ParamValue::I32(v) => {
+                if (i16::MIN as i32..=i16::MAX as i32).contains(v) {
+                    Box::new(*v as i16)
+                } else {
+                    Box::new(*v)
+                }
+            }
+            ParamValue::F64(v) => Box::new(*v),
+            ParamValue::Bool(v) => Box::new(if *v { 1i16 } else { 0i16 }),
+            ParamValue::Text(v) => Box::new(PostgresAdaptiveText(v.clone())),
             ParamValue::Blob(v) => Box::new(v.clone()),
             ParamValue::NaiveDateTime(v) => Box::new(*v),
+            ParamValue::NaiveDate(v) => Box::new(*v),
         }
     }
 }
@@ -185,6 +249,18 @@ impl IntoParamValue for &chrono::NaiveDateTime {
 impl IntoParamValue for &&chrono::NaiveDateTime {
     fn into_param_value(self) -> ParamValue {
         ParamValue::NaiveDateTime(**self)
+    }
+}
+
+impl IntoParamValue for chrono::NaiveDate {
+    fn into_param_value(self) -> ParamValue {
+        ParamValue::NaiveDate(self)
+    }
+}
+
+impl IntoParamValue for &chrono::NaiveDate {
+    fn into_param_value(self) -> ParamValue {
+        ParamValue::NaiveDate(*self)
     }
 }
 
@@ -362,5 +438,67 @@ impl IntoParamValue for &Option<f64> {
             Some(v) => ParamValue::F64(*v),
             None => ParamValue::Null,
         }
+    }
+}
+
+#[cfg(test)]
+mod postgres_bind_tests {
+    use super::{into_param_value, ParamValue};
+    use postgres::types::{IsNull, ToSql, Type};
+
+    fn serialize(value: ParamValue, pg_type: &Type) -> Result<IsNull, String> {
+        let boxed = value.as_postgres_box();
+        let mut out = bytes::BytesMut::new();
+        boxed
+            .to_sql_checked(pg_type, &mut out)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn i32_zero_binds_to_smallint() {
+        assert!(serialize(into_param_value(0i32), &Type::INT2).is_ok());
+    }
+
+    #[test]
+    fn naive_date_binds_to_date() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap();
+        assert!(serialize(into_param_value(date), &Type::DATE).is_ok());
+    }
+
+    #[test]
+    fn timestamp_text_binds_to_timestamp() {
+        assert!(serialize(into_param_value("2026-07-09 12:30:00"), &Type::TIMESTAMP).is_ok());
+    }
+
+    #[test]
+    fn timestamp_text_binds_to_text_column() {
+        assert!(serialize(into_param_value("2026-07-09 12:30:00"), &Type::TEXT).is_ok());
+    }
+
+    #[test]
+    fn date_text_binds_to_date() {
+        assert!(serialize(into_param_value("2026-07-09"), &Type::DATE).is_ok());
+    }
+
+    #[test]
+    fn date_text_binds_to_text_column() {
+        assert!(serialize(into_param_value("2026-07-09"), &Type::TEXT).is_ok());
+    }
+
+    #[test]
+    fn naive_datetime_binds_to_timestamp() {
+        let now = chrono::Utc::now().naive_utc();
+        assert!(serialize(into_param_value(now), &Type::TIMESTAMP).is_ok());
+    }
+
+    #[test]
+    fn i64_id_binds_to_int4() {
+        assert!(serialize(into_param_value(1i64), &Type::INT4).is_ok());
+    }
+
+    #[test]
+    fn null_binds_to_text_and_int() {
+        assert!(serialize(ParamValue::Null, &Type::TEXT).is_ok());
+        assert!(serialize(ParamValue::Null, &Type::INT4).is_ok());
     }
 }

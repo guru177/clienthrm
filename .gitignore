@@ -5,6 +5,7 @@ backend/.env
 
 # Rust
 backend/target/
+backend/node_modules/
 backend/cargo_check_output.txt
 backend/tmp*
 backend/tmp-*
@@ -24,6 +25,10 @@ frontend/coverage/
 # Platform (local dev / build artifacts)
 platform/node_modules/
 platform/dist/
+
+# Node API (local dev / build artifacts)
+backend-node/node_modules/
+backend-node/dist/
 
 
 # PostgreSQL (local dev data under database/pgdata/)
