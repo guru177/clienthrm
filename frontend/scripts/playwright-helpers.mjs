@@ -27,3 +27,10 @@ export async function loginTenant(page, { base, email, password, orgSlug }) {
   await page.waitForURL(/\/admin\//, { timeout: 25000 });
   await dismissAnnouncements(page);
 }
+
+/** Re-login when session expired (e.g. after long test marathon). */
+export async function ensureLoggedIn(page, { base, email, password, orgSlug }) {
+  if (page.url().includes('/login')) {
+    await loginTenant(page, { base, email, password, orgSlug });
+  }
+}

@@ -19,7 +19,7 @@ function loadAuthState():
 
 export const e2eCredentials = {
     email: process.env.E2E_EMAIL ?? 'info@retaildaddy.in',
-    password: process.env.E2E_PASSWORD ?? 'Raintech123',
+    password: process.env.E2E_PASSWORD ?? 'Guru!1234',
     orgSlug: process.env.E2E_ORG_SLUG ?? 'mashuptech',
 };
 

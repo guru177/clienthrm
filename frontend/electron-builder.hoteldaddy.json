@@ -1,0 +1,12 @@
+{
+    "directories": {
+        "output": "release-hoteldaddy"
+    },
+    "artifactName": "HR-Daddy-HotelDaddy-Setup-${version}.${ext}",
+    "publish": [
+        {
+            "provider": "generic",
+            "url": "https://hrm-api.hoteldaddy.in/api/public/desktop/updates"
+        }
+    ]
+}

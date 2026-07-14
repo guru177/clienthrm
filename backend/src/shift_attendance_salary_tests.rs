@@ -44,6 +44,10 @@ impl ModuleHarness {
 
 fn seed_org_user_shift_salary(conn: &crate::db::Connection) -> (i64, i64) {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
 
     let org_id: i64 = conn
         .query_row(
@@ -65,20 +69,16 @@ fn seed_org_user_shift_salary(conn: &crate::db::Connection) -> (i64, i64) {
         conn.last_insert_rowid()
     };
 
+    let email = format!("sas-test-{unique}@hrm.local");
     conn.execute(
         "INSERT INTO users (name, email, password, organization_id, is_super_admin, status, date_of_joining, created_at, updated_at)
          VALUES (?1, ?2, 'unused', ?3, 0, 'active', '2020-01-01', ?4, ?4)",
-        crate::params![
-            "SAS Test Employee",
-            "sas-test-employee@hrm.local",
-            org_id,
-            &now
-        ],
+        crate::params!["SAS Test Employee", &email, org_id, &now],
     )
     .expect("insert user");
     let user_id = conn.last_insert_rowid();
 
-    let shift_name = format!("SAS-General-{org_id}");
+    let shift_name = format!("SAS-General-{org_id}-{unique}");
     conn.execute(
         "INSERT INTO shift_templates
             (name, start_time, end_time, grace_in_minutes, grace_out_minutes, is_active, is_default,

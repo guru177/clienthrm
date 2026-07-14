@@ -56,3 +56,46 @@ pub fn qr_svg_for_url(url: &str) -> Result<String, String> {
         .light_color(svg::Color("#ffffff"))
         .build())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use totp_rs::Secret;
+
+    #[test]
+    fn new_secret_roundtrips_verify() {
+        let secret_b32 = new_totp_secret().expect("secret");
+        let bytes = Secret::Encoded(secret_b32.clone())
+            .to_bytes()
+            .expect("decode");
+        let totp = build_totp(bytes, TOTP_ISSUER, "tester@example.com").expect("totp");
+        let code = totp.generate_current().expect("code");
+        assert!(verify_totp_code(
+            &secret_b32,
+            &code,
+            TOTP_ISSUER,
+            "tester@example.com"
+        ));
+        assert!(!verify_totp_code(
+            &secret_b32,
+            "000000",
+            TOTP_ISSUER,
+            "tester@example.com"
+        ));
+    }
+
+    #[test]
+    fn otpauth_url_contains_issuer_and_secret() {
+        let secret_b32 = new_totp_secret().expect("secret");
+        let url = otpauth_url(&secret_b32, "admin@example.com").expect("url");
+        assert!(url.starts_with("otpauth://totp/"));
+        assert!(url.contains("Raintech"));
+        assert!(url.contains(&secret_b32) || url.contains("secret="));
+    }
+
+    #[test]
+    fn qr_svg_returns_svg_markup() {
+        let svg = qr_svg_for_url("otpauth://totp/Test?secret=ABCDEF").expect("svg");
+        assert!(svg.contains("<svg"));
+    }
+}

@@ -178,9 +178,82 @@ impl RowGetIdx for String {
 }
 
 impl_row_get!(i32);
-impl_row_get!(f64);
 impl_row_get!(bool);
 impl_row_get!(Vec<u8>);
+
+fn postgres_f64(row: &postgres::Row, col: &str) -> Result<f64> {
+    if let Ok(v) = row.try_get::<_, f64>(col) {
+        return Ok(v);
+    }
+    if let Ok(v) = row.try_get::<_, f32>(col) {
+        return Ok(f64::from(v));
+    }
+    if let Ok(v) = row.try_get::<_, i64>(col) {
+        return Ok(v as f64);
+    }
+    if let Ok(v) = row.try_get::<_, i32>(col) {
+        return Ok(f64::from(v));
+    }
+    if let Ok(v) = row.try_get::<_, rust_decimal::Decimal>(col) {
+        use rust_decimal::prelude::ToPrimitive;
+        return v.to_f64().ok_or_else(|| {
+            DbError::Other(format!("cannot convert DECIMAL to f64 for column {col}"))
+        });
+    }
+    if let Ok(v) = row.try_get::<_, String>(col) {
+        return v
+            .parse::<f64>()
+            .map_err(|e| DbError::Other(e.to_string()));
+    }
+    Err(DbError::Other(format!("cannot read f64 from column {col}")))
+}
+
+fn postgres_f64_idx(row: &postgres::Row, idx: usize) -> Result<f64> {
+    if let Ok(v) = row.try_get::<_, f64>(idx) {
+        return Ok(v);
+    }
+    if let Ok(v) = row.try_get::<_, f32>(idx) {
+        return Ok(f64::from(v));
+    }
+    if let Ok(v) = row.try_get::<_, i64>(idx) {
+        return Ok(v as f64);
+    }
+    if let Ok(v) = row.try_get::<_, i32>(idx) {
+        return Ok(f64::from(v));
+    }
+    if let Ok(v) = row.try_get::<_, rust_decimal::Decimal>(idx) {
+        use rust_decimal::prelude::ToPrimitive;
+        return v.to_f64().ok_or_else(|| {
+            DbError::Other(format!("cannot convert DECIMAL to f64 for column index {idx}"))
+        });
+    }
+    if let Ok(v) = row.try_get::<_, String>(idx) {
+        return v
+            .parse::<f64>()
+            .map_err(|e| DbError::Other(e.to_string()));
+    }
+    Err(DbError::Other(format!(
+        "cannot read f64 from column index {idx}"
+    )))
+}
+
+impl RowGet for f64 {
+    fn from_sqlite(row: &rusqlite::Row<'_>, col: &str) -> Result<Self> {
+        row.get(col).map_err(DbError::from)
+    }
+    fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
+        postgres_f64(row, col)
+    }
+}
+
+impl RowGetIdx for f64 {
+    fn from_sqlite_idx(row: &rusqlite::Row<'_>, idx: usize) -> Result<Self> {
+        row.get(idx).map_err(DbError::from)
+    }
+    fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
+        postgres_f64_idx(row, idx)
+    }
+}
 
 impl RowGet for Option<String> {
     fn from_sqlite(row: &rusqlite::Row<'_>, col: &str) -> Result<Self> {
@@ -257,7 +330,27 @@ impl RowGet for Option<f64> {
         row.get(col).map_err(DbError::from)
     }
     fn from_postgres(row: &postgres::Row, col: &str) -> Result<Self> {
-        row.try_get(col).map_err(DbError::from)
+        match row.try_get::<_, Option<f64>>(col) {
+            Ok(v) => Ok(v),
+            Err(_) => match postgres_f64(row, col) {
+                Ok(v) => Ok(Some(v)),
+                Err(_) => {
+                    // Distinguish NULL vs type mismatch: try Option paths.
+                    if let Ok(None) = row.try_get::<_, Option<i64>>(col) {
+                        return Ok(None);
+                    }
+                    if let Ok(None) = row.try_get::<_, Option<String>>(col) {
+                        return Ok(None);
+                    }
+                    // Column present but incompatible — treat as None for LEFT JOIN amount.
+                    if row.try_get::<_, Option<bool>>(col).is_err() {
+                        // NULL numeric: try_get Option<String> may fail; use is_null if available.
+                        return Ok(None);
+                    }
+                    Ok(None)
+                }
+            },
+        }
     }
 }
 
@@ -266,7 +359,13 @@ impl RowGetIdx for Option<f64> {
         row.get(idx).map_err(DbError::from)
     }
     fn from_postgres_idx(row: &postgres::Row, idx: usize) -> Result<Self> {
-        row.try_get(idx).map_err(DbError::from)
+        match row.try_get::<_, Option<f64>>(idx) {
+            Ok(v) => Ok(v),
+            Err(_) => match postgres_f64_idx(row, idx) {
+                Ok(v) => Ok(Some(v)),
+                Err(_) => Ok(None),
+            },
+        }
     }
 }
 

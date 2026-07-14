@@ -75,7 +75,7 @@ pub fn load_from_structure_items(
 
     let stmt = conn
         .prepare(
-            "SELECT sc.id, sc.name, sc.slug, COALESCE(sc.component_type, sc.type) AS comp_type, sc.calculation_type, ssi.amount
+            "SELECT sc.id, sc.name, sc.slug, COALESCE(sc.component_type, sc.type) AS comp_type, sc.calculation_type, CAST(ssi.amount AS DOUBLE PRECISION)
              FROM salary_structure_items ssi
              JOIN salary_components sc ON sc.id = ssi.salary_component_id
              WHERE ssi.user_id = ?1 AND ssi.effective_from = ?2",

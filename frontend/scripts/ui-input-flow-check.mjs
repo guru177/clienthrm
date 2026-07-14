@@ -20,7 +20,7 @@ function uiFlowDates() {
 
 const BASE = 'http://localhost:5174';
 const EMAIL = 'info@retaildaddy.in';
-const PASSWORD = 'password';
+const PASSWORD = process.env.HRM_PASSWORD || 'Guru!1234';
 const TS = Date.now();
 
 const flows = [];

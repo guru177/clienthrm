@@ -569,8 +569,8 @@ fn build_user_salary_structure(conn: &crate::db::Connection, user_id: i64, org_i
     let Ok(stmt) = conn.prepare(
             "SELECT sc.id, sc.name, COALESCE(sc.component_type, sc.type) AS comp_type,
                     sc.calculation_type,
-                    COALESCE(sc.default_value, sc.amount) AS default_value,
-                    sc.is_taxable, ssi.amount AS assigned_amount,
+                    CAST(COALESCE(sc.default_value, sc.amount) AS DOUBLE PRECISION) AS default_value,
+                    sc.is_taxable, CAST(ssi.amount AS DOUBLE PRECISION) AS assigned_amount,
                     sc.deduction_frequency, LOWER(COALESCE(sc.slug, '')) AS slug
              FROM salary_components sc
              LEFT JOIN salary_structure_items ssi
@@ -807,7 +807,7 @@ pub async fn user_salary_structure_store(
         }
         if let Err(e) = tx.execute(
             "INSERT INTO salary_structure_items (user_id, salary_component_id, amount, effective_from, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+             VALUES (?1, ?2, CAST(?3 AS DOUBLE PRECISION), ?4, ?5, ?5)",
             crate::params![
                 user_id,
                 item.salary_component_id,

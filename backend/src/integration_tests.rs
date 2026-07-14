@@ -2,7 +2,7 @@
 use actix_web::body::EitherBody;
 use actix_web::dev::ServiceResponse;
 use actix_web::{test, web, App};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::biometric_events::BiometricEvents;
 use crate::chat_events::ChatEvents;
@@ -18,6 +18,12 @@ struct TestHarness {
     pool: DbPool,
     jwt_secret: Arc<String>,
     app_config: Arc<AppConfig>,
+}
+
+static SHARED_HARNESS: OnceLock<TestHarness> = OnceLock::new();
+
+fn shared_harness() -> &'static TestHarness {
+    SHARED_HARNESS.get_or_init(TestHarness::new)
 }
 
 impl TestHarness {
@@ -146,7 +152,7 @@ async fn body_json<B: actix_web::body::MessageBody>(res: ServiceResponse<B>) -> 
 
 #[actix_web::test]
 async fn health_returns_ok() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::get().uri("/api/health").to_request();
     let res = test::call_service(&app, req).await;
@@ -158,7 +164,7 @@ async fn health_returns_ok() {
 
 #[actix_web::test]
 async fn login_success_returns_token_and_refresh() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/login")
@@ -177,7 +183,7 @@ async fn login_success_returns_token_and_refresh() {
 
 #[actix_web::test]
 async fn login_invalid_password_returns_401() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/login")
@@ -193,7 +199,7 @@ async fn login_invalid_password_returns_401() {
 
 #[actix_web::test]
 async fn login_sql_injection_attempt_returns_401_not_500() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/login")
@@ -209,7 +215,7 @@ async fn login_sql_injection_attempt_returns_401_not_500() {
 
 #[actix_web::test]
 async fn login_missing_fields_returns_error() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/login")
@@ -221,7 +227,7 @@ async fn login_missing_fields_returns_error() {
 
 #[actix_web::test]
 async fn me_requires_valid_jwt() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     let no_auth = test::TestRequest::get().uri("/api/auth/me").to_request();
@@ -238,7 +244,7 @@ async fn me_requires_valid_jwt() {
 
 #[actix_web::test]
 async fn me_returns_user_with_valid_token() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let token = generate_token(
         1,
         TEST_EMAIL,
@@ -267,7 +273,7 @@ async fn me_returns_user_with_valid_token() {
 
 #[actix_web::test]
 async fn refresh_token_roundtrip() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     let login_req = test::TestRequest::post()
@@ -298,7 +304,7 @@ async fn refresh_token_roundtrip() {
 
 #[actix_web::test]
 async fn refresh_invalid_token_returns_401() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/refresh")
@@ -310,7 +316,7 @@ async fn refresh_invalid_token_returns_401() {
 
 #[actix_web::test]
 async fn logout_revokes_refresh_token() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     let login_req = test::TestRequest::post()
@@ -344,17 +350,16 @@ async fn logout_revokes_refresh_token() {
 
 #[actix_web::test]
 async fn admin_route_without_token_returns_401() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::get()
         .uri("/api/admin/users/list")
         .to_request();
-    let err = test::try_call_service(&app, req).await.err();
-    assert!(err.is_some(), "unauthenticated admin route should fail");
-    let msg = format!("{:?}", err.unwrap());
+    // Avoid Debug-formatting actix errors — deep nested Display on Windows can
+    // trigger STATUS_STACK_BUFFER_OVERRUN (0xc0000409).
     assert!(
-        msg.contains("401") || msg.contains("Unauthorized") || msg.contains("Authorization"),
-        "unexpected error: {msg}"
+        test::try_call_service(&app, req).await.is_err(),
+        "unauthenticated admin route should fail"
     );
 }
 
@@ -363,7 +368,7 @@ async fn expired_jwt_rejected() {
     use jsonwebtoken::{encode, EncodingKey, Header};
     use crate::models::user::JwtClaims;
 
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let secret = harness.jwt_secret.as_str();
     let past = chrono::Utc::now() - chrono::Duration::hours(2);
     let claims = JwtClaims {
@@ -396,7 +401,7 @@ async fn expired_jwt_rejected() {
 
 #[actix_web::test]
 async fn concurrent_login_requests_succeed() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     for _ in 0..5 {
@@ -415,7 +420,7 @@ async fn concurrent_login_requests_succeed() {
 
 #[actix_web::test]
 async fn invalid_json_returns_client_error() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let req = test::TestRequest::post()
         .uri("/api/auth/login")
@@ -428,7 +433,7 @@ async fn invalid_json_returns_client_error() {
 
 #[actix_web::test]
 async fn authenticated_users_list_returns_200() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     let login_req = test::TestRequest::post()
@@ -455,7 +460,7 @@ async fn authenticated_users_list_returns_200() {
 
 #[actix_web::test]
 async fn authenticated_departments_pagination_accepts_query() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
 
     let login_req = test::TestRequest::post()
@@ -480,7 +485,7 @@ async fn authenticated_departments_pagination_accepts_query() {
 
 #[actix_web::test]
 async fn large_login_payload_rejected_or_handled() {
-    let harness = TestHarness::new();
+    let harness = shared_harness();
     let app = test::init_service(harness.app()).await;
     let huge = "x".repeat(100_000);
     let req = test::TestRequest::post()

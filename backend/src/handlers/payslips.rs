@@ -351,7 +351,7 @@ pub async fn payslip_pdf(
     };
     let org_id = org_id_from_claims(&claims);
     let payslip_id = path.into_inner();
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
@@ -412,7 +412,7 @@ pub async fn bulk_download(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() {
+    let conn = match pool.get_for_tenant(org_id) {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };

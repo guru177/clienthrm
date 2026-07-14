@@ -1,4 +1,4 @@
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 
 use r2d2::Pool;
 use r2d2_postgres::{postgres::NoTls, PostgresConnectionManager};
@@ -10,6 +10,7 @@ use crate::db::tenant_rls;
 type PgManager = PostgresConnectionManager<NoTls>;
 
 static READ_POOL: RwLock<Option<DbPool>> = RwLock::new(None);
+static PRIMARY_POOL: OnceLock<DbPool> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct DbPool(Pool<PgManager>);
@@ -77,8 +78,13 @@ pub fn init_pool(database_url: &str) -> DbPool {
     if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
         panic!("DATABASE_URL must be a PostgreSQL URL; got: {url}");
     }
+    if let Some(pool) = PRIMARY_POOL.get() {
+        return pool.clone();
+    }
     log::info!("Using PostgreSQL database");
-    init_postgres(url)
+    let pool = init_postgres(url);
+    let _ = PRIMARY_POOL.set(pool.clone());
+    pool
 }
 
 /// Optional read replica pool (`DATABASE_READ_URL`).
@@ -96,7 +102,8 @@ pub fn init_read_pool() {
 }
 
 fn init_postgres(url: &str) -> DbPool {
-    let max_size = env_pool_size("DB_POOL_MAX_SIZE", 50);
+    let default_max = if cfg!(test) { 8 } else { 50 };
+    let max_size = env_pool_size("DB_POOL_MAX_SIZE", default_max);
     let pg_config: postgres::Config = url.parse().expect("Invalid DATABASE_URL");
     let manager = PgManager::new(pg_config, NoTls);
     let pool = Pool::builder()

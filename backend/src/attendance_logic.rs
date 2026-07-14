@@ -10,7 +10,7 @@ pub fn find_open_attendance_session(
     if let Ok(row) = conn.query_row(
         "SELECT id, date, clock_in FROM attendance
          WHERE user_id=?1 AND date=?2 AND clock_out IS NULL AND deleted_at IS NULL
-           AND clock_in IS NOT NULL AND TRIM(clock_in) != ''
+           AND clock_in IS NOT NULL
          ORDER BY id DESC LIMIT 1",
         crate::params![user_id, punch_date],
         |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?, row.get_idx::<String>(2)?)),
@@ -20,7 +20,7 @@ pub fn find_open_attendance_session(
     conn.query_row(
         "SELECT id, date, clock_in FROM attendance
          WHERE user_id=?1 AND clock_out IS NULL AND deleted_at IS NULL
-           AND clock_in IS NOT NULL AND TRIM(clock_in) != ''
+           AND clock_in IS NOT NULL
            AND date < ?2
          ORDER BY date DESC, id DESC LIMIT 1",
         crate::params![user_id, punch_date],

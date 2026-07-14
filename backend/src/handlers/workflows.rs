@@ -352,7 +352,7 @@ pub async fn toggle(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     match conn.execute(
-        "UPDATE workflows SET is_active = NOT is_active WHERE id=?1 AND organization_id=?2",
+        "UPDATE workflows SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id=?1 AND organization_id=?2",
         crate::params![path.into_inner(), org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),

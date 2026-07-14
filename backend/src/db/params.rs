@@ -46,6 +46,13 @@ impl PostgresAdaptiveText {
     fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
         chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
     }
+
+    fn parse_time(s: &str) -> Option<chrono::NaiveTime> {
+        let trimmed = s.trim();
+        chrono::NaiveTime::parse_from_str(trimmed, "%H:%M:%S")
+            .ok()
+            .or_else(|| chrono::NaiveTime::parse_from_str(trimmed, "%H:%M").ok())
+    }
 }
 
 impl ToSql for PostgresAdaptiveText {
@@ -72,11 +79,105 @@ impl ToSql for PostgresAdaptiveText {
                 return d.to_sql_checked(ty, out);
             }
         }
+        if matches!(ty, &Type::TIME | &Type::TIMETZ) {
+            if let Some(t) = Self::parse_time(&self.0) {
+                return t.to_sql_checked(ty, out);
+            }
+        }
         self.0.to_sql_checked(ty, out)
     }
 
     fn accepts(_ty: &Type) -> bool {
         true
+    }
+}
+
+/// Integer bind that picks INT2/INT4/INT8 based on column type.
+#[derive(Debug)]
+struct PostgresAdaptiveI64(i64);
+
+impl ToSql for PostgresAdaptiveI64 {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.to_sql_checked(ty, out)
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        match *ty {
+            Type::INT2 => {
+                let v = i16::try_from(self.0).map_err(|e| {
+                    Box::new(e) as Box<dyn std::error::Error + Sync + Send>
+                })?;
+                v.to_sql_checked(ty, out)
+            }
+            Type::INT4 => {
+                let v = i32::try_from(self.0).map_err(|e| {
+                    Box::new(e) as Box<dyn std::error::Error + Sync + Send>
+                })?;
+                v.to_sql_checked(ty, out)
+            }
+            Type::INT8 => self.0.to_sql_checked(ty, out),
+            Type::NUMERIC => {
+                use rust_decimal::prelude::FromPrimitive;
+                let d = rust_decimal::Decimal::from_i64(self.0).unwrap_or(rust_decimal::Decimal::ZERO);
+                d.to_sql_checked(ty, out)
+            }
+            _ => {
+                if (i32::MIN as i64..=i32::MAX as i64).contains(&self.0) {
+                    (self.0 as i32).to_sql_checked(ty, out)
+                } else {
+                    self.0.to_sql_checked(ty, out)
+                }
+            }
+        }
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(
+            *ty,
+            Type::INT2 | Type::INT4 | Type::INT8 | Type::NUMERIC
+        )
+    }
+}
+
+/// f64 bind that accepts FLOAT4/FLOAT8 and NUMERIC (via rust_decimal).
+#[derive(Debug)]
+struct PostgresAdaptiveFloat(f64);
+
+impl ToSql for PostgresAdaptiveFloat {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.to_sql_checked(ty, out)
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if matches!(ty, &Type::NUMERIC) {
+            use rust_decimal::prelude::FromPrimitive;
+            let d = rust_decimal::Decimal::from_f64(self.0).unwrap_or(rust_decimal::Decimal::ZERO);
+            return d.to_sql_checked(ty, out);
+        }
+        if matches!(ty, &Type::FLOAT4) {
+            return (self.0 as f32).to_sql_checked(ty, out);
+        }
+        self.0.to_sql_checked(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(ty, &Type::FLOAT8 | &Type::FLOAT4 | &Type::NUMERIC)
     }
 }
 
@@ -115,22 +216,9 @@ impl ParamValue {
     fn as_postgres_box(&self) -> Box<dyn postgres::types::ToSql + Sync + Send> {
         match self {
             ParamValue::Null => Box::new(PostgresUntypedNull),
-            ParamValue::I64(v) => {
-                // INT4/BIGINT parameters — keep i32/i64 (not i16) for id columns and counts.
-                if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) {
-                    Box::new(*v as i32)
-                } else {
-                    Box::new(*v)
-                }
-            }
-            ParamValue::I32(v) => {
-                if (i16::MIN as i32..=i16::MAX as i32).contains(v) {
-                    Box::new(*v as i16)
-                } else {
-                    Box::new(*v)
-                }
-            }
-            ParamValue::F64(v) => Box::new(*v),
+            ParamValue::I64(v) => Box::new(PostgresAdaptiveI64(*v)),
+            ParamValue::I32(v) => Box::new(PostgresAdaptiveI64(*v as i64)),
+            ParamValue::F64(v) => Box::new(PostgresAdaptiveFloat(*v)),
             ParamValue::Bool(v) => Box::new(if *v { 1i16 } else { 0i16 }),
             ParamValue::Text(v) => Box::new(PostgresAdaptiveText(v.clone())),
             ParamValue::Blob(v) => Box::new(v.clone()),
@@ -473,6 +561,16 @@ mod postgres_bind_tests {
     #[test]
     fn timestamp_text_binds_to_text_column() {
         assert!(serialize(into_param_value("2026-07-09 12:30:00"), &Type::TEXT).is_ok());
+    }
+
+    #[test]
+    fn time_text_binds_to_time() {
+        assert!(serialize(into_param_value("09:05:00"), &Type::TIME).is_ok());
+    }
+
+    #[test]
+    fn f64_binds_to_float8() {
+        assert!(serialize(into_param_value(30000.0_f64), &Type::FLOAT8).is_ok());
     }
 
     #[test]

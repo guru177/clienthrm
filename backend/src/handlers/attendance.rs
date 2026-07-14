@@ -271,7 +271,7 @@ pub async fn list(
 
     if query.only_open.unwrap_or(false) {
         conditions.push(
-            "a.clock_in IS NOT NULL AND TRIM(a.clock_in) != '' AND a.clock_out IS NULL".to_string(),
+            "a.clock_in IS NOT NULL AND a.clock_out IS NULL".to_string(),
         );
     }
 

@@ -330,3 +330,46 @@ pub fn save_chat_file(
     std::fs::write(&full, data).map_err(|e| e.to_string())?;
     Ok(relative)
 }
+
+#[cfg(test)]
+mod path_authz_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_rejects_traversal() {
+        assert!(normalize_relative_path("../etc/passwd").is_none());
+        assert!(normalize_relative_path("users/../secret").is_none());
+        assert!(normalize_relative_path("").is_none());
+        assert!(normalize_relative_path("   ").is_none());
+    }
+
+    #[test]
+    fn normalize_accepts_safe_paths() {
+        assert_eq!(
+            normalize_relative_path("users/abc.jpg").as_deref(),
+            Some("users/abc.jpg")
+        );
+        assert_eq!(
+            normalize_relative_path("/storage/chat/file.pdf").as_deref(),
+            Some("chat/file.pdf")
+        );
+        assert_eq!(
+            normalize_relative_path("storage/announcements/b.png").as_deref(),
+            Some("announcements/b.png")
+        );
+    }
+
+    #[test]
+    fn profile_and_banner_path_helpers() {
+        assert!(is_user_profile_photo("users/photo.jpg"));
+        assert!(!is_user_profile_photo("chat/photo.jpg"));
+        assert!(is_org_notification_banner("org-notifications/a.png"));
+    }
+
+    #[test]
+    fn mime_for_common_extensions() {
+        assert_eq!(mime_for_path(Path::new("a.png")), "image/png");
+        assert_eq!(mime_for_path(Path::new("a.pdf")), "application/pdf");
+        assert_eq!(mime_for_path(Path::new("a.unknown")), "application/octet-stream");
+    }
+}

@@ -31,6 +31,7 @@ bcrypt = "0.17"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["db-postgres"] }
 dotenv = "0.15"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"

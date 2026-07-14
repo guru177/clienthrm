@@ -131,6 +131,17 @@ function loadCachedCredentials(): { email: string; password: string; orgSlug: st
 }
 
 export default async function globalSetup() {
+    const fromEnv = await tryLogin(
+        process.env.E2E_EMAIL ?? 'info@retaildaddy.in',
+        process.env.E2E_PASSWORD ?? 'Guru!1234',
+        process.env.E2E_ORG_SLUG ?? 'mashuptech',
+    );
+    if (fromEnv) {
+        saveState(fromEnv);
+        console.log(`[e2e setup] Auth ready for ${fromEnv.email} (${fromEnv.orgSlug})`);
+        return;
+    }
+
     const cached = loadCachedCredentials();
     if (cached) {
         const relogin = await tryLogin(cached.email, cached.password, cached.orgSlug);
@@ -141,13 +152,7 @@ export default async function globalSetup() {
         }
     }
 
-    const fromEnv = await tryLogin(
-        process.env.E2E_EMAIL ?? 'info@retaildaddy.in',
-        process.env.E2E_PASSWORD ?? 'Raintech123',
-        process.env.E2E_ORG_SLUG ?? 'mashuptech',
-    );
-
-    const state = fromEnv ?? (await provisionViaSignup());
+    const state = await provisionViaSignup();
     if (!state) {
         console.warn('[e2e setup] No auth state — authenticated tests will be skipped');
         return;
