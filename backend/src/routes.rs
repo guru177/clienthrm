@@ -387,6 +387,25 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/payslips/{id}/pdf", web::get().to(handlers::payslips::payslip_pdf))
         .route("/api/admin/payslips/bulk-download", web::post().to(handlers::payslips::bulk_download))
 
+        // ── Doctor Reports ──
+        .route("/api/admin/doctor-reports", web::get().to(handlers::doctor_reports::index))
+        .route("/api/admin/doctor-reports", web::post().to(handlers::doctor_reports::store))
+        .route("/api/admin/me/doctor-reports", web::get().to(handlers::doctor_reports::my_reports))
+        .route("/api/admin/doctor-reports/{id}", web::get().to(handlers::doctor_reports::show))
+        .route("/api/admin/doctor-reports/{id}", web::put().to(handlers::doctor_reports::update))
+        .route("/api/admin/doctor-reports/{id}", web::delete().to(handlers::doctor_reports::destroy))
+        .route("/api/admin/doctor-reports/{id}/prescription", web::post().to(handlers::doctor_reports::upload_prescription))
+
+        // ── Grocery Benefits ──
+        .route("/api/admin/grocery-benefits", web::get().to(handlers::grocery_benefits::index))
+        .route("/api/admin/grocery-benefits", web::post().to(handlers::grocery_benefits::store))
+        .route("/api/admin/grocery-benefits/my-status", web::get().to(handlers::grocery_benefits::my_status))
+        .route("/api/admin/grocery-benefits/{id}", web::put().to(handlers::grocery_benefits::update))
+        .route("/api/admin/grocery-benefits/{id}", web::delete().to(handlers::grocery_benefits::destroy))
+        .route("/api/admin/grocery-claims", web::get().to(handlers::grocery_benefits::claims_index))
+        .route("/api/admin/grocery-claims", web::post().to(handlers::grocery_benefits::claims_store))
+        .route("/api/admin/grocery-claims/{id}/review", web::post().to(handlers::grocery_benefits::claims_review))
+
         // ── Centers (Settings) ──
         .route("/api/admin/settings/centers", web::get().to(handlers::centers::index))
         .route("/api/admin/settings/centers", web::post().to(handlers::centers::store))
@@ -436,6 +455,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/chat/users", web::get().to(handlers::chat::users_index))
         .route("/api/admin/chat/upload", web::post().to(handlers::chat::upload))
         .route("/api/admin/chat/ws", web::get().to(handlers::chat::chat_ws))
+
+        // ── Assets & Maintenance ──
+        .route("/api/admin/assets", web::get().to(handlers::assets::index))
+        .route("/api/admin/assets", web::post().to(handlers::assets::store))
+        .route("/api/admin/assets/{id}", web::put().to(handlers::assets::update))
+        .route("/api/admin/assets/{id}", web::delete().to(handlers::assets::destroy))
+        .route("/api/admin/asset-allocations", web::get().to(handlers::assets::allocations_index))
+        .route("/api/admin/asset-allocations", web::post().to(handlers::assets::allocate))
+        .route("/api/admin/asset-allocations/{id}/return", web::post().to(handlers::assets::process_return))
+        .route("/api/admin/asset-expenses", web::get().to(handlers::assets::expenses_index))
+        .route("/api/admin/asset-expenses/{id}/review", web::post().to(handlers::assets::expenses_review))
+        .route("/api/admin/my-assets", web::get().to(handlers::assets::my_assets))
+        .route("/api/admin/my-assets/expenses", web::post().to(handlers::assets::my_assets_store_expense))
 
         // ── Authenticated file storage ──
         .route("/api/admin/files/{tail:.*}", web::get().to(handlers::files::serve));

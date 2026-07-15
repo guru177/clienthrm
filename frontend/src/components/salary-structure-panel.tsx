@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface ComponentItem {
     salary_component_id: number;
@@ -57,6 +58,7 @@ export function SalaryStructurePanel({
     hasCtc?: boolean;
     onCtcChange?: (hasCtc: boolean) => void;
 }) {
+    const confirm = useConfirm();
     const [data, setData] = useState<SalaryData | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -145,7 +147,7 @@ export function SalaryStructurePanel({
     };
 
     const handleRemoveCtc = async () => {
-        if (!confirm('Remove CTC profile? You can then set up manual salary components for payroll.')) return;
+        if (!(await confirm({ description: 'Remove CTC profile? You can then set up manual salary components for payroll.' }))) return;
         setClearingCtc(true);
         try {
             const res = await axios.delete(`/admin/users/${userId}/ctc-profile`);

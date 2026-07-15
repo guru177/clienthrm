@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface WorkLocation {
     id: number;
@@ -14,6 +15,7 @@ interface WorkLocation {
 }
 
 export default function WorkLocationsPage() {
+    const confirm = useConfirm();
     const [locations, setLocations] = useState<WorkLocation[]>([]);
     const [newName, setNewName] = useState('');
     const [editingId, setEditingId] = useState<number | null>(null);
@@ -76,7 +78,7 @@ export default function WorkLocationsPage() {
     };
 
     const handleDelete = async (id: number) => {
-        if (!confirm('Delete this work location?')) return;
+        if (!(await confirm({ description: 'Delete this work location?' }))) return;
         setLoading(true);
         try {
             const res = await axios.delete(`/admin/settings/centers/${id}`);

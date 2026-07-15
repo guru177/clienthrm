@@ -23,6 +23,7 @@ import {
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
 import { useEffect, useState } from 'react';
+import { useConfirm } from '@/lib/confirm';
 import {
     actionsFromApi,
     conditionsFromApi,
@@ -59,6 +60,7 @@ interface WorkflowExecution {
 }
 
 export default function View() {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const { id } = useParams<{ id: string }>();
     const [workflow, setWorkflow] = useState<Workflow | null>(null);

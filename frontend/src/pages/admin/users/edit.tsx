@@ -160,6 +160,7 @@ export default function EditUserPage() {
         esi_number: '',
         pf_number: '',
         aadhar_number: '',
+        is_external: false,
     });
     const [photoFile, setPhotoFile] = useState<File | null>(null);
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -230,6 +231,7 @@ export default function EditUserPage() {
                     esi_number: userData.esi_number || '',
                     pf_number: userData.pf_number || '',
                     aadhar_number: userData.aadhar_number || '',
+                    is_external: !!userData.is_external,
                 });
 
                 if (userData.photo) {
@@ -380,6 +382,7 @@ export default function EditUserPage() {
                 esi_number: formData.esi_number,
                 pf_number: formData.pf_number,
                 aadhar_number: formData.aadhar_number,
+                is_external: formData.is_external ? '1' : '0',
             };
 
             if (photoFile || removePhoto) {
@@ -1197,6 +1200,23 @@ export default function EditUserPage() {
                                         </div>
                                     </div>
                                 ))}
+                            </div>
+                            <div className="flex items-center space-x-2 pt-4">
+                                <Checkbox
+                                    id="is_external"
+                                    checked={formData.is_external}
+                                    onCheckedChange={(checked) =>
+                                        setFormData({ ...formData, is_external: !!checked })
+                                    }
+                                />
+                                <div className="grid gap-1.5 leading-none">
+                                    <Label htmlFor="is_external" className="font-medium">
+                                        External Consultant (Exclude from Payroll)
+                                    </Label>
+                                    <p className="text-sm text-muted-foreground">
+                                        Visiting doctors or contractors who shouldn't appear in the regular employee payroll.
+                                    </p>
+                                </div>
                             </div>
                             {errors.roles && (
                                 <p className="text-sm text-destructive">{errors.roles[0]}</p>

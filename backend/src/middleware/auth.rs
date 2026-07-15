@@ -167,6 +167,7 @@ pub fn generate_token(
     organization_id: i64,
     org_slug: &str,
     is_super_admin: bool,
+    is_external: bool,
     secret: &str,
     expiration_hours: u64,
 ) -> Result<String, jsonwebtoken::errors::Error> {
@@ -181,6 +182,7 @@ pub fn generate_token(
         organization_id,
         org_slug: Some(org_slug.to_string()),
         is_super_admin,
+        is_external,
         aud: TENANT_AUD.to_string(),
         impersonated_by: None,
         impersonation: false,
@@ -201,6 +203,7 @@ pub fn generate_impersonation_token(
     org_slug: &str,
     is_super_admin: bool,
     platform_admin_id: i64,
+    is_external: bool,
     secret: &str,
     expiration_hours: u64,
 ) -> Result<String, jsonwebtoken::errors::Error> {
@@ -215,6 +218,7 @@ pub fn generate_impersonation_token(
         organization_id,
         org_slug: Some(org_slug.to_string()),
         is_super_admin,
+        is_external,
         aud: TENANT_AUD.to_string(),
         impersonated_by: Some(platform_admin_id),
         impersonation: true,
@@ -232,10 +236,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tenant_token_roundtrip_with_audience() {
-        let secret = "test-secret-at-least-thirty-two-chars!!";
-        let token = generate_token(1, "u@test.com", 1, "acme", false, secret, 24).unwrap();
-        let claims = decode_tenant_token(&token, secret).expect("decode should succeed");
+    fn test_valid_tenant_token() {
+        let secret = "supersecret";
+        let token = generate_token(1, "u@test.com", 1, "acme", false, false, secret, 24).unwrap();
+        let claims = decode_tenant_token(&token, secret).unwrap();
         assert_eq!(claims.aud, TENANT_AUD);
         assert_eq!(claims.sub, 1);
         assert_eq!(claims.org_slug.as_deref(), Some("acme"));
@@ -257,6 +261,7 @@ mod tests {
             aud: PLATFORM_AUD.to_string(),
             impersonated_by: None,
             impersonation: false,
+            is_external: false,
         };
         let token = encode(
             &Header::default(),

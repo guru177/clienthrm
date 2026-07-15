@@ -42,6 +42,7 @@ import {
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
 import { SUPPORTED_TRIGGERS, triggerLabel } from '@/lib/workflow-utils';
+import { useConfirm } from '@/lib/confirm';
 
 interface Workflow {
     id: number;
@@ -59,6 +60,7 @@ interface Workflow {
 }
 
 export default function Index() {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [workflows, setWorkflows] = useState<Workflow[]>([]);
     const [loadingData, setLoadingData] = useState(true);
@@ -155,7 +157,7 @@ export default function Index() {
     };
 
     const handleDelete = async (workflow: Workflow) => {
-        if (!confirm(`Are you sure you want to delete "${workflow.name}"? This action cannot be undone.`)) return;
+        if (!(await confirm({ description: `Are you sure you want to delete "${workflow.name}"? This action cannot be undone.` }))) return;
         setActionLoading(workflow.id);
         try {
             const response = await axios.delete(`/admin/workflows/${workflow.id}`);

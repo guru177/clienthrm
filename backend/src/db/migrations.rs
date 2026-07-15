@@ -158,6 +158,71 @@ fn migrate_department_status_columns(conn: &rusqlite::Connection) {
     add_integer_column_if_missing(conn, "designations", "is_active", 1);
 }
 
+/// Ensure doctor_reports table and indexes exist (Postgres / dialect-aware).
+pub fn migrate_doctor_reports(conn: &crate::db::Connection) {
+    let exists = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        conn.query_row(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'doctor_reports' LIMIT 1",
+            crate::params![],
+            |_| Ok(()),
+        )
+        .is_ok()
+    } else {
+        table_exists(conn.sqlite_conn(), "doctor_reports")
+    };
+    if exists {
+        return;
+    }
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        r#"
+        CREATE TABLE IF NOT EXISTS doctor_reports (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            employee_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            doctor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            consultation_date DATE NOT NULL,
+            subjective TEXT NOT NULL DEFAULT '',
+            objective TEXT NOT NULL DEFAULT '',
+            assessment TEXT NOT NULL DEFAULT '',
+            plan TEXT NOT NULL DEFAULT '',
+            prescription_notes TEXT,
+            prescription_path TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_employee ON doctor_reports(organization_id, employee_user_id);
+        CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_date ON doctor_reports(organization_id, consultation_date DESC);
+        "#
+    } else {
+        r#"
+        CREATE TABLE IF NOT EXISTS doctor_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            employee_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            doctor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            consultation_date TEXT NOT NULL,
+            subjective TEXT NOT NULL DEFAULT '',
+            objective TEXT NOT NULL DEFAULT '',
+            assessment TEXT NOT NULL DEFAULT '',
+            plan TEXT NOT NULL DEFAULT '',
+            prescription_notes TEXT,
+            prescription_path TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_employee ON doctor_reports(organization_id, employee_user_id);
+        CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_date ON doctor_reports(organization_id, consultation_date DESC);
+        "#
+    };
+    if let Err(e) = conn.execute_batch(ddl) {
+        log::warn!("doctor_reports migration: {e}");
+    } else {
+        log::info!("doctor_reports table ready");
+    }
+}
+
 /// Link departments to branches (centers) and backfill existing rows.
 pub fn migrate_department_center_links(conn: &crate::db::Connection) {
     use crate::db::connection::OptionalExt;
@@ -849,6 +914,12 @@ fn expand_legacy_plan_modules(modules: &mut Vec<String>) {
     if modules.iter().any(|m| m == "payroll") && !modules.iter().any(|m| m == "my_payslips") {
         modules.push("my_payslips".to_string());
     }
+    if !modules.iter().any(|m| m == "doctor_reports") {
+        modules.push("doctor_reports".to_string());
+    }
+    if !modules.iter().any(|m| m == "my_doctor_reports") {
+        modules.push("my_doctor_reports".to_string());
+    }
     if !modules.iter().any(|m| m == "support") {
         modules.push("support".to_string());
     }
@@ -1455,5 +1526,238 @@ fn migrate_platform_release_desktop_installer(conn: &rusqlite::Connection) {
             [],
         );
         log::info!("Added desktop_installer to platform_releases");
+    }
+}
+
+/// Ensure grocery_benefits and grocery_claims tables exist (Postgres / SQLite).
+pub fn migrate_grocery_benefits(conn: &crate::db::Connection) {
+    let exists = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        conn.query_row(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'grocery_benefits' LIMIT 1",
+            crate::params![],
+            |_| Ok(()),
+        )
+        .is_ok()
+    } else {
+        table_exists(conn.sqlite_conn(), "grocery_benefits")
+    };
+    if exists {
+        return;
+    }
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        r#"
+        CREATE TABLE IF NOT EXISTS grocery_benefits (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            start_date TEXT NOT NULL,
+            subsidy_percentage INTEGER NOT NULL DEFAULT 50,
+            monthly_allowance DOUBLE PRECISION NOT NULL DEFAULT 5000,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(organization_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_grocery_benefits_org ON grocery_benefits(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_benefits_user ON grocery_benefits(user_id);
+
+        CREATE TABLE IF NOT EXISTS grocery_claims (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            benefit_id INTEGER NOT NULL REFERENCES grocery_benefits(id) ON DELETE CASCADE,
+            claim_month INTEGER NOT NULL,
+            claim_year INTEGER NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            company_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+            employee_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+            is_free_month INTEGER NOT NULL DEFAULT 0,
+            description TEXT,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER REFERENCES users(id),
+            reviewed_at TEXT,
+            review_notes TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_org ON grocery_claims(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_user ON grocery_claims(user_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_benefit ON grocery_claims(benefit_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_month ON grocery_claims(claim_year, claim_month);
+        "#
+    } else {
+        r#"
+        CREATE TABLE IF NOT EXISTS grocery_benefits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            start_date TEXT NOT NULL,
+            subsidy_percentage INTEGER NOT NULL DEFAULT 50,
+            monthly_allowance DOUBLE PRECISION NOT NULL DEFAULT 5000,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(organization_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_grocery_benefits_org ON grocery_benefits(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_benefits_user ON grocery_benefits(user_id);
+
+        CREATE TABLE IF NOT EXISTS grocery_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            benefit_id INTEGER NOT NULL REFERENCES grocery_benefits(id) ON DELETE CASCADE,
+            claim_month INTEGER NOT NULL,
+            claim_year INTEGER NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            company_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+            employee_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+            is_free_month INTEGER NOT NULL DEFAULT 0,
+            description TEXT,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER REFERENCES users(id),
+            reviewed_at TEXT,
+            review_notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_org ON grocery_claims(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_user ON grocery_claims(user_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_benefit ON grocery_claims(benefit_id);
+        CREATE INDEX IF NOT EXISTS idx_grocery_claims_month ON grocery_claims(claim_year, claim_month);
+        "#
+    };
+    if let Err(e) = conn.execute_batch(ddl) {
+        log::warn!("grocery_benefits migration: {e}");
+    } else {
+        log::info!("grocery_benefits and grocery_claims tables ready");
+    }
+}
+
+pub fn migrate_assets(conn: &crate::db::Connection) {
+    let exists = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        conn.query_row(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'assets' LIMIT 1",
+            crate::params![],
+            |_| Ok(()),
+        )
+        .is_ok()
+    } else {
+        table_exists(conn.sqlite_conn(), "assets")
+    };
+    if exists {
+        return;
+    }
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        r#"
+        CREATE TABLE IF NOT EXISTS assets (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            asset_type TEXT NOT NULL,
+            identifier TEXT,
+            status TEXT NOT NULL DEFAULT 'available',
+            purchase_date TEXT,
+            purchase_cost DOUBLE PRECISION,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_assets_org ON assets(organization_id);
+
+        CREATE TABLE IF NOT EXISTS asset_allocations (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            allocated_date TEXT NOT NULL,
+            return_date TEXT,
+            allocation_condition TEXT,
+            return_condition TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_org ON asset_allocations(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_asset ON asset_allocations(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_user ON asset_allocations(user_id);
+
+        CREATE TABLE IF NOT EXISTS asset_expenses (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            expense_type TEXT NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            expense_date TEXT NOT NULL,
+            description TEXT,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_expenses_org ON asset_expenses(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_expenses_asset ON asset_expenses(asset_id);
+        "#
+    } else {
+        r#"
+        CREATE TABLE IF NOT EXISTS assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            asset_type TEXT NOT NULL,
+            identifier TEXT,
+            status TEXT NOT NULL DEFAULT 'available',
+            purchase_date TEXT,
+            purchase_cost DOUBLE PRECISION,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_assets_org ON assets(organization_id);
+
+        CREATE TABLE IF NOT EXISTS asset_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            allocated_date TEXT NOT NULL,
+            return_date TEXT,
+            allocation_condition TEXT,
+            return_condition TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_org ON asset_allocations(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_asset ON asset_allocations(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_allocations_user ON asset_allocations(user_id);
+
+        CREATE TABLE IF NOT EXISTS asset_expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            expense_type TEXT NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            expense_date TEXT NOT NULL,
+            description TEXT,
+            receipt_url TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_expenses_org ON asset_expenses(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_expenses_asset ON asset_expenses(asset_id);
+        "#
+    };
+    if let Err(e) = conn.execute_batch(ddl) {
+        log::warn!("assets migration: {e}");
+    } else {
+        log::info!("assets tables ready");
     }
 }

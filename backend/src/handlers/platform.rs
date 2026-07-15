@@ -878,6 +878,7 @@ pub async fn organizations_impersonate(
         &org_slug,
         user.is_super_admin,
         platform_claims.sub,
+        false,
         &jwt_secret,
         app_config.jwt_expiration_hours,
     ) {

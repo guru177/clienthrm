@@ -44,6 +44,7 @@ import {
 } from 'lucide-react';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
+import { useConfirm } from '@/lib/confirm';
 
 interface Task {
     id: number;
@@ -94,6 +95,7 @@ const typeLabels: Record<string, string> = {
 };
 
 export default function Index() {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [tasks, setTasks] = useState<Task[]>([]);
     const [loading, setLoading] = useState(true);
@@ -157,7 +159,7 @@ export default function Index() {
     };
 
     const handleDelete = async (task: Task) => {
-        if (!confirm(`Are you sure you want to delete "${task.title}"? This action cannot be undone.`)) return;
+        if (!(await confirm({ description: `Are you sure you want to delete "${task.title}"? This action cannot be undone.` }))) return;
         setDeletingId(task.id);
         try {
             const response = await axios.delete(`/admin/tasks/${task.id}`);

@@ -222,8 +222,8 @@ impl ParamValue {
             ParamValue::Bool(v) => Box::new(if *v { 1i16 } else { 0i16 }),
             ParamValue::Text(v) => Box::new(PostgresAdaptiveText(v.clone())),
             ParamValue::Blob(v) => Box::new(v.clone()),
-            ParamValue::NaiveDateTime(v) => Box::new(*v),
-            ParamValue::NaiveDate(v) => Box::new(*v),
+            ParamValue::NaiveDateTime(v) => Box::new(PostgresAdaptiveText(v.format("%Y-%m-%d %H:%M:%S").to_string())),
+            ParamValue::NaiveDate(v) => Box::new(PostgresAdaptiveText(v.format("%Y-%m-%d").to_string())),
         }
     }
 }

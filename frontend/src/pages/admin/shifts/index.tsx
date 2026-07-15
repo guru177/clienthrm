@@ -35,6 +35,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface ShiftTemplate {
     id: number;
@@ -122,6 +123,7 @@ function toApiTime(value: string) {
 }
 
 export default function ShiftsPage() {
+    const confirm = useConfirm();
     const [templates, setTemplates] = useState<ShiftTemplate[]>([]);
     const [users, setUsers] = useState<UserOption[]>([]);
     const [loading, setLoading] = useState(true);

@@ -379,12 +379,13 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         .unwrap_or("active");
 
     let result = conn.execute(
-        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, is_external, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         crate::params![
             name, email, hashed, phone,
             body.department_id, body.designation_id,
             body.employment_type.as_deref().unwrap_or("full-time"),
+            body.is_external as i64,
             employee_id, body.date_of_joining, body.work_location,
             status,
             org_id,
@@ -487,6 +488,7 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     maybe_set!(employment_type, "employment_type");
     maybe_set!(status, "status");
     maybe_set!(work_location, "work_location");
+    maybe_set!(is_external, "is_external");
     maybe_set!(work_state, "work_state");
     maybe_set!(tax_regime, "tax_regime");
     maybe_set!(date_of_joining, "date_of_joining");
@@ -771,6 +773,12 @@ pub async fn update_form(
     if let Some(v) = fields.get("reporting_manager_id").and_then(|s| opt_i64(s)) {
         sets.push(format!("reporting_manager_id = ?{}", idx));
         params.push(crate::db::into_param_value(v));
+        idx += 1;
+    }
+    if let Some(v) = fields.get("is_external") {
+        let is_ext = v == "true" || v == "1";
+        sets.push(format!("is_external = ?{}", idx));
+        params.push(crate::db::into_param_value(if is_ext { 1 } else { 0 }));
         idx += 1;
     }
 

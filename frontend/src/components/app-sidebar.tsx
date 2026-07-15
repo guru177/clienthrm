@@ -1,8 +1,8 @@
 import { Link, useLocation } from 'react-router-dom';
 import {
     Award, BarChart3, Bell, Briefcase, Building, CalendarCheck, ClipboardList, Clock,
-    DollarSign, FileText, Fingerprint, Folder, IndianRupee, LayoutGrid, LifeBuoy, MapPin, TrendingUp, Users, UsersRound,
-    Wallet, Workflow, Calendar, FileCheck, ClipboardCheck, Settings, MessagesSquare, Receipt, UserCheck,
+    DollarSign, FileText, Fingerprint, Folder, IndianRupee, LayoutGrid, LifeBuoy, MapPin, ShoppingCart, TrendingUp, Users, UsersRound,
+    Wallet, Workflow, Calendar, FileCheck, ClipboardCheck, Settings, MessagesSquare, Receipt, UserCheck, Stethoscope, Wrench
 } from 'lucide-react';
 
 import { NavFooter } from '@/components/nav-footer';
@@ -52,6 +52,12 @@ const mainNavItems: NavEntry[] = [
         ],
     },
     { title: 'My Payslips', href: '/admin/my-payslips', icon: Receipt, permission: 'view-my-payslips', module: 'my_payslips' },
+    { title: 'Doctor Reports', href: '/admin/doctor-reports', icon: FileText, permission: 'view-doctor-reports', module: 'doctor_reports' },
+    { title: 'My Doctor Reports', href: '/admin/my-doctor-reports', icon: Stethoscope, permission: 'view-my-doctor-reports', module: 'my_doctor_reports' },
+    { title: 'Grocery Benefits', href: '/admin/grocery-benefits', icon: ShoppingCart, permission: 'view-grocery-benefits', module: 'grocery_benefits' },
+    { title: 'My Grocery Benefits', href: '/admin/my-grocery-benefits', icon: ShoppingCart, permission: 'view-my-grocery-benefits', module: 'my_grocery_benefits' },
+    { title: 'Assets & Maintenance', href: '/admin/assets', icon: Wrench, permission: 'view-assets', module: 'assets' },
+    { title: 'My Assets', href: '/admin/my-assets', icon: Wrench, permission: 'view-my-assets', module: 'my_assets' },
     { title: 'Workflows', href: '/admin/workflows', icon: Workflow, permission: 'view-workflows', module: 'workflows' },
     { title: 'Tasks & Activities', href: '/admin/tasks', icon: ClipboardList, permission: 'view-tasks', module: 'tasks' },
     { title: 'Projects', href: '/admin/projects', icon: Folder, permission: 'view-projects', module: 'projects' },

@@ -74,3 +74,4 @@ reports/full-test-run*.log
 tmp-*.log
 tmp-*.json
 tmp_*.rs
+tmp-*/

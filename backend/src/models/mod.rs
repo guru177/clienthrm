@@ -6,6 +6,7 @@ pub mod department;
 pub mod designation;
 pub mod role;
 pub mod permission;
+pub mod asset;
 pub mod attendance;
 pub mod leave_request;
 pub mod holiday;
@@ -19,6 +20,8 @@ pub mod job_application;
 pub mod biometric;
 
 pub mod chat;
+pub mod doctor_report;
+pub mod grocery_benefit;
 
 // Re-export common response types
 use serde::Serialize;

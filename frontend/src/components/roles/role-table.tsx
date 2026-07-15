@@ -26,6 +26,7 @@ import { type PermissionModule } from '@/lib/permissions-api';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 import RoleForm from './role-form';
+import { useConfirm } from '@/lib/confirm';
 
 interface RoleTableProps {
     roles?: Role[];
@@ -99,6 +100,7 @@ export default function RoleTable({
         : [];
 
     const handleSort = (column: string) => {
+    const confirm = useConfirm();
         if (sortBy === column) {
             setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
         } else {

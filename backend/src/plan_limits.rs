@@ -19,7 +19,7 @@ fn parse_json_string_list(raw: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
 }
 
-/// Tenant modules in sidebar / subscription catalog order (25 items).
+/// Tenant modules in sidebar / subscription catalog order.
 pub const MODULE_CATALOG: &[(&str, &str)] = &[
     ("dashboard", "Dashboard"),
     ("users", "Users & Roles"),
@@ -38,6 +38,12 @@ pub const MODULE_CATALOG: &[(&str, &str)] = &[
     ("holidays", "Holidays"),
     ("payroll", "Salaries & Payroll"),
     ("my_payslips", "My Payslips"),
+    ("doctor_reports", "Doctor Reports"),
+    ("my_doctor_reports", "My Doctor Reports"),
+    ("grocery_benefits", "Grocery Benefits"),
+    ("my_grocery_benefits", "My Grocery Benefits"),
+    ("assets", "Assets & Maintenance"),
+    ("my_assets", "My Assets"),
     ("workflows", "Workflows"),
     ("tasks", "Tasks & Activities"),
     ("projects", "Projects"),
@@ -146,6 +152,17 @@ pub fn permissions_for_module(module: &str) -> Vec<&'static str> {
         ],
         "payroll" => vec!["view-payroll", "manage-payroll", "export-payroll", "approve-payroll"],
         "my_payslips" => vec!["view-my-payslips"],
+        "doctor_reports" => vec![
+            "view-doctor-reports",
+            "create-doctor-reports",
+            "edit-doctor-reports",
+            "delete-doctor-reports",
+        ],
+        "my_doctor_reports" => vec!["view-my-doctor-reports"],
+        "grocery_benefits" => vec!["view-grocery-benefits", "manage-grocery-benefits"],
+        "my_grocery_benefits" => vec!["view-my-grocery-benefits"],
+        "assets" => vec!["view-assets", "manage-assets"],
+        "my_assets" => vec!["view-my-assets"],
         "workflows" => vec![
             "view-workflows",
             "create-workflows",

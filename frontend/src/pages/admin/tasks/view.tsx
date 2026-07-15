@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
+import { useConfirm } from '@/lib/confirm';
 
 interface Task {
     id: number;
@@ -91,6 +92,7 @@ const typeLabels: Record<string, string> = {
 };
 
 export default function View({ task = {} as Task }: Props) {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
     const [commentText, setCommentText] = useState('');

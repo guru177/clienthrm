@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
+import { useConfirm } from '@/lib/confirm';
 
 interface Project {
     id: number;
@@ -89,6 +90,7 @@ const priorityColors: Record<string, string> = {
 };
 
 export default function Index() {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);

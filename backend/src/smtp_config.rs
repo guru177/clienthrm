@@ -4,6 +4,7 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
+#[derive(Clone)]
 pub struct SmtpConfig {
     pub host: String,
     pub user: String,

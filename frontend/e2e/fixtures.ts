@@ -26,24 +26,26 @@ export const e2eCredentials = {
 /** Dismiss announcement carousel dialogs that block admin UI. */
 export async function dismissOverlays(page: import('@playwright/test').Page) {
     await page.waitForLoadState('domcontentloaded');
-    await expect
-        .poll(
-            async () => {
-                const overlay = page.locator('[data-slot="dialog-overlay"][data-state="open"]');
-                if (!(await overlay.isVisible().catch(() => false))) return true;
+    const dialog = page
+        .getByRole('dialog')
+        .filter({ hasText: /company announcement|HR Daddy/i })
+        .first();
 
-                const primary = page.getByRole('button', { name: /^(next|got it)$/i });
-                if (await primary.isVisible().catch(() => false)) {
-                    await primary.click();
-                    return false;
-                }
+    await dialog.waitFor({ state: 'visible', timeout: 2_000 }).catch(() => null);
 
-                await page.keyboard.press('Escape');
-                return !(await overlay.isVisible().catch(() => false));
-            },
-            { timeout: 15_000 },
-        )
-        .toBe(true);
+    for (let i = 0; i < 6; i += 1) {
+        if (!(await dialog.isVisible().catch(() => false))) return;
+
+        const action = dialog.getByRole('button', { name: /^(next|got it|close|dismiss)$/i });
+        if (await action.first().isVisible().catch(() => false)) {
+            await action.first().click();
+        } else {
+            await page.keyboard.press('Escape');
+        }
+        await page.waitForTimeout(250);
+    }
+
+    await expect(dialog).toBeHidden({ timeout: 3_000 });
 }
 
 export const test = base.extend<AuthFixtures>({

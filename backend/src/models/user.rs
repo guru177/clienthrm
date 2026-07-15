@@ -32,6 +32,7 @@ pub struct User {
     pub timezone: Option<String>,
     pub organization_id: i64,
     pub is_super_admin: bool,
+    pub is_external: bool,
     pub onboarded: bool,
     pub account_number: Option<String>,
     pub ifsc_code: Option<String>,
@@ -69,6 +70,7 @@ pub struct UserSummary {
     pub status: Option<String>,
     pub organization_id: i64,
     pub is_super_admin: bool,
+    pub is_external: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_of_birth: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,6 +156,7 @@ pub struct JwtClaims {
     #[serde(default)]
     pub org_slug: Option<String>,
     pub is_super_admin: bool,
+    pub is_external: bool,
     #[serde(default = "default_tenant_aud")]
     pub aud: String,
     /// Set when a platform admin impersonates a tenant user.
@@ -182,6 +185,7 @@ pub struct CreateUserRequest {
     pub role_ids: Option<Vec<i64>>,
     pub manager_id: Option<i64>,
     pub reporting_manager_id: Option<i64>,
+    pub is_external: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +223,7 @@ pub struct UpdateUserRequest {
     pub date_of_exit: Option<String>,
     pub work_state: Option<String>,
     pub tax_regime: Option<String>,
+    pub is_external: Option<bool>,
 
     // Roles
     pub roles: Option<Vec<i64>>,
@@ -258,6 +263,7 @@ impl User {
                 .get::<Option<i64>>("organization_id")?
                 .unwrap_or(1),
             is_super_admin: row.get_boolish("is_super_admin")?,
+            is_external: row.get_boolish("is_external").unwrap_or(false),
             onboarded: row.get_boolish("onboarded")?,
             account_number: row.get("account_number")?,
             ifsc_code: row.get("ifsc_code")?,
@@ -290,6 +296,7 @@ impl User {
             status: self.status.clone(),
             organization_id: self.organization_id,
             is_super_admin: self.is_super_admin,
+            is_external: self.is_external,
             date_of_birth: self.date_of_birth.clone(),
             gender: self.gender.clone(),
             address: self.address.clone(),

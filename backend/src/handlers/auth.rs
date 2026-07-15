@@ -247,6 +247,7 @@ pub fn complete_login_after_auth(
         user.organization_id,
         &org_slug,
         user.is_super_admin,
+        user.is_external,
         jwt_secret,
         app_config.jwt_expiration_hours,
     ) {
@@ -487,6 +488,7 @@ pub async fn refresh(
         user.organization_id,
         &org_slug,
         user.is_super_admin,
+        user.is_external,
         &jwt_secret,
         app_config.jwt_expiration_hours,
     ) {
@@ -794,6 +796,7 @@ fn finalize_signup_response(
         org_id,
         slug,
         true,
+        false,
         jwt_secret,
         jwt_expiration_hours,
     ) {

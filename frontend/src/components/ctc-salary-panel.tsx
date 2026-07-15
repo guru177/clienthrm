@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface ComponentLine {
     component_id: number;
@@ -98,6 +99,7 @@ export function CtcSalaryPanel({
     userId: number;
     onCtcChange?: (hasCtc: boolean) => void;
 }) {
+    const confirm = useConfirm();
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [clearing, setClearing] = useState(false);
@@ -194,7 +196,7 @@ export function CtcSalaryPanel({
     };
 
     const handleClearCtc = async () => {
-        if (!confirm('Remove CTC profile? Payroll will use manual salary structure instead.')) return;
+        if (!(await confirm({ description: 'Remove CTC profile? Payroll will use manual salary structure instead.' }))) return;
         setClearing(true);
         try {
             const res = await axios.delete(`/admin/users/${userId}/ctc-profile`);

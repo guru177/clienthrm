@@ -80,6 +80,7 @@ interface User {
     email: string;
     phone?: string;
     photo?: string;
+    is_external?: boolean;
     department?: {
         id: number;
         name: string;
@@ -365,7 +366,16 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                                 <TableCell>
                                                     <div className="flex items-center gap-3">
                                                         <UserRowAvatar photo={user.photo} name={user.name} />
-                                                        <span className="font-medium">{user.name}</span>
+                                                        <div className="flex flex-col">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-medium">{user.name}</span>
+                                                                {user.is_external && (
+                                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                                                                        External
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </TableCell>
                                                 <TableCell>{user.email}</TableCell>

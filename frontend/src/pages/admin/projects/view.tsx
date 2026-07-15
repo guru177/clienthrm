@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import axios from '@/lib/axios';
+import { useConfirm } from '@/lib/confirm';
 
 interface Project {
     id: number;
@@ -90,6 +91,7 @@ const priorityColors: Record<string, string> = {
 };
 
 export default function View({ project = {} as Project }: Props) {
+    const confirm = useConfirm();
     const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
 

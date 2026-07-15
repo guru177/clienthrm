@@ -18,6 +18,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 const breadcrumbs = [
     { label: 'App Settings', href: '/admin/settings/app' },
@@ -58,6 +59,7 @@ interface LeaveCredit {
 const currentYear = new Date().getFullYear();
 
 export default function LeaveTypesSettingsPage() {
+    const confirm = useConfirm();
     const [items, setItems] = useState<LeaveType[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState<number | 'new' | null>(null);
@@ -200,7 +202,7 @@ export default function LeaveTypesSettingsPage() {
     };
 
     const revokeCredit = async (id: number) => {
-        if (!confirm('Remove this bonus leave credit?')) return;
+        if (!(await confirm({ description: 'Remove this bonus leave credit?' }))) return;
         try {
             const res = await axios.delete(`/admin/leave-credits/${id}`);
             handleApiResponse(res);

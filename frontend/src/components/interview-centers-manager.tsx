@@ -15,6 +15,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface InterviewCenter {
     id: string;
@@ -28,6 +29,7 @@ interface InterviewCenter {
 }
 
 export default function InterviewCentersManager() {
+    const confirm = useConfirm();
     const [centers, setCenters] = useState<InterviewCenter[]>([]);
     const [loading, setLoading] = useState(false);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -134,7 +136,7 @@ export default function InterviewCentersManager() {
     };
 
     const handleDelete = async (centerId: string) => {
-        if (!confirm('Are you sure you want to delete this center?')) {
+        if (!(await confirm({ description: 'Are you sure you want to delete this center?' }))) {
             return;
         }
 

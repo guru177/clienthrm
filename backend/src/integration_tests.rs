@@ -251,6 +251,7 @@ async fn me_returns_user_with_valid_token() {
         1,
         TEST_ORG_SLUG,
         true,
+        false,
         &harness.jwt_secret,
         24,
     )
@@ -382,6 +383,7 @@ async fn expired_jwt_rejected() {
         aud: TENANT_AUD.to_string(),
         impersonated_by: None,
         impersonation: false,
+        is_external: false,
     };
     let token = encode(
         &Header::default(),
@@ -499,3 +501,36 @@ async fn large_login_payload_rejected_or_handled() {
     let res = test::call_service(&app, req).await;
     assert!(res.status().as_u16() >= 400);
 }
+
+#[actix_web::test]
+async fn assets_list_returns_200() {
+    let harness = shared_harness();
+    let app = test::init_service(harness.app()).await;
+    
+    let token = generate_token(1, TEST_EMAIL, 1, TEST_ORG_SLUG, true, false, &harness.jwt_secret, 24).unwrap();
+    
+    let req = test::TestRequest::get()
+        .uri("/api/admin/assets")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+        
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), 200, "Assets list should return 200");
+}
+
+#[actix_web::test]
+async fn grocery_benefits_returns_200() {
+    let harness = shared_harness();
+    let app = test::init_service(harness.app()).await;
+    
+    let token = generate_token(1, TEST_EMAIL, 1, TEST_ORG_SLUG, true, false, &harness.jwt_secret, 24).unwrap();
+    
+    let req = test::TestRequest::get()
+        .uri("/api/admin/grocery-benefits")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+        
+    let res = test::call_service(&app, req).await;
+    assert_eq!(res.status(), 200, "Grocery benefits list should return 200");
+}
+

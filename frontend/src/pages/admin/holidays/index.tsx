@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface HolidayForm {
     id?: number;
@@ -41,6 +42,7 @@ interface HolidayForm {
 }
 
 export default function HolidaysPage() {
+    const confirm = useConfirm();
     const [holidays, setHolidays] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
@@ -122,7 +124,7 @@ export default function HolidaysPage() {
     };
 
     const deleteHoliday = async (id: number) => {
-        if (!confirm('Delete this holiday?')) return;
+        if (!(await confirm({ description: 'Delete this holiday?' }))) return;
         try {
             const response = await axios.delete(`/admin/holidays/${id}`);
             handleApiResponse(response);

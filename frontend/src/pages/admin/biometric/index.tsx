@@ -54,7 +54,7 @@ import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
 import AttendanceStats from '@/components/attendance/attendance-stats';
 import { useAttendanceStats } from '@/hooks/use-attendance-stats';
 import { usePermissions } from '@/hooks/use-permissions';
-
+import { useConfirm } from '@/lib/confirm';
 interface BiometricDevice {
     id: number;
     serial_number: string;
@@ -153,6 +153,7 @@ function timeAgo(dateStr: string | null): string {
 
 export default function BiometricIndex() {
     const navigate = useNavigate();
+    const confirm = useConfirm();
     const { hasPermission } = usePermissions();
     const canManage = hasPermission('manage-attendance');
     const { stats: attendanceStats, loading: attendanceStatsLoading } =
@@ -336,7 +337,7 @@ export default function BiometricIndex() {
     };
 
     const handleDeleteMapping = async (id: number) => {
-        if (!confirm('Remove this PIN mapping?')) return;
+        if (!(await confirm({ title: 'Remove Mapping', description: 'Remove this PIN mapping?' }))) return;
         try {
             await axios.delete(`/admin/biometric/mapping/${id}`);
             await loadMappings();
@@ -346,7 +347,7 @@ export default function BiometricIndex() {
     };
 
     const handleDeleteDevice = async (id: number) => {
-        if (!confirm('Remove this device?')) return;
+        if (!(await confirm({ title: 'Remove Device', description: 'Remove this device?' }))) return;
         try {
             await axios.delete(`/admin/biometric/devices/${id}`);
             await loadDevices();

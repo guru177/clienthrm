@@ -112,6 +112,13 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     }
 
     if let Err(e) = conn.execute_batch(&adapt_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_external INTEGER NOT NULL DEFAULT 0;",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL add is_external to users: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
         include_str!("postgres_rust_tables.sql"),
         Backend::Postgres,
     )) {
@@ -119,6 +126,36 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     }
 
     super::migrations::migrate_department_center_links(&conn);
+    super::migrations::migrate_doctor_reports(&conn);
+    super::migrations::migrate_grocery_benefits(&conn);
+    super::migrations::migrate_assets(&conn);
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "UPDATE subscription_plans 
+         SET modules = (modules::jsonb || '[\"doctor_reports\", \"my_doctor_reports\"]'::jsonb)::text
+         WHERE modules NOT LIKE '%doctor_reports%';",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL backfill doctor_reports modules: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "UPDATE subscription_plans 
+         SET modules = (modules::jsonb || '[\"grocery_benefits\", \"my_grocery_benefits\"]'::jsonb)::text
+         WHERE modules NOT LIKE '%grocery_benefits%';",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL backfill grocery_benefits modules: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "UPDATE subscription_plans 
+         SET modules = (modules::jsonb || '[\"assets\", \"my_assets\"]'::jsonb)::text
+         WHERE modules NOT LIKE '%assets%';",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL backfill assets modules: {e}");
+    }
 
     super::postgres_seeds::run_postgres_seeds(&conn);
     ensure_migration_ledger(&conn);

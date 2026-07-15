@@ -251,6 +251,18 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
         }
         return Some("manage-leave-requests");
     }
+    if path == "/api/admin/me/doctor-reports" && *method == Method::GET {
+        return Some("view-my-doctor-reports");
+    }
+    if path.starts_with("/api/admin/doctor-reports") {
+        return Some(crud_perm(
+            method,
+            "view-doctor-reports",
+            "create-doctor-reports",
+            "edit-doctor-reports",
+            "delete-doctor-reports",
+        ));
+    }
     if path.starts_with("/api/admin/me/") {
         return None;
     }

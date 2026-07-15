@@ -16,6 +16,7 @@ import { Toaster } from 'react-hot-toast';
 import { PermissionRoute } from '@/components/permission-route';
 import { initializeTheme } from '@/hooks/use-appearance';
 import { defaultAdminRoute } from '@/lib/default-route';
+import { ConfirmProvider } from '@/lib/confirm';
 
 function DefaultAdminRedirect() {
     const { loading, hasPermission } = useAuth();
@@ -104,6 +105,15 @@ const ProjectsEdit = lazy(() => import('@/pages/admin/projects/edit'));
 const ProjectsCreate = lazy(() => import('@/pages/admin/projects/create'));
 const RolesEdit = lazy(() => import('@/pages/admin/roles/edit'));
 const MyPayslips = lazy(() => import('@/pages/admin/my-payslips'));
+const DoctorReportsIndex = lazy(() => import('@/pages/admin/doctor-reports/index'));
+const DoctorReportsCreate = lazy(() => import('@/pages/admin/doctor-reports/create'));
+const DoctorReportsEdit = lazy(() => import('@/pages/admin/doctor-reports/edit'));
+const DoctorReportsView = lazy(() => import('@/pages/admin/doctor-reports/view'));
+const MyDoctorReports = lazy(() => import('@/pages/admin/my-doctor-reports'));
+const GroceryBenefitsAdminPage = lazy(() => import('@/pages/admin/grocery-benefits/index'));
+const MyGroceryBenefitsPage = lazy(() => import('@/pages/admin/my-grocery-benefits'));
+const AssetsAdminPage = lazy(() => import('@/pages/admin/assets/index'));
+const MyAssetsPage = lazy(() => import('@/pages/admin/my-assets'));
 const AppSettings = lazy(() => import('@/pages/admin/settings/app-settings'));
 const LeaveTypesSettings = lazy(() => import('@/pages/admin/settings/leave-types'));
 const SettingsProfile = lazy(() => import('@/pages/admin/settings/profile'));
@@ -221,6 +231,22 @@ function App() {
             <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
             <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
             <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
+
+            {/* Doctor Reports */}
+            <Route path="/admin/doctor-reports" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsIndex /></PermissionRoute>} />
+            <Route path="/admin/doctor-reports/create" element={<PermissionRoute permission="create-doctor-reports" module="doctor_reports"><DoctorReportsCreate /></PermissionRoute>} />
+            <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsView /></PermissionRoute>} />
+            <Route path="/admin/doctor-reports/:id/edit" element={<PermissionRoute permission="edit-doctor-reports" module="doctor_reports"><DoctorReportsEdit /></PermissionRoute>} />
+            <Route path="/admin/my-doctor-reports" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><MyDoctorReports /></PermissionRoute>} />
+
+            {/* Grocery Benefits */}
+            <Route path="/admin/grocery-benefits" element={<PermissionRoute permission="view-grocery-benefits" module="grocery_benefits"><GroceryBenefitsAdminPage /></PermissionRoute>} />
+            <Route path="/admin/my-grocery-benefits" element={<PermissionRoute permission="view-my-grocery-benefits" module="my_grocery_benefits"><MyGroceryBenefitsPage /></PermissionRoute>} />
+
+            {/* Assets */}
+            <Route path="/admin/assets" element={<PermissionRoute permission="view-assets" module="assets"><AssetsAdminPage /></PermissionRoute>} />
+            <Route path="/admin/my-assets" element={<PermissionRoute permission="view-my-assets" module="my_assets"><MyAssetsPage /></PermissionRoute>} />
+
             <Route path="/admin/reports" element={<PermissionRoute permission="view-reports" module="reports"><ReportsIndex /></PermissionRoute>} />
             <Route path="/admin/shifts">
                 <Route index element={<PermissionRoute permission="view-attendance" module="shifts"><ShiftsIndex /></PermissionRoute>} />
@@ -300,13 +326,15 @@ createRoot(root).render(
     <StrictMode>
         <AppRouter>
             <AuthProvider>
-                <BreadcrumbProvider>
-                <ErrorBoundary>
-                    <App />
-                </ErrorBoundary>
-                <Toaster position="top-right" />
-                            </BreadcrumbProvider>
-</AuthProvider>
+                <ConfirmProvider>
+                    <BreadcrumbProvider>
+                    <ErrorBoundary>
+                        <App />
+                    </ErrorBoundary>
+                    <Toaster position="top-right" />
+                                </BreadcrumbProvider>
+                </ConfirmProvider>
+            </AuthProvider>
         </AppRouter>
     </StrictMode>,
 );

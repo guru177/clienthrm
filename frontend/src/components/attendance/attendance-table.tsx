@@ -44,6 +44,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/use-permissions';
 import { isModuleAllowed } from '@/lib/plan-modules';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 
 interface ShiftInfo {
     template_name?: string;
@@ -80,6 +81,7 @@ function toTimeInput(value?: string | null): string {
 }
 
 export default function AttendanceTable() {
+    const confirm = useConfirm();
     const { planModules } = useAuth();
     const { hasPermission } = usePermissions();
     const canManage = hasPermission('manage-attendance');

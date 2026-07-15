@@ -135,6 +135,9 @@ pub fn sync_role_defaults(conn: &Connection) {
         UPDATE roles SET description = 'Focused access for recruitment and job application workflows'
         WHERE lower(slug) IN ('sales-representative', 'sales representative', 'sales_representative')
           AND (description IS NULL OR TRIM(description) = '');
+
+        UPDATE roles SET description = 'Creates and updates employee medical consultations (SOAP) and prescriptions'
+        WHERE lower(slug) = 'doctor' AND (description IS NULL OR TRIM(description) = '');
         ",
     );
 
@@ -178,7 +181,15 @@ pub fn sync_role_defaults(conn: &Connection) {
         "workflows",
         "reports",
     ];
-    let user_modules = ["dashboard", "attendance", "leave", "holidays", "my_payslips"];
+    let user_modules = [
+        "dashboard",
+        "attendance",
+        "leave",
+        "holidays",
+        "my_payslips",
+        "my_doctor_reports",
+    ];
+    let doctor_modules = ["dashboard", "doctor_reports"];
     let sales_modules = ["dashboard", "careers", "job_applications"];
 
     let org_ids: Vec<i64> = conn
@@ -188,6 +199,22 @@ pub fn sync_role_defaults(conn: &Connection) {
         .unwrap_or_else(|| vec![1]);
 
     for org_id in org_ids {
+        let now_role = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let doctor_exists = conn
+            .query_row(
+                "SELECT 1 FROM roles WHERE organization_id = ?1 AND lower(slug) = 'doctor' LIMIT 1",
+                crate::params![org_id],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !doctor_exists {
+            let _ = conn.execute(
+                "INSERT INTO roles (name, slug, description, is_default, organization_id, created_at, updated_at)
+                 VALUES ('Doctor', 'doctor', 'Creates and updates employee medical consultations (SOAP) and prescriptions', 0, ?1, ?2, ?2)",
+                crate::params![org_id, &now_role],
+            );
+        }
+
         let plan_modules = load_org_plan(conn, org_id)
             .map(|p| p.modules)
             .unwrap_or_default();
@@ -231,6 +258,13 @@ pub fn sync_role_defaults(conn: &Connection) {
             grant_permissions_to_role_in_org(conn, org_id, &["user"], &employee_leave);
         }
         prune_user_leave_admin_permissions(conn, org_id);
+
+        let mut doctor_perms = intersect_role_modules(&doctor_modules, &plan_modules);
+        if plan_modules.iter().any(|m| m == "doctor_reports") {
+            doctor_perms.insert("view-users".to_string());
+        }
+        grant_permissions_to_role_in_org(conn, org_id, &["doctor"], &doctor_perms);
+        prune_role_permissions_outside_plan(conn, org_id, &["doctor"], &plan_perms);
 
         grant_permissions_to_role_in_org(
             conn,

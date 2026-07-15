@@ -68,6 +68,8 @@ export const ALL_TENANT_MODULE_KEYS = [
     'holidays',
     'payroll',
     'my_payslips',
+    'doctor_reports',
+    'my_doctor_reports',
     'workflows',
     'tasks',
     'projects',

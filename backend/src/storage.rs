@@ -180,6 +180,21 @@ pub fn can_access_storage_file(
             .is_ok();
     }
 
+    if relative.starts_with("doctor-reports/") {
+        // Allow access if the user is the employee subject, the doctor author, or super-admin
+        return conn
+            .query_row(
+                "SELECT 1 FROM doctor_reports
+                 WHERE organization_id = ?2
+                   AND (prescription_path = ?1 OR prescription_path = ?3 OR prescription_path = ?4)
+                   AND (employee_user_id = ?5 OR doctor_user_id = ?5)
+                 LIMIT 1",
+                crate::params![&relative, org_id, &legacy, &legacy2, user_id],
+                |_| Ok(()),
+            )
+            .is_ok();
+    }
+
     conn.query_row(
         "SELECT 1 FROM app_settings
          WHERE organization_id = ?2 AND value LIKE '%' || ?1 || '%'
@@ -306,6 +321,47 @@ pub fn is_org_notification_banner(relative: &str) -> bool {
     normalize_relative_path(relative)
         .map(|p| p.starts_with("org-notifications/"))
         .unwrap_or(false)
+}
+
+const MAX_DOCTOR_REPORT_FILE_BYTES: usize = 10 * 1024 * 1024;
+
+fn doctor_report_extension(filename: Option<&str>, mime: Option<&str>) -> &'static str {
+    if let Some(name) = filename.and_then(|n| std::path::Path::new(n).extension()?.to_str()) {
+        match name.to_ascii_lowercase().as_str() {
+            "pdf" => return "pdf",
+            "png" => return "png",
+            "jpg" | "jpeg" => return "jpg",
+            _ => {}
+        }
+    }
+    match mime {
+        Some("application/pdf") => "pdf",
+        Some("image/png") => "png",
+        Some("image/jpeg") | Some("image/jpg") => "jpg",
+        _ => "pdf",
+    }
+}
+
+/// Save doctor report prescription file; returns DB path like `doctor-reports/<uuid>.ext`.
+pub fn save_doctor_report_file(
+    data: &[u8],
+    content_type: Option<&str>,
+    filename: Option<&str>,
+) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("Empty file".into());
+    }
+    if data.len() > MAX_DOCTOR_REPORT_FILE_BYTES {
+        return Err("File must be less than 10MB".into());
+    }
+    let ext = doctor_report_extension(filename, content_type);
+    let relative = format!("doctor-reports/{}.{}", uuid::Uuid::new_v4(), ext);
+    let full = storage_root().join(&relative);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+    Ok(relative)
 }
 
 /// Save chat attachment; returns DB path like `chat/<uuid>.ext`.

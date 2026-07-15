@@ -338,3 +338,112 @@ CREATE INDEX IF NOT EXISTS idx_user_presence_last_active ON user_presence(last_a
 ALTER TABLE departments ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
 CREATE INDEX IF NOT EXISTS idx_departments_center ON departments(organization_id, center_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_org_center_slug ON departments(organization_id, center_id, slug);
+
+CREATE TABLE IF NOT EXISTS doctor_reports (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    employee_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doctor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    consultation_date DATE NOT NULL,
+    subjective TEXT NOT NULL DEFAULT '',
+    objective TEXT NOT NULL DEFAULT '',
+    assessment TEXT NOT NULL DEFAULT '',
+    plan TEXT NOT NULL DEFAULT '',
+    prescription_notes TEXT,
+    prescription_path TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_employee ON doctor_reports(organization_id, employee_user_id);
+CREATE INDEX IF NOT EXISTS idx_doctor_reports_org_date ON doctor_reports(organization_id, consultation_date DESC);
+
+CREATE TABLE IF NOT EXISTS grocery_benefits (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    start_date TEXT NOT NULL,
+    subsidy_percentage INTEGER NOT NULL DEFAULT 50,
+    monthly_allowance DOUBLE PRECISION NOT NULL DEFAULT 5000,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(organization_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_grocery_benefits_org ON grocery_benefits(organization_id);
+CREATE INDEX IF NOT EXISTS idx_grocery_benefits_user ON grocery_benefits(user_id);
+
+CREATE TABLE IF NOT EXISTS grocery_claims (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    benefit_id INTEGER NOT NULL REFERENCES grocery_benefits(id) ON DELETE CASCADE,
+    claim_month INTEGER NOT NULL,
+    claim_year INTEGER NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    company_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+    employee_share DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_free_month INTEGER NOT NULL DEFAULT 0,
+    description TEXT,
+    receipt_url TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    review_notes TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_grocery_claims_org ON grocery_claims(organization_id);
+CREATE INDEX IF NOT EXISTS idx_grocery_claims_user ON grocery_claims(user_id);
+CREATE INDEX IF NOT EXISTS idx_grocery_claims_benefit ON grocery_claims(benefit_id);
+CREATE INDEX IF NOT EXISTS idx_grocery_claims_month ON grocery_claims(claim_year, claim_month);
+
+CREATE TABLE IF NOT EXISTS assets (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    identifier TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    purchase_date TEXT,
+    purchase_cost DOUBLE PRECISION,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_assets_org ON assets(organization_id);
+
+CREATE TABLE IF NOT EXISTS asset_allocations (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    allocated_date TEXT NOT NULL,
+    return_date TEXT,
+    allocation_condition TEXT,
+    return_condition TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_asset_allocations_org ON asset_allocations(organization_id);
+CREATE INDEX IF NOT EXISTS idx_asset_allocations_asset ON asset_allocations(asset_id);
+CREATE INDEX IF NOT EXISTS idx_asset_allocations_user ON asset_allocations(user_id);
+
+CREATE TABLE IF NOT EXISTS asset_expenses (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    expense_type TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    expense_date TEXT NOT NULL,
+    description TEXT,
+    receipt_url TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_asset_expenses_org ON asset_expenses(organization_id);
+CREATE INDEX IF NOT EXISTS idx_asset_expenses_asset ON asset_expenses(asset_id);

@@ -481,7 +481,8 @@ pub async fn stats(
 
     let total_employees: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1",
+            "SELECT COUNT(*) FROM users u
+             WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND (u.is_external IS NULL OR u.is_external = 0) AND u.organization_id=?1",
             [org_id],
             |r| r.get_idx::<i64>(0),
         )
@@ -538,7 +539,7 @@ pub async fn employees(
     let year = query.year.unwrap_or(now.year());
 
     let mut sql = String::from(
-        "SELECT u.id FROM users u WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND u.organization_id = ?",
+        "SELECT u.id FROM users u WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND (u.is_external IS NULL OR u.is_external = 0) AND u.organization_id = ?",
     );
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
     if let Some(dept_id) = query.department_id {
