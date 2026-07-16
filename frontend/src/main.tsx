@@ -16,7 +16,6 @@ import { Toaster } from 'react-hot-toast';
 import { PermissionRoute } from '@/components/permission-route';
 import { initializeTheme } from '@/hooks/use-appearance';
 import { defaultAdminRoute } from '@/lib/default-route';
-import { ConfirmProvider } from '@/lib/confirm';
 
 function DefaultAdminRedirect() {
     const { loading, hasPermission } = useAuth();
@@ -110,10 +109,6 @@ const DoctorReportsCreate = lazy(() => import('@/pages/admin/doctor-reports/crea
 const DoctorReportsEdit = lazy(() => import('@/pages/admin/doctor-reports/edit'));
 const DoctorReportsView = lazy(() => import('@/pages/admin/doctor-reports/view'));
 const MyDoctorReports = lazy(() => import('@/pages/admin/my-doctor-reports'));
-const GroceryBenefitsAdminPage = lazy(() => import('@/pages/admin/grocery-benefits/index'));
-const MyGroceryBenefitsPage = lazy(() => import('@/pages/admin/my-grocery-benefits'));
-const AssetsAdminPage = lazy(() => import('@/pages/admin/assets/index'));
-const MyAssetsPage = lazy(() => import('@/pages/admin/my-assets'));
 const AppSettings = lazy(() => import('@/pages/admin/settings/app-settings'));
 const LeaveTypesSettings = lazy(() => import('@/pages/admin/settings/leave-types'));
 const SettingsProfile = lazy(() => import('@/pages/admin/settings/profile'));
@@ -212,100 +207,92 @@ function App() {
             <Route element={<AdminLayout />}>
                 <Route path="/admin/dashboard" element={<PermissionRoute permission="view-dashboard" module="dashboard"><Dashboard /></PermissionRoute>} />
 
-            {/* Users & Roles */}
-            <Route path="/admin/users" element={<PermissionRoute permission="view-users" module="users"><UsersIndex /></PermissionRoute>} />
-            <Route path="/admin/users/:id" element={<PermissionRoute permission="view-users" module="users"><UsersView /></PermissionRoute>} />
-            <Route path="/admin/users/:id/edit" element={<PermissionRoute permission="edit-users" module="users"><UsersEdit /></PermissionRoute>} />
-            <Route path="/admin/roles/:id/edit" element={<PermissionRoute permission="edit-roles" module="users"><RolesEdit /></PermissionRoute>} />
+                {/* Users & Roles */}
+                <Route path="/admin/users" element={<PermissionRoute permission="view-users" module="users"><UsersIndex /></PermissionRoute>} />
+                <Route path="/admin/users/:id" element={<PermissionRoute permission="view-users" module="users"><UsersView /></PermissionRoute>} />
+                <Route path="/admin/users/:id/edit" element={<PermissionRoute permission="edit-users" module="users"><UsersEdit /></PermissionRoute>} />
+                <Route path="/admin/roles/:id/edit" element={<PermissionRoute permission="edit-roles" module="users"><RolesEdit /></PermissionRoute>} />
 
-            {/* Organization */}
-            <Route path="/admin/departments" element={<PermissionRoute permission="view-departments" module="departments"><DepartmentsIndex /></PermissionRoute>} />
-            <Route path="/admin/designations" element={<PermissionRoute permission="view-designations" module="designations"><DesignationsIndex /></PermissionRoute>} />
-            <Route path="/admin/centers" element={<PermissionRoute permission="manage-settings" module="centers"><CentersIndex /></PermissionRoute>} />
+                {/* Organization */}
+                <Route path="/admin/departments" element={<PermissionRoute permission="view-departments" module="departments"><DepartmentsIndex /></PermissionRoute>} />
+                <Route path="/admin/designations" element={<PermissionRoute permission="view-designations" module="designations"><DesignationsIndex /></PermissionRoute>} />
+                <Route path="/admin/centers" element={<PermissionRoute permission="manage-settings" module="centers"><CentersIndex /></PermissionRoute>} />
 
-            {/* Careers & Applications */}
-            <Route path="/admin/careers" element={<PermissionRoute permission="view-jobs" module="careers"><CareersIndex /></PermissionRoute>} />
-            <Route path="/admin/job-applications" element={<PermissionRoute permission="view-jobs" module="job_applications"><JobApplicationsIndex /></PermissionRoute>} />
+                {/* Careers & Applications */}
+                <Route path="/admin/careers" element={<PermissionRoute permission="view-jobs" module="careers"><CareersIndex /></PermissionRoute>} />
+                <Route path="/admin/job-applications" element={<PermissionRoute permission="view-jobs" module="job_applications"><JobApplicationsIndex /></PermissionRoute>} />
 
-            {/* Attendance & Leave */}
-            <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
-            <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
-            <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
+                {/* Attendance & Leave */}
+                <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
+                <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
+                <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
 
-            {/* Doctor Reports */}
-            <Route path="/admin/doctor-reports" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsIndex /></PermissionRoute>} />
-            <Route path="/admin/doctor-reports/create" element={<PermissionRoute permission="create-doctor-reports" module="doctor_reports"><DoctorReportsCreate /></PermissionRoute>} />
-            <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsView /></PermissionRoute>} />
-            <Route path="/admin/doctor-reports/:id/edit" element={<PermissionRoute permission="edit-doctor-reports" module="doctor_reports"><DoctorReportsEdit /></PermissionRoute>} />
-            <Route path="/admin/my-doctor-reports" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><MyDoctorReports /></PermissionRoute>} />
+                {/* Doctor Reports */}
+                <Route path="/admin/doctor-reports" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsIndex /></PermissionRoute>} />
+                <Route path="/admin/doctor-reports/create" element={<PermissionRoute permission="create-doctor-reports" module="doctor_reports"><DoctorReportsCreate /></PermissionRoute>} />
+                <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsView /></PermissionRoute>} />
+                <Route path="/admin/doctor-reports/:id/edit" element={<PermissionRoute permission="edit-doctor-reports" module="doctor_reports"><DoctorReportsEdit /></PermissionRoute>} />
+                <Route path="/admin/my-doctor-reports" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><MyDoctorReports /></PermissionRoute>} />
 
-            {/* Grocery Benefits */}
-            <Route path="/admin/grocery-benefits" element={<PermissionRoute permission="view-grocery-benefits" module="grocery_benefits"><GroceryBenefitsAdminPage /></PermissionRoute>} />
-            <Route path="/admin/my-grocery-benefits" element={<PermissionRoute permission="view-my-grocery-benefits" module="my_grocery_benefits"><MyGroceryBenefitsPage /></PermissionRoute>} />
+                <Route path="/admin/reports" element={<PermissionRoute permission="view-reports" module="reports"><ReportsIndex /></PermissionRoute>} />
+                <Route path="/admin/shifts">
+                    <Route index element={<PermissionRoute permission="view-attendance" module="shifts"><ShiftsIndex /></PermissionRoute>} />
+                    <Route path="roster" element={<PermissionRoute permission="view-attendance" module="shifts"><ShiftRoster /></PermissionRoute>} />
+                    <Route path="daily" element={<PermissionRoute permission="view-attendance" module="shifts"><DailyShiftSchedule /></PermissionRoute>} />
+                </Route>
+                <Route path="/admin/biometric" element={<PermissionRoute permission="view-attendance" module="biometric"><BiometricIndex /></PermissionRoute>} />
+                <Route path="/admin/leave-requests" element={<PermissionRoute permission="view-leave-requests" module="leave"><LeaveRequestsIndex /></PermissionRoute>} />
+                <Route path="/admin/leave-requests/manage" element={<PermissionRoute permissions={['manage-leave-requests', 'approve-leave-requests', 'reject-leave-requests']} module="leave_manage"><LeaveRequestsManage /></PermissionRoute>} />
+                <Route path="/admin/holidays" element={<PermissionRoute permission="view-holidays" module="holidays"><HolidaysIndex /></PermissionRoute>} />
 
-            {/* Assets */}
-            <Route path="/admin/assets" element={<PermissionRoute permission="view-assets" module="assets"><AssetsAdminPage /></PermissionRoute>} />
-            <Route path="/admin/my-assets" element={<PermissionRoute permission="view-my-assets" module="my_assets"><MyAssetsPage /></PermissionRoute>} />
+                {/* Salaries & Payroll */}
+                <Route path="/admin/salaries/components" element={<PermissionRoute permission="view-payroll" module="payroll"><SalaryComponents /></PermissionRoute>} />
+                <Route path="/admin/salaries/employees" element={<PermissionRoute permission="view-payroll" module="payroll"><SalaryEmployees /></PermissionRoute>} />
+                <Route path="/admin/salaries/employees/:id/payslips" element={<PermissionRoute permission="view-payroll" module="payroll"><EmployeePayslipsRoute /></PermissionRoute>} />
+                <Route path="/admin/payroll" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollIndex /></PermissionRoute>} />
+                <Route path="/admin/payroll/advanced" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollAdvanced /></PermissionRoute>} />
 
-            <Route path="/admin/reports" element={<PermissionRoute permission="view-reports" module="reports"><ReportsIndex /></PermissionRoute>} />
-            <Route path="/admin/shifts">
-                <Route index element={<PermissionRoute permission="view-attendance" module="shifts"><ShiftsIndex /></PermissionRoute>} />
-                <Route path="roster" element={<PermissionRoute permission="view-attendance" module="shifts"><ShiftRoster /></PermissionRoute>} />
-                <Route path="daily" element={<PermissionRoute permission="view-attendance" module="shifts"><DailyShiftSchedule /></PermissionRoute>} />
-            </Route>
-            <Route path="/admin/biometric" element={<PermissionRoute permission="view-attendance" module="biometric"><BiometricIndex /></PermissionRoute>} />
-            <Route path="/admin/leave-requests" element={<PermissionRoute permission="view-leave-requests" module="leave"><LeaveRequestsIndex /></PermissionRoute>} />
-            <Route path="/admin/leave-requests/manage" element={<PermissionRoute permissions={['manage-leave-requests', 'approve-leave-requests', 'reject-leave-requests']} module="leave_manage"><LeaveRequestsManage /></PermissionRoute>} />
-            <Route path="/admin/holidays" element={<PermissionRoute permission="view-holidays" module="holidays"><HolidaysIndex /></PermissionRoute>} />
+                {/* Workflows */}
+                <Route path="/admin/workflows" element={<PermissionRoute permission="view-workflows" module="workflows"><WorkflowsIndex /></PermissionRoute>} />
+                <Route path="/admin/workflows/create" element={<PermissionRoute permission="create-workflows" module="workflows"><WorkflowsCreate /></PermissionRoute>} />
+                <Route path="/admin/workflows/:id" element={<PermissionRoute permission="view-workflows" module="workflows"><WorkflowsView /></PermissionRoute>} />
+                <Route path="/admin/workflows/:id/edit" element={<PermissionRoute permission="edit-workflows" module="workflows"><WorkflowsEdit /></PermissionRoute>} />
 
-            {/* Salaries & Payroll */}
-            <Route path="/admin/salaries/components" element={<PermissionRoute permission="view-payroll" module="payroll"><SalaryComponents /></PermissionRoute>} />
-            <Route path="/admin/salaries/employees" element={<PermissionRoute permission="view-payroll" module="payroll"><SalaryEmployees /></PermissionRoute>} />
-            <Route path="/admin/salaries/employees/:id/payslips" element={<PermissionRoute permission="view-payroll" module="payroll"><EmployeePayslipsRoute /></PermissionRoute>} />
-            <Route path="/admin/payroll" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollIndex /></PermissionRoute>} />
-            <Route path="/admin/payroll/advanced" element={<PermissionRoute permission="view-payroll" module="payroll"><PayrollAdvanced /></PermissionRoute>} />
-
-            {/* Workflows */}
-            <Route path="/admin/workflows" element={<PermissionRoute permission="view-workflows" module="workflows"><WorkflowsIndex /></PermissionRoute>} />
-            <Route path="/admin/workflows/create" element={<PermissionRoute permission="create-workflows" module="workflows"><WorkflowsCreate /></PermissionRoute>} />
-            <Route path="/admin/workflows/:id" element={<PermissionRoute permission="view-workflows" module="workflows"><WorkflowsView /></PermissionRoute>} />
-            <Route path="/admin/workflows/:id/edit" element={<PermissionRoute permission="edit-workflows" module="workflows"><WorkflowsEdit /></PermissionRoute>} />
-
-            {/* Tasks */}
-            <Route path="/admin/tasks" element={<PermissionRoute permission="view-tasks" module="tasks"><TasksIndex /></PermissionRoute>} />
-            <Route path="/admin/tasks/create" element={<PermissionRoute permission="create-tasks" module="tasks"><TasksCreate /></PermissionRoute>} />
-            <Route path="/admin/tasks/:id" element={<PermissionRoute permission="view-tasks" module="tasks"><TasksView /></PermissionRoute>} />
-            <Route path="/admin/tasks/:id/edit" element={<PermissionRoute permission="edit-tasks" module="tasks"><TasksEdit /></PermissionRoute>} />
+                {/* Tasks */}
+                <Route path="/admin/tasks" element={<PermissionRoute permission="view-tasks" module="tasks"><TasksIndex /></PermissionRoute>} />
+                <Route path="/admin/tasks/create" element={<PermissionRoute permission="create-tasks" module="tasks"><TasksCreate /></PermissionRoute>} />
+                <Route path="/admin/tasks/:id" element={<PermissionRoute permission="view-tasks" module="tasks"><TasksView /></PermissionRoute>} />
+                <Route path="/admin/tasks/:id/edit" element={<PermissionRoute permission="edit-tasks" module="tasks"><TasksEdit /></PermissionRoute>} />
 
 
-            {/* Projects */}
-            <Route path="/admin/projects" element={<PermissionRoute permission="view-projects" module="projects"><ProjectsIndex /></PermissionRoute>} />
-            <Route path="/admin/projects/create" element={<PermissionRoute permission="create-projects" module="projects"><ProjectsCreate /></PermissionRoute>} />
-            <Route path="/admin/projects/:id" element={<PermissionRoute permission="view-projects" module="projects"><ProjectsView /></PermissionRoute>} />
-            <Route path="/admin/projects/:id/edit" element={<PermissionRoute permission="edit-projects" module="projects"><ProjectsEdit /></PermissionRoute>} />
+                {/* Projects */}
+                <Route path="/admin/projects" element={<PermissionRoute permission="view-projects" module="projects"><ProjectsIndex /></PermissionRoute>} />
+                <Route path="/admin/projects/create" element={<PermissionRoute permission="create-projects" module="projects"><ProjectsCreate /></PermissionRoute>} />
+                <Route path="/admin/projects/:id" element={<PermissionRoute permission="view-projects" module="projects"><ProjectsView /></PermissionRoute>} />
+                <Route path="/admin/projects/:id/edit" element={<PermissionRoute permission="edit-projects" module="projects"><ProjectsEdit /></PermissionRoute>} />
 
-            {/* Team Chat */}
-            <Route path="/admin/chat" element={<PermissionRoute permission="view-chat" module="chat"><TeamChat /></PermissionRoute>} />
-            <Route path="/admin/chat/:spaceId" element={<PermissionRoute permission="view-chat" module="chat"><TeamChat /></PermissionRoute>} />
+                {/* Team Chat */}
+                <Route path="/admin/chat" element={<PermissionRoute permission="view-chat" module="chat"><TeamChat /></PermissionRoute>} />
+                <Route path="/admin/chat/:spaceId" element={<PermissionRoute permission="view-chat" module="chat"><TeamChat /></PermissionRoute>} />
 
-            {/* Billing & support */}
-            <Route path="/admin/subscription" element={<PermissionRoute permission="manage-subscription" module="subscription"><SubscriptionPage /></PermissionRoute>} />
-            <Route path="/admin/notifications" element={<PermissionRoute permission="manage-org-notifications" module="notifications"><NotificationsAdminPage /></PermissionRoute>} />
-            <Route path="/admin/support" element={<PermissionRoute permission="view-support" module="support"><SupportPage /></PermissionRoute>} />
+                {/* Billing & support */}
+                <Route path="/admin/subscription" element={<PermissionRoute permission="manage-subscription" module="subscription"><SubscriptionPage /></PermissionRoute>} />
+                <Route path="/admin/notifications" element={<PermissionRoute permission="manage-org-notifications" module="notifications"><NotificationsAdminPage /></PermissionRoute>} />
+                <Route path="/admin/support" element={<PermissionRoute permission="view-support" module="support"><SupportPage /></PermissionRoute>} />
 
-            {/* Settings */}
-            <Route path="/admin/settings/app" element={<PermissionRoute permission="manage-settings" module="settings"><AppSettings /></PermissionRoute>} />
-            <Route path="/admin/settings/leave-types" element={<PermissionRoute permission="manage-settings" module="settings"><LeaveTypesSettings /></PermissionRoute>} />
-            <Route path="/admin/settings/profile" element={<SettingsProfile />} />
-            <Route path="/admin/settings/password" element={<SettingsPassword />} />
-            <Route path="/admin/settings/appearance" element={<SettingsAppearance />} />
-            <Route path="/admin/settings/two-factor" element={<TwoFactorSettings />} />
-            <Route path="/admin/settings/work-locations" element={<PermissionRoute permission="manage-settings" module="centers"><WorkLocationsSettings /></PermissionRoute>} />
+                {/* Settings */}
+                <Route path="/admin/settings/app" element={<PermissionRoute permission="manage-settings" module="settings"><AppSettings /></PermissionRoute>} />
+                <Route path="/admin/settings/leave-types" element={<PermissionRoute permission="manage-settings" module="settings"><LeaveTypesSettings /></PermissionRoute>} />
+                <Route path="/admin/settings/profile" element={<SettingsProfile />} />
+                <Route path="/admin/settings/password" element={<SettingsPassword />} />
+                <Route path="/admin/settings/appearance" element={<SettingsAppearance />} />
+                <Route path="/admin/settings/two-factor" element={<TwoFactorSettings />} />
+                <Route path="/admin/settings/work-locations" element={<PermissionRoute permission="manage-settings" module="centers"><WorkLocationsSettings /></PermissionRoute>} />
 
-            <Route path="/unauthorized" element={<Unauthorized />} />
+                <Route path="/unauthorized" element={<Unauthorized />} />
 
-            {/* Onboarding */}
-            <Route path="/onboarding" element={<OnboardingIndex />} />
+                {/* Onboarding */}
+                <Route path="/onboarding" element={<OnboardingIndex />} />
             </Route>
 
             {/* Default redirect */}
@@ -326,14 +313,12 @@ createRoot(root).render(
     <StrictMode>
         <AppRouter>
             <AuthProvider>
-                <ConfirmProvider>
-                    <BreadcrumbProvider>
+                <BreadcrumbProvider>
                     <ErrorBoundary>
                         <App />
                     </ErrorBoundary>
                     <Toaster position="top-right" />
-                                </BreadcrumbProvider>
-                </ConfirmProvider>
+                </BreadcrumbProvider>
             </AuthProvider>
         </AppRouter>
     </StrictMode>,

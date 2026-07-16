@@ -80,7 +80,6 @@ interface User {
     email: string;
     phone?: string;
     photo?: string;
-    is_external?: boolean;
     department?: {
         id: number;
         name: string;
@@ -90,6 +89,7 @@ interface User {
         name: string;
     };
     status: string;
+    is_external?: boolean;
     created_at: string;
     updated_at: string;
 }
@@ -212,71 +212,71 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                 <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-blue-300/50 to-transparent dark:via-blue-500/20" />
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between px-6 pt-5 pb-4">
                     <h2 className="text-base font-semibold text-foreground">All Users</h2>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                            {/* Search */}
-                            <div className="relative w-full sm:w-64">
-                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                                <Input
-                                    placeholder="Search users..."
-                                    value={search}
-                                    onChange={(e) => {
-                                        setSearch(e.target.value);
-                                        setCurrentPage(1);
-                                    }}
-                                    className="pl-8"
-                                />
-                            </div>
-
-                            {/* Status Filter */}
-                            <Select
-                                value={statusFilter}
-                                onValueChange={(value) => {
-                                    setStatusFilter(value);
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        {/* Search */}
+                        <div className="relative w-full sm:w-64">
+                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                            <Input
+                                placeholder="Search users..."
+                                value={search}
+                                onChange={(e) => {
+                                    setSearch(e.target.value);
                                     setCurrentPage(1);
                                 }}
-                            >
-                                <SelectTrigger className="w-full sm:w-[140px]">
-                                    <SelectValue placeholder="All All Status" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">All Status</SelectItem>
-                                    <SelectItem value="active">Active</SelectItem>
-                                    <SelectItem value="inactive">Inactive</SelectItem>
-                                    <SelectItem value="suspended">Suspended</SelectItem>
-                                </SelectContent>
-                            </Select>
-
-                            {/* Per Page Selector */}
-                            <Select
-                                value={perPage.toString()}
-                                onValueChange={(value) => {
-                                    setPerPage(parseInt(value));
-                                    setCurrentPage(1);
-                                }}
-                            >
-                                <SelectTrigger className="w-full sm:w-[100px]">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="10">10</SelectItem>
-                                    <SelectItem value="25">25</SelectItem>
-                                    <SelectItem value="50">50</SelectItem>
-                                    <SelectItem value="100">100</SelectItem>
-                                </SelectContent>
-                            </Select>
-
-                            {/* Refresh Button */}
-                            <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={fetchUsers}
-                                disabled={loading}
-                                title="Refresh users"
-                            >
-                                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                            </Button>
+                                className="pl-8"
+                            />
                         </div>
+
+                        {/* Status Filter */}
+                        <Select
+                            value={statusFilter}
+                            onValueChange={(value) => {
+                                setStatusFilter(value);
+                                setCurrentPage(1);
+                            }}
+                        >
+                            <SelectTrigger className="w-full sm:w-[140px]">
+                                <SelectValue placeholder="All All Status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Status</SelectItem>
+                                <SelectItem value="active">Active</SelectItem>
+                                <SelectItem value="inactive">Inactive</SelectItem>
+                                <SelectItem value="suspended">Suspended</SelectItem>
+                            </SelectContent>
+                        </Select>
+
+                        {/* Per Page Selector */}
+                        <Select
+                            value={perPage.toString()}
+                            onValueChange={(value) => {
+                                setPerPage(parseInt(value));
+                                setCurrentPage(1);
+                            }}
+                        >
+                            <SelectTrigger className="w-full sm:w-[100px]">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="10">10</SelectItem>
+                                <SelectItem value="25">25</SelectItem>
+                                <SelectItem value="50">50</SelectItem>
+                                <SelectItem value="100">100</SelectItem>
+                            </SelectContent>
+                        </Select>
+
+                        {/* Refresh Button */}
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={fetchUsers}
+                            disabled={loading}
+                            title="Refresh users"
+                        >
+                            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                        </Button>
                     </div>
+                </div>
                 <div className="px-6 pb-6">
                     <div className="rounded-xl border border-blue-100/60 dark:border-white/8 overflow-hidden">
                         <Table>
@@ -356,74 +356,74 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                     </TableRow>
                                 ) : (
                                     users.map((user, index) => (
-                                            <TableRow
-                                                key={user.id}
-                                                className="hover:bg-blue-50/60 dark:hover:bg-blue-900/10 transition-colors duration-150 border-b border-blue-50 dark:border-white/5">
+                                        <TableRow
+                                            key={user.id}
+                                            className="hover:bg-blue-50/60 dark:hover:bg-blue-900/10 transition-colors duration-150 border-b border-blue-50 dark:border-white/5">
 
-                                                <TableCell className="font-medium">
-                                                    {(currentPage - 1) * perPage + index + 1}
-                                                </TableCell>
-                                                <TableCell>
-                                                    <div className="flex items-center gap-3">
-                                                        <UserRowAvatar photo={user.photo} name={user.name} />
-                                                        <div className="flex flex-col">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="font-medium">{user.name}</span>
-                                                                {user.is_external && (
-                                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-                                                                        External
-                                                                    </span>
-                                                                )}
-                                                            </div>
+                                            <TableCell className="font-medium">
+                                                {(currentPage - 1) * perPage + index + 1}
+                                            </TableCell>
+                                            <TableCell>
+                                                <div className="flex items-center gap-3">
+                                                    <UserRowAvatar photo={user.photo} name={user.name} />
+                                                    <div className="flex flex-col">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-medium">{user.name}</span>
+                                                            {user.is_external && (
+                                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                                                                    External
+                                                                </span>
+                                                            )}
                                                         </div>
                                                     </div>
-                                                </TableCell>
-                                                <TableCell>{user.email}</TableCell>
-                                                <TableCell>{user.phone || '-'}</TableCell>
-                                                <TableCell>{user.department?.name || '-'}</TableCell>
-                                                <TableCell>{getStatusBadge(user.status)}</TableCell>
-                                                <TableCell className="text-sm text-muted-foreground">
-                                                    {new Date(user.created_at).toLocaleDateString()}
-                                                </TableCell>
-                                                <TableCell onClick={(e) => e.stopPropagation()}>
-                                                    <DropdownMenu>
-                                                        <DropdownMenuTrigger asChild>
-                                                            <Button variant="ghost" size="sm">
-                                                                •••
-                                                            </Button>
-                                                        </DropdownMenuTrigger>
-                                                        <DropdownMenuContent align="end">
+                                                </div>
+                                            </TableCell>
+                                            <TableCell>{user.email}</TableCell>
+                                            <TableCell>{user.phone || '-'}</TableCell>
+                                            <TableCell>{user.department?.name || '-'}</TableCell>
+                                            <TableCell>{getStatusBadge(user.status)}</TableCell>
+                                            <TableCell className="text-sm text-muted-foreground">
+                                                {new Date(user.created_at).toLocaleDateString()}
+                                            </TableCell>
+                                            <TableCell onClick={(e) => e.stopPropagation()}>
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button variant="ghost" size="sm">
+                                                            •••
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="end">
+                                                        <DropdownMenuItem
+                                                            onClick={() =>
+                                                                navigate(`/admin/users/${user.id}`)
+                                                            }
+                                                        >
+                                                            <Eye className="mr-2 h-4 w-4" />
+                                                            View User
+                                                        </DropdownMenuItem>
+                                                        {can('edit', 'users') && (
                                                             <DropdownMenuItem
                                                                 onClick={() =>
-                                                                    navigate(`/admin/users/${user.id}`)
+                                                                    navigate(`/admin/users/${user.id}/edit`)
                                                                 }
                                                             >
-                                                                <Eye className="mr-2 h-4 w-4" />
-                                                                View User
+                                                                <Edit className="mr-2 h-4 w-4" />
+                                                                Edit User
                                                             </DropdownMenuItem>
-                                                            {can('edit', 'users') && (
-                                                                <DropdownMenuItem
-                                                                    onClick={() =>
-                                                                        navigate(`/admin/users/${user.id}/edit`)
-                                                                    }
-                                                                >
-                                                                    <Edit className="mr-2 h-4 w-4" />
-                                                                    Edit User
-                                                                </DropdownMenuItem>
-                                                            )}
-                                                            {can('delete', 'users') && (
-                                                                <DropdownMenuItem
-                                                                    onClick={() => setDeleteId(user.id)}
-                                                                    className="text-red-600"
-                                                                >
-                                                                    <Trash2 className="mr-2 h-4 w-4" />
-                                                                    Delete User
-                                                                </DropdownMenuItem>
-                                                            )}
-                                                        </DropdownMenuContent>
-                                                    </DropdownMenu>
-                                                </TableCell>
-                                            </TableRow>
+                                                        )}
+                                                        {can('delete', 'users') && (
+                                                            <DropdownMenuItem
+                                                                onClick={() => setDeleteId(user.id)}
+                                                                className="text-red-600"
+                                                            >
+                                                                <Trash2 className="mr-2 h-4 w-4" />
+                                                                Delete User
+                                                            </DropdownMenuItem>
+                                                        )}
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                            </TableCell>
+                                        </TableRow>
                                     ))
                                 )}
                             </TableBody>

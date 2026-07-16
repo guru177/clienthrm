@@ -126,7 +126,7 @@ export function SalaryStructurePanel({
             })
             .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userId]);
 
 
@@ -404,12 +404,12 @@ export function SalaryStructurePanel({
                 )}
 
                 {!isLocked && (
-                <div className="flex justify-end">
-                    <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
-                        <Edit className="mr-1.5 h-4 w-4" />
-                        {hasAssigned ? 'Edit' : 'Set Up'}
-                    </Button>
-                </div>
+                    <div className="flex justify-end">
+                        <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+                            <Edit className="mr-1.5 h-4 w-4" />
+                            {hasAssigned ? 'Edit' : 'Set Up'}
+                        </Button>
+                    </div>
                 )}
             </div>
         );

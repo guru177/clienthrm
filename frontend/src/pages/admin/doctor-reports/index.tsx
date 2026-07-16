@@ -11,7 +11,6 @@ import AppLayout from '@/layouts/app-layout';
 import { handleApiError } from '@/lib/toast';
 import { useAuth } from '@/contexts/AuthContext';
 import toast from 'react-hot-toast';
-import { useConfirm } from '@/lib/confirm';
 
 interface DoctorReport {
     id: number;
@@ -32,7 +31,6 @@ interface DoctorReport {
 
 export default function DoctorReportsIndex() {
     const { hasPermission } = useAuth();
-    const confirm = useConfirm();
     const [reports, setReports] = useState<DoctorReport[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -58,7 +56,7 @@ export default function DoctorReportsIndex() {
     };
 
     const handleDelete = async (id: number) => {
-        if (!(await confirm({ title: 'Delete Report', description: 'Are you sure you want to delete this report?' }))) return;
+        if (!confirm('Are you sure you want to delete this report?')) return;
         try {
             await axios.delete(`/admin/doctor-reports/${id}`);
             toast.success('Report deleted');

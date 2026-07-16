@@ -54,7 +54,7 @@ import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
 import AttendanceStats from '@/components/attendance/attendance-stats';
 import { useAttendanceStats } from '@/hooks/use-attendance-stats';
 import { usePermissions } from '@/hooks/use-permissions';
-import { useConfirm } from '@/lib/confirm';
+
 interface BiometricDevice {
     id: number;
     serial_number: string;
@@ -153,7 +153,6 @@ function timeAgo(dateStr: string | null): string {
 
 export default function BiometricIndex() {
     const navigate = useNavigate();
-    const confirm = useConfirm();
     const { hasPermission } = usePermissions();
     const canManage = hasPermission('manage-attendance');
     const { stats: attendanceStats, loading: attendanceStatsLoading } =
@@ -337,7 +336,7 @@ export default function BiometricIndex() {
     };
 
     const handleDeleteMapping = async (id: number) => {
-        if (!(await confirm({ title: 'Remove Mapping', description: 'Remove this PIN mapping?' }))) return;
+        if (!confirm('Remove this PIN mapping?')) return;
         try {
             await axios.delete(`/admin/biometric/mapping/${id}`);
             await loadMappings();
@@ -347,7 +346,7 @@ export default function BiometricIndex() {
     };
 
     const handleDeleteDevice = async (id: number) => {
-        if (!(await confirm({ title: 'Remove Device', description: 'Remove this device?' }))) return;
+        if (!confirm('Remove this device?')) return;
         try {
             await axios.delete(`/admin/biometric/devices/${id}`);
             await loadDevices();
@@ -426,9 +425,8 @@ export default function BiometricIndex() {
                                 }
                             >
                                 <span
-                                    className={`mr-1.5 inline-block h-2 w-2 rounded-full ${
-                                        liveConnected ? 'bg-green-500 animate-pulse' : 'bg-orange-400'
-                                    }`}
+                                    className={`mr-1.5 inline-block h-2 w-2 rounded-full ${liveConnected ? 'bg-green-500 animate-pulse' : 'bg-orange-400'
+                                        }`}
                                 />
                                 {liveConnected ? 'Live' : 'Reconnecting…'}
                             </Badge>
@@ -458,54 +456,54 @@ export default function BiometricIndex() {
 
                 {/* Device ops stats — managers only */}
                 {canManage && stats?.scope !== 'self' && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Devices</span>
-                                <Cpu className="h-4 w-4 text-blue-500" />
-                            </div>
-                            <p className="text-2xl font-bold">{stats?.total_devices || 0}</p>
-                            <p className="text-xs text-muted-foreground mt-1">{stats?.active_devices || 0} active</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Today's Punches</span>
-                                <Activity className="h-4 w-4 text-green-500" />
-                            </div>
-                            <p className="text-2xl font-bold">{stats?.today_punches || 0}</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mapped Users</span>
-                                <Users className="h-4 w-4 text-purple-500" />
-                            </div>
-                            <p className="text-2xl font-bold">{stats?.total_mappings || 0}</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Unmapped</span>
-                                <Clock className="h-4 w-4 text-orange-500" />
-                            </div>
-                            <p className="text-2xl font-bold text-orange-600">{stats?.unmapped_punches || 0}</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Signal</span>
-                                {stats?.last_heartbeat ? <Wifi className="h-4 w-4 text-green-500" /> : <WifiOff className="h-4 w-4 text-red-500" />}
-                            </div>
-                            <p className="text-sm font-semibold">{timeAgo(stats?.last_heartbeat ?? null)}</p>
-                        </CardContent>
-                    </Card>
-                </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+                        <Card>
+                            <CardContent className="pt-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Devices</span>
+                                    <Cpu className="h-4 w-4 text-blue-500" />
+                                </div>
+                                <p className="text-2xl font-bold">{stats?.total_devices || 0}</p>
+                                <p className="text-xs text-muted-foreground mt-1">{stats?.active_devices || 0} active</p>
+                            </CardContent>
+                        </Card>
+                        <Card>
+                            <CardContent className="pt-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Today's Punches</span>
+                                    <Activity className="h-4 w-4 text-green-500" />
+                                </div>
+                                <p className="text-2xl font-bold">{stats?.today_punches || 0}</p>
+                            </CardContent>
+                        </Card>
+                        <Card>
+                            <CardContent className="pt-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mapped Users</span>
+                                    <Users className="h-4 w-4 text-purple-500" />
+                                </div>
+                                <p className="text-2xl font-bold">{stats?.total_mappings || 0}</p>
+                            </CardContent>
+                        </Card>
+                        <Card>
+                            <CardContent className="pt-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Unmapped</span>
+                                    <Clock className="h-4 w-4 text-orange-500" />
+                                </div>
+                                <p className="text-2xl font-bold text-orange-600">{stats?.unmapped_punches || 0}</p>
+                            </CardContent>
+                        </Card>
+                        <Card>
+                            <CardContent className="pt-6">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Signal</span>
+                                    {stats?.last_heartbeat ? <Wifi className="h-4 w-4 text-green-500" /> : <WifiOff className="h-4 w-4 text-red-500" />}
+                                </div>
+                                <p className="text-sm font-semibold">{timeAgo(stats?.last_heartbeat ?? null)}</p>
+                            </CardContent>
+                        </Card>
+                    </div>
                 )}
 
                 {!canManage && stats?.scope === 'self' && (
@@ -754,11 +752,10 @@ export default function BiometricIndex() {
                                             <div key={device.id} className="flex items-center justify-between p-4 border rounded-lg">
                                                 <div className="flex items-center gap-4">
                                                     <div
-                                                        className={`h-3 w-3 rounded-full ${
-                                                            isDeviceOnline(device.last_heartbeat)
+                                                        className={`h-3 w-3 rounded-full ${isDeviceOnline(device.last_heartbeat)
                                                                 ? 'bg-green-500 animate-pulse'
                                                                 : 'bg-red-400'
-                                                        }`}
+                                                            }`}
                                                         title={
                                                             isDeviceOnline(device.last_heartbeat)
                                                                 ? 'Online (heartbeat < 10 min)'

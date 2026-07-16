@@ -95,7 +95,7 @@ export default function DoctorReportsCreate() {
                 { title: 'New Report', href: '/admin/doctor-reports/create' },
             ]}
         >
-            <div className="space-y-8 w-full pb-10">
+            <div className="space-y-6 max-w-4xl">
                 <div className="flex items-center gap-3">
                     <FileText className="h-8 w-8 text-primary" />
                     <div>
@@ -160,52 +160,46 @@ export default function DoctorReportsCreate() {
                             <CardTitle>SOAP Notes</CardTitle>
                             <CardDescription>Subjective, Objective, Assessment, Plan</CardDescription>
                         </CardHeader>
-                        <CardContent>
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                <div className="space-y-2">
-                                    <Label htmlFor="subjective">Subjective</Label>
-                                    <Textarea
-                                        id="subjective"
-                                        placeholder="Patient's reported symptoms, concerns, and history..."
-                                        rows={5}
-                                        value={form.subjective}
-                                        onChange={(e) => setForm({ ...form, subjective: e.target.value })}
-                                        className="resize-none shadow-sm"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="objective">Objective</Label>
-                                    <Textarea
-                                        id="objective"
-                                        placeholder="Clinical observations, vitals, examination findings..."
-                                        rows={5}
-                                        value={form.objective}
-                                        onChange={(e) => setForm({ ...form, objective: e.target.value })}
-                                        className="resize-none shadow-sm"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="assessment">Assessment</Label>
-                                    <Textarea
-                                        id="assessment"
-                                        placeholder="Diagnosis, clinical impression..."
-                                        rows={5}
-                                        value={form.assessment}
-                                        onChange={(e) => setForm({ ...form, assessment: e.target.value })}
-                                        className="resize-none shadow-sm"
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="plan">Plan</Label>
-                                    <Textarea
-                                        id="plan"
-                                        placeholder="Treatment plan, follow-up instructions..."
-                                        rows={5}
-                                        value={form.plan}
-                                        onChange={(e) => setForm({ ...form, plan: e.target.value })}
-                                        className="resize-none shadow-sm"
-                                    />
-                                </div>
+                        <CardContent className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="subjective">Subjective</Label>
+                                <Textarea
+                                    id="subjective"
+                                    placeholder="Patient's reported symptoms, concerns, and history..."
+                                    rows={3}
+                                    value={form.subjective}
+                                    onChange={(e) => setForm({ ...form, subjective: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="objective">Objective</Label>
+                                <Textarea
+                                    id="objective"
+                                    placeholder="Clinical observations, vitals, examination findings..."
+                                    rows={3}
+                                    value={form.objective}
+                                    onChange={(e) => setForm({ ...form, objective: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="assessment">Assessment</Label>
+                                <Textarea
+                                    id="assessment"
+                                    placeholder="Diagnosis, clinical impression..."
+                                    rows={3}
+                                    value={form.assessment}
+                                    onChange={(e) => setForm({ ...form, assessment: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="plan">Plan</Label>
+                                <Textarea
+                                    id="plan"
+                                    placeholder="Treatment plan, follow-up instructions..."
+                                    rows={3}
+                                    value={form.plan}
+                                    onChange={(e) => setForm({ ...form, plan: e.target.value })}
+                                />
                             </div>
                         </CardContent>
                     </Card>
@@ -215,37 +209,29 @@ export default function DoctorReportsCreate() {
                             <CardTitle>Prescription</CardTitle>
                             <CardDescription>Upload prescription document and add notes</CardDescription>
                         </CardHeader>
-                        <CardContent>
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                <div className="space-y-2">
-                                    <Label htmlFor="prescription_notes">Prescription Notes</Label>
-                                    <Textarea
-                                        id="prescription_notes"
-                                        placeholder="Optional notes about medications, dosage..."
-                                        rows={4}
-                                        value={form.prescription_notes}
-                                        onChange={(e) => setForm({ ...form, prescription_notes: e.target.value })}
-                                        className="resize-none shadow-sm"
+                        <CardContent className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="prescription_notes">Prescription Notes</Label>
+                                <Textarea
+                                    id="prescription_notes"
+                                    placeholder="Optional notes about medications, dosage..."
+                                    rows={2}
+                                    value={form.prescription_notes}
+                                    onChange={(e) => setForm({ ...form, prescription_notes: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="prescription_file">Prescription File (PDF, JPG, PNG — max 10MB)</Label>
+                                <div className="flex items-center gap-3">
+                                    <Input
+                                        id="prescription_file"
+                                        type="file"
+                                        accept=".pdf,.jpg,.jpeg,.png"
+                                        onChange={(e) => setPrescriptionFile(e.target.files?.[0] || null)}
                                     />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="prescription_file">Prescription File (PDF, JPG, PNG — max 10MB)</Label>
-                                    <div className="flex h-[98px] w-full flex-col items-center justify-center rounded-md border border-dashed border-input bg-muted/20 px-3 py-2 text-sm shadow-sm transition-colors hover:bg-muted/40">
-                                        <Input
-                                            id="prescription_file"
-                                            type="file"
-                                            accept=".pdf,.jpg,.jpeg,.png"
-                                            className="hidden"
-                                            onChange={(e) => setPrescriptionFile(e.target.files?.[0] || null)}
-                                        />
-                                        <Label
-                                            htmlFor="prescription_file"
-                                            className="flex w-full cursor-pointer flex-col items-center justify-center gap-1 text-muted-foreground"
-                                        >
-                                            <Upload className="h-6 w-6 text-primary/60" />
-                                            <span>{prescriptionFile ? prescriptionFile.name : 'Click to select file'}</span>
-                                        </Label>
-                                    </div>
+                                    {prescriptionFile && (
+                                        <span className="text-sm text-muted-foreground">{prescriptionFile.name}</span>
+                                    )}
                                 </div>
                             </div>
                         </CardContent>

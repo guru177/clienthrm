@@ -261,7 +261,6 @@ mod tests {
             aud: PLATFORM_AUD.to_string(),
             impersonated_by: None,
             impersonation: false,
-            is_external: false,
         };
         let token = encode(
             &Header::default(),

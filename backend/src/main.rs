@@ -45,7 +45,8 @@ mod password_reset_otp_email;
 mod totp_logic;
 mod validation;
 mod jobs;
-pub mod asset_email;
+mod asset_email;
+
 
 #[cfg(test)]
 #[path = "integration_tests.rs"]
