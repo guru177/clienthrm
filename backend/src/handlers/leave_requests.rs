@@ -383,6 +383,18 @@ pub async fn store(
     if end_date < start_date {
         return HttpResponse::BadRequest().json(ApiError::new("End date must be on or after start date"));
     }
+    // Block excessive backdating. A short window is allowed so prior-month
+    // corrections still work, but stale requests months/years in the past
+    // are rejected.
+    const MAX_BACKDATE_DAYS: i64 = 92;
+    if let Ok(sd) = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d") {
+        let today = chrono::Local::now().date_naive();
+        if (today - sd).num_days() > MAX_BACKDATE_DAYS {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Leave start date is too far in the past (more than 92 days). Contact an administrator for older adjustments.",
+            ));
+        }
+    }
     if !crate::leave_type_logic::is_valid_active_slug(&conn, org_id, &leave_type) {
         return HttpResponse::BadRequest().json(ApiError::new("Invalid or inactive leave type"));
     }
@@ -399,6 +411,11 @@ pub async fn store(
     if leave_dates_outside_employment(&conn, claims.sub, &start_date, &end_date) {
         return HttpResponse::BadRequest().json(ApiError::new(
             "Leave dates must fall within the employee active employment period",
+        ));
+    }
+    if leave_overlaps_generated_payslip(&conn, claims.sub, &start_date, &end_date) {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Cannot apply for leave in a period that already has a generated payslip",
         ));
     }
     if crate::leave_type_logic::counts_toward_quota(&conn, org_id, &leave_type)
