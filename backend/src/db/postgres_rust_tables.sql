@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS biometric_commands (
     executed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS biometric_ingest_keys (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT 'Push API key',
+    key_prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_org ON biometric_ingest_keys(organization_id);
+CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_prefix ON biometric_ingest_keys(key_prefix);
+
 CREATE TABLE IF NOT EXISTS subscription_plans (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,

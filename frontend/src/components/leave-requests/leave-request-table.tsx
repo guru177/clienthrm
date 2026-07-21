@@ -116,7 +116,7 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                 <CardHeader>
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                         <CardTitle>My Leave Requests</CardTitle>
-                        <div className="flex gap-2">
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                             <Select
                                 value={statusFilter}
                                 onValueChange={(value) => {
@@ -124,7 +124,7 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                     setCurrentPage(1);
                                 }}
                             >
-                                <SelectTrigger className="w-[140px]">
+                                <SelectTrigger className="w-full sm:w-[140px]">
                                     <SelectValue placeholder="All Status" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -149,7 +149,60 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                     </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="rounded-md border">
+                    {/* Mobile card list */}
+                    <div className="space-y-3 md:hidden" data-testid="leave-mobile-cards">
+                        {loading ? (
+                            <div className="flex justify-center py-8">
+                                <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                            </div>
+                        ) : requests.length === 0 ? (
+                            <p className="py-8 text-center text-muted-foreground">
+                                No leave requests found
+                            </p>
+                        ) : (
+                            requests.map((request) => (
+                                <div
+                                    key={request.id}
+                                    className="rounded-xl border p-4 space-y-2"
+                                >
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div>
+                                            <p className="font-medium">
+                                                {getLeaveTypeLabel(request.leave_type)}
+                                            </p>
+                                            <p className="text-sm text-muted-foreground">
+                                                {new Date(request.start_date).toLocaleDateString()} –{' '}
+                                                {new Date(request.end_date).toLocaleDateString()}
+                                            </p>
+                                        </div>
+                                        {getStatusBadge(request.status)}
+                                    </div>
+                                    <div className="flex items-center justify-between text-sm">
+                                        <span className="text-muted-foreground flex items-center gap-1">
+                                            <Calendar className="h-3.5 w-3.5" />
+                                            {request.days_count} days
+                                        </span>
+                                        <span className="text-muted-foreground flex items-center gap-1">
+                                            <Clock className="h-3.5 w-3.5" />
+                                            {new Date(request.created_at).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                    {request.status === 'pending' && (
+                                        <Button
+                                            variant="outline"
+                                            className="min-h-11 w-full"
+                                            onClick={() => setDeleteId(request.id)}
+                                        >
+                                            <Trash2 className="mr-2 h-4 w-4 text-red-600" />
+                                            Cancel request
+                                        </Button>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </div>
+
+                    <div className="hidden rounded-md border md:block">
                         <Table>
                             <TableHeader>
                                 <TableRow>
@@ -217,11 +270,11 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
 
                     {/* Pagination */}
                     {!loading && requests.length > 0 && (
-                        <div className="flex items-center justify-between mt-4">
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div className="text-sm text-muted-foreground">
                                 Showing {requests.length} of {total} results
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     variant="outline"
                                     size="sm"
@@ -238,7 +291,7 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                 >
                                     Previous
                                 </Button>
-                                <span className="text-sm">
+                                <span className="text-sm whitespace-nowrap">
                                     Page {currentPage} of {lastPage}
                                 </span>
                                 <Button

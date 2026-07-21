@@ -26,7 +26,7 @@ export function NavUser() {
                         <SidebarMenuButton
                             size="lg"
                             className="group text-sidebar-foreground bg-white/40 backdrop-blur-sm rounded-xl hover:bg-white/60 data-[state=open]:bg-white/60 border border-white/60 shadow-sm transition-all duration-200"
-                            data-test="sidebar-menu-button"
+                            data-testid="sidebar-menu-button"
                         >
                             <UserInfo user={user} />
                             <ChevronsUpDown className="ml-auto size-4" />

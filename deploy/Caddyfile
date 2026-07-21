@@ -1,0 +1,70 @@
+# Raintech HRM — production reverse proxy (HTTPS)
+# Set env vars in deploy/.env before starting (see .env.production.example)
+
+{
+	email {$ACME_EMAIL}
+	# Uncomment for local/dev with self-signed certs:
+	# local_certs
+}
+
+# ── Tenant HRM app ─────────────────────────────────────────────
+{$TENANT_DOMAIN} {
+	encode gzip zstd
+
+	route {
+		handle /api/* {
+			reverse_proxy backend:3001 {
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+				header_up Host {host}
+			}
+		}
+
+		handle /storage/* {
+			respond "Forbidden" 403
+		}
+
+		handle {
+			root * /srv/tenant
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}
+
+# ── Platform admin console ───────────────────────────────────
+{$PLATFORM_DOMAIN} {
+	encode gzip zstd
+
+	route {
+		handle /api/* {
+			reverse_proxy backend:3001 {
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+				header_up Host {host}
+			}
+		}
+
+		handle {
+			root * /srv/platform
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}
+
+# ── Optional direct API subdomain ─────────────────────────────
+{$API_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy backend:3001 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up Host {host}
+	}
+}
+
+# ── Biometric devices (HTTP only — most ZKTeco/BIO-PARK devices do not support TLS)
+# Expose on host port 7788; do NOT put TLS in front of device traffic.
+:7788 {
+	reverse_proxy backend:7788
+}

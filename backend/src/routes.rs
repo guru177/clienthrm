@@ -232,6 +232,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/attendance/users", web::get().to(handlers::attendance::users))
         .route("/api/admin/attendance/today", web::get().to(handlers::attendance::today))
         .route("/api/admin/attendance/stats", web::get().to(handlers::attendance::stats))
+        .route(
+            "/api/admin/attendance/live-locations",
+            web::get().to(handlers::attendance::live_locations),
+        )
         .route("/api/admin/attendance/clock-in", web::post().to(handlers::attendance::clock_in))
         .route("/api/admin/attendance/clock-out", web::post().to(handlers::attendance::clock_out))
         .route("/api/admin/attendance/manual", web::post().to(handlers::attendance::store_manual))
@@ -297,6 +301,20 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/tasks/{id}", web::delete().to(handlers::tasks::destroy))
         .route("/api/admin/tasks/{id}/status", web::post().to(handlers::tasks::update_status))
 
+        // ── Manager self-service ──
+        .route("/api/admin/manager/team", web::get().to(handlers::manager::team))
+        .route("/api/admin/manager/attendance", web::get().to(handlers::manager::team_attendance))
+        .route("/api/admin/manager/leave-requests", web::get().to(handlers::manager::team_leave))
+        .route("/api/admin/manager/leave-requests/{id}/approve", web::post().to(handlers::manager::approve_leave))
+        .route("/api/admin/manager/leave-requests/{id}/reject", web::post().to(handlers::manager::reject_leave))
+
+        // ── Integrations / outbound webhooks ──
+        .route("/api/admin/integrations/webhooks", web::get().to(handlers::tenant_webhooks::index))
+        .route("/api/admin/integrations/webhooks", web::post().to(handlers::tenant_webhooks::store))
+        .route("/api/admin/integrations/webhooks/{id}", web::put().to(handlers::tenant_webhooks::update))
+        .route("/api/admin/integrations/webhooks/{id}", web::delete().to(handlers::tenant_webhooks::destroy))
+        .route("/api/admin/integrations/webhooks/{id}/deliveries", web::get().to(handlers::tenant_webhooks::deliveries))
+
         // ── Workflows ──
         .route("/api/admin/workflows", web::get().to(handlers::workflows::index))
         .route("/api/admin/workflows/list", web::get().to(handlers::workflows::index))
@@ -307,6 +325,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/workflows/{id}/toggle", web::post().to(handlers::workflows::toggle))
         .route("/api/admin/workflows/{id}/duplicate", web::post().to(handlers::workflows::duplicate))
         .route("/api/admin/workflows/{id}/executions", web::get().to(handlers::workflows::executions))
+        .route("/api/admin/workflows/{id}/test", web::post().to(handlers::workflows::test_run))
 
         // ── Careers ──
         .route("/api/admin/careers", web::get().to(handlers::careers::index))
@@ -332,6 +351,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
         // ── Reports ──
         .route("/api/admin/reports/attendance-summary", web::get().to(handlers::reports::attendance_summary))
+        .route("/api/admin/reports/out-of-zone-punches", web::get().to(handlers::reports::out_of_zone_punches))
         .route("/api/admin/reports/daily-attendance", web::get().to(handlers::reports::daily_attendance_register))
         .route("/api/admin/reports/attendance-register", web::get().to(handlers::reports::attendance_register))
         .route("/api/admin/reports/attendance", web::get().to(handlers::reports::attendance_register))
@@ -432,6 +452,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/biometric/mapping/{id}", web::delete().to(handlers::biometric::mapping_destroy))
         .route("/api/admin/biometric/stats", web::get().to(handlers::biometric::biometric_stats))
         .route("/api/admin/biometric/ws", web::get().to(handlers::biometric::biometric_live_ws))
+        .route("/api/admin/biometric/ingest-keys", web::get().to(handlers::biometric::ingest_keys_list))
+        .route("/api/admin/biometric/ingest-keys", web::post().to(handlers::biometric::ingest_keys_create))
+        .route("/api/admin/biometric/ingest-keys/{id}", web::delete().to(handlers::biometric::ingest_keys_revoke))
+
+        // Generic punch push (no JWT — Authorization: Bearer hrm_bio_… or X-Biometric-Key)
+        .route(
+            "/api/integrations/biometric/punches",
+            web::post().to(handlers::biometric::integration_punches_push),
+        )
 
         // ── Team Chat ──
         .route("/api/admin/chat/spaces", web::get().to(handlers::chat::spaces_index))

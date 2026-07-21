@@ -454,3 +454,87 @@ pub async fn executions(
         });
     HttpResponse::Ok().json(ApiResponse::success(rows))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct TestWorkflowRequest {
+    pub sample_context: Option<serde_json::Value>,
+}
+
+/// POST /api/admin/workflows/{id}/test — dry-run with sample payload (executes actions).
+pub async fn test_run(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<TestWorkflowRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let workflow_id = path.into_inner();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT trigger_type, actions FROM workflows WHERE id = ?1 AND organization_id = ?2",
+            crate::params![workflow_id, org_id],
+            |r| Ok((r.get_idx::<String>(0)?, r.get_idx::<Option<String>>(1)?)),
+        )
+        .ok();
+    let Some((trigger_type, _actions)) = row else {
+        return HttpResponse::NotFound().json(ApiError::new("Workflow not found"));
+    };
+
+    let mut context = body.sample_context.clone().unwrap_or_else(|| {
+        serde_json::json!({
+            "user_id": claims.sub,
+            "created_by": claims.sub,
+            "organization_id": org_id,
+            "dry_run": true,
+            "test": true,
+        })
+    });
+    if let Some(obj) = context.as_object_mut() {
+        obj.entry("created_by".to_string())
+            .or_insert(serde_json::json!(claims.sub));
+        obj.entry("user_id".to_string())
+            .or_insert(serde_json::json!(claims.sub));
+        obj.entry("organization_id".to_string())
+            .or_insert(serde_json::json!(org_id));
+        obj.insert("dry_run".to_string(), serde_json::json!(true));
+        obj.insert("test".to_string(), serde_json::json!(true));
+    }
+
+    // Temporarily activate matching by firing the workflow's trigger type with test context.
+    // Only this workflow runs if others don't match conditions; we call trigger which scans all.
+    // For a true single-workflow test, force-execute via a dedicated path:
+    crate::workflow_logic::test_workflow(&conn, org_id, workflow_id, &trigger_type, &context);
+
+    let latest: Option<(i64, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, status, created_at FROM workflow_executions
+             WHERE workflow_id = ?1 ORDER BY id DESC LIMIT 1",
+            crate::params![workflow_id],
+            |r| {
+                Ok((
+                    r.get_idx::<i64>(0)?,
+                    r.get_idx::<String>(1)?,
+                    r.get_idx::<Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok();
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "message": "Test run completed",
+        "trigger_type": trigger_type,
+        "context": context,
+        "latest_execution": latest.map(|(id, status, created_at)| {
+            serde_json::json!({ "id": id, "status": status, "created_at": created_at })
+        }),
+    })))
+}

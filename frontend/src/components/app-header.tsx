@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/sheet';
 import { UserMenuContent } from '@/components/user-menu-content';
 import { useInitials } from '@/hooks/use-initials';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { type BreadcrumbItem, type NavItem } from '@/types';
@@ -36,6 +37,7 @@ interface AppHeaderProps {
 export function AppHeader({ breadcrumbs = [] }: AppHeaderProps) {
     const { user } = useAuth();
     const getInitials = useInitials();
+    const photoSrc = useStorageSrc(user?.photo || user?.avatar);
     const location = useLocation();
     const urlIsActive = (href: string) => location.pathname === href || location.pathname.startsWith(href + '/');
 
@@ -105,7 +107,7 @@ export function AppHeader({ breadcrumbs = [] }: AppHeaderProps) {
                             <DropdownMenuTrigger asChild>
                                 <Button variant="ghost" className="size-10 rounded-full p-1">
                                     <Avatar className="size-8 overflow-hidden rounded-full">
-                                        <AvatarImage src={user.avatar} alt={user.name} />
+                                        <AvatarImage src={photoSrc || undefined} alt={user.name} />
                                         <AvatarFallback className="rounded-lg bg-neutral-200 text-black dark:bg-neutral-700 dark:text-white">
                                             {getInitials(user.name)}
                                         </AvatarFallback>

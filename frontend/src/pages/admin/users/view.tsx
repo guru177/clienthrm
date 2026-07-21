@@ -478,7 +478,7 @@ export default function ViewUser() {
                                 {/* Photo Upload */}
                                 <div className="flex items-center gap-6">
                                     <Avatar className="h-24 w-24">
-                                        <AvatarImage src={photoPreview || ''} alt={user.name} />
+                                        <AvatarImage src={photoPreview || undefined} alt={user.name} />
                                         <AvatarFallback className="text-2xl">
                                             {(user.name?.trim()?.charAt(0) || '#').toUpperCase()}
                                         </AvatarFallback>

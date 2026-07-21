@@ -47,8 +47,11 @@ import {
     Search,
     Calendar,
     X,
+    Copy,
+    KeyRound,
 } from 'lucide-react';
 import axios from '@/lib/axios';
+import { resolveApiBase } from '@/lib/api-base';
 import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
 import AttendanceStats from '@/components/attendance/attendance-stats';
@@ -99,6 +102,16 @@ interface BiometricStats {
     last_heartbeat?: string | null;
 }
 
+interface IngestKey {
+    id: number;
+    name: string;
+    key_prefix: string;
+    created_by: number | null;
+    created_at: string | null;
+    revoked_at: string | null;
+    revoked: boolean;
+}
+
 interface HrmUser {
     id: number;
     name: string;
@@ -109,6 +122,7 @@ const verifyMethodLabel = (method: number) => {
         case 1: return { label: 'Fingerprint', icon: <Fingerprint className="h-3.5 w-3.5" /> };
         case 4: return { label: 'Card', icon: <CreditCard className="h-3.5 w-3.5" /> };
         case 15: return { label: 'Face', icon: <ScanFace className="h-3.5 w-3.5" /> };
+        case 99: return { label: 'Push API', icon: <Wifi className="h-3.5 w-3.5" /> };
         default: return { label: `Code ${method}`, icon: <Fingerprint className="h-3.5 w-3.5" /> };
     }
 };
@@ -178,6 +192,12 @@ export default function BiometricIndex() {
     const [registerOpen, setRegisterOpen] = useState(false);
     const [registerForm, setRegisterForm] = useState({ serial_number: '', name: 'BIO-PARK D01', location: '' });
     const [registerSaving, setRegisterSaving] = useState(false);
+
+    // Push API keys
+    const [ingestKeys, setIngestKeys] = useState<IngestKey[]>([]);
+    const [ingestKeyName, setIngestKeyName] = useState('Push API key');
+    const [ingestKeyCreating, setIngestKeyCreating] = useState(false);
+    const [createdIngestKey, setCreatedIngestKey] = useState<string | null>(null);
 
     const [punchSearch, setPunchSearch] = useState('');
     const [punchDate, setPunchDate] = useState('');
@@ -254,7 +274,7 @@ export default function BiometricIndex() {
         setLoading(true);
         const tasks = [loadStats(), loadPunches()];
         if (canManage) {
-            tasks.push(loadDevices(), loadMappings(), loadUsers());
+            tasks.push(loadDevices(), loadMappings(), loadUsers(), loadIngestKeys());
         }
         await Promise.all(tasks);
         setLoading(false);
@@ -264,7 +284,7 @@ export default function BiometricIndex() {
         setRefreshing(true);
         const tasks = [loadStats(), loadPunches()];
         if (canManage) {
-            tasks.push(loadDevices(), loadMappings());
+            tasks.push(loadDevices(), loadMappings(), loadIngestKeys());
         }
         await Promise.all(tasks);
         setRefreshing(false);
@@ -312,6 +332,68 @@ export default function BiometricIndex() {
             setUsers(res.data.data || []);
         } catch (error) {
             handleApiError(error);
+        }
+    };
+
+    const loadIngestKeys = async () => {
+        try {
+            const res = await axios.get('/admin/biometric/ingest-keys');
+            setIngestKeys(res.data.data || []);
+        } catch (error) {
+            handleApiError(error);
+        }
+    };
+
+    const handleCreateIngestKey = async () => {
+        setIngestKeyCreating(true);
+        try {
+            const res = await axios.post('/admin/biometric/ingest-keys', {
+                name: ingestKeyName.trim() || 'Push API key',
+            });
+            handleApiResponse(res);
+            const key = res.data?.data?.key as string | undefined;
+            if (key) {
+                setCreatedIngestKey(key);
+            }
+            setIngestKeyName('Push API key');
+            await loadIngestKeys();
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setIngestKeyCreating(false);
+        }
+    };
+
+    const handleRevokeIngestKey = async (id: number) => {
+        if (!confirm('Revoke this Push API key? Bridges using it will stop working.')) return;
+        try {
+            const res = await axios.delete(`/admin/biometric/ingest-keys/${id}`);
+            handleApiResponse(res);
+            if (createdIngestKey) setCreatedIngestKey(null);
+            await loadIngestKeys();
+        } catch (error) {
+            handleApiError(error);
+        }
+    };
+
+    const pushApiCurlSample = (key: string) => {
+        const base = resolveApiBase().replace(/\/$/, '');
+        const absolute = base.startsWith('http')
+            ? base
+            : `${typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'}${base.startsWith('/') ? base : `/${base}`}`;
+        const sn = devices[0]?.serial_number || 'YOUR_DEVICE_SERIAL';
+        return `curl -X POST "${absolute}/integrations/biometric/punches" \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"device_serial":"${sn}","device_pin":"1","punch_time":"2026-07-17 09:00:00","punch_type":0}'`;
+    };
+
+    const copyText = async (text: string, label: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast({ type: 'success', message: `${label} copied` });
+        } catch {
+            showToast({ type: 'error', message: 'Could not copy to clipboard' });
         }
     };
 
@@ -521,13 +603,14 @@ export default function BiometricIndex() {
 
                 {/* Tabs */}
                 <Tabs defaultValue="statistics" className="w-full">
-                    <TabsList className={`grid w-full h-auto ${canManage ? 'grid-cols-4' : 'grid-cols-2'}`}>
+                    <TabsList className={`grid w-full h-auto ${canManage ? 'grid-cols-5' : 'grid-cols-2'}`}>
                         <TabsTrigger value="statistics">Statistics</TabsTrigger>
                         <TabsTrigger value="punches">{canManage ? 'Punch Log' : 'My Punches'}</TabsTrigger>
                         {canManage && (
                             <>
                                 <TabsTrigger value="mapping">PIN Mapping</TabsTrigger>
                                 <TabsTrigger value="devices">Devices</TabsTrigger>
+                                <TabsTrigger value="push-api">Push API</TabsTrigger>
                             </>
                         )}
                     </TabsList>
@@ -740,6 +823,7 @@ export default function BiometricIndex() {
                                         </p>
                                         <p className="text-xs text-muted-foreground max-w-md mx-auto">
                                             Click <strong>Register Device</strong> with the serial from the device menu, then point the device to this PC&apos;s IP on port 7788.
+                                            For eSSL, Hikvision, and other brands, register a serial here and send punches via the <strong>Push API</strong> tab.
                                         </p>
                                         <Button size="sm" className="mt-2" onClick={() => setRegisterOpen(true)}>
                                             <Plus className="mr-2 h-4 w-4" />
@@ -779,9 +863,134 @@ export default function BiometricIndex() {
                                         ))}
                                     </div>
                                 )}
+                                <p className="text-xs text-muted-foreground mt-4">
+                                    Native protocols: <strong>ZKTeco iClock/ADMS</strong> and <strong>BIO-PARK</strong> (port 7788).
+                                    All other brands: register the serial, map PINs, then use <strong>Push API</strong>.
+                                </p>
                             </CardContent>
                         </Card>
                     </TabsContent>
+
+                    {canManage && (
+                        <TabsContent value="push-api">
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="text-base flex items-center gap-2">
+                                        <KeyRound className="h-4 w-4" />
+                                        Other brands / Push API
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-6">
+                                    <p className="text-sm text-muted-foreground">
+                                        Any device or middleware that can HTTP POST can push punches into the same attendance pipeline.
+                                        Create a key, register the device serial on the Devices tab, map employee PINs, then POST from your bridge (Postman, n8n, vendor software).
+                                    </p>
+
+                                    <div className="flex flex-col sm:flex-row gap-3 items-end">
+                                        <div className="flex-1 space-y-2 w-full">
+                                            <Label htmlFor="ingest-key-name">Key name</Label>
+                                            <Input
+                                                id="ingest-key-name"
+                                                value={ingestKeyName}
+                                                onChange={(e) => setIngestKeyName(e.target.value)}
+                                                placeholder="e.g. Office Hikvision bridge"
+                                            />
+                                        </div>
+                                        <Button onClick={handleCreateIngestKey} disabled={ingestKeyCreating}>
+                                            <Plus className="mr-2 h-4 w-4" />
+                                            {ingestKeyCreating ? 'Creating…' : 'Create key'}
+                                        </Button>
+                                    </div>
+
+                                    {createdIngestKey && (
+                                        <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4 space-y-3">
+                                            <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                                                Copy this key now — it will not be shown again.
+                                            </p>
+                                            <code className="block text-xs break-all bg-background/80 p-2 rounded border">
+                                                {createdIngestKey}
+                                            </code>
+                                            <div className="flex flex-wrap gap-2">
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => copyText(createdIngestKey, 'Key')}
+                                                >
+                                                    <Copy className="mr-2 h-3.5 w-3.5" />
+                                                    Copy key
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() =>
+                                                        copyText(pushApiCurlSample(createdIngestKey), 'curl sample')
+                                                    }
+                                                >
+                                                    <Copy className="mr-2 h-3.5 w-3.5" />
+                                                    Copy curl sample
+                                                </Button>
+                                            </div>
+                                            <pre className="text-xs overflow-x-auto rounded bg-muted p-3 whitespace-pre-wrap">
+                                                {pushApiCurlSample(createdIngestKey)}
+                                            </pre>
+                                        </div>
+                                    )}
+
+                                    <div>
+                                        <h4 className="text-sm font-medium mb-2">Keys</h4>
+                                        {ingestKeys.length === 0 ? (
+                                            <p className="text-sm text-muted-foreground">No keys yet.</p>
+                                        ) : (
+                                            <Table>
+                                                <TableHeader>
+                                                    <TableRow>
+                                                        <TableHead>Name</TableHead>
+                                                        <TableHead>Prefix</TableHead>
+                                                        <TableHead>Created</TableHead>
+                                                        <TableHead>Status</TableHead>
+                                                        <TableHead className="w-[80px]" />
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {ingestKeys.map((k) => (
+                                                        <TableRow key={k.id}>
+                                                            <TableCell>{k.name}</TableCell>
+                                                            <TableCell>
+                                                                <code className="text-xs">{k.key_prefix}…</code>
+                                                            </TableCell>
+                                                            <TableCell className="text-xs text-muted-foreground">
+                                                                {k.created_at || '—'}
+                                                            </TableCell>
+                                                            <TableCell>
+                                                                {k.revoked ? (
+                                                                    <Badge variant="secondary">Revoked</Badge>
+                                                                ) : (
+                                                                    <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                                                                        Active
+                                                                    </Badge>
+                                                                )}
+                                                            </TableCell>
+                                                            <TableCell>
+                                                                {!k.revoked && (
+                                                                    <Button
+                                                                        variant="ghost"
+                                                                        size="icon"
+                                                                        onClick={() => handleRevokeIngestKey(k.id)}
+                                                                    >
+                                                                        <Trash2 className="h-4 w-4 text-destructive" />
+                                                                    </Button>
+                                                                )}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        )}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+                    )}
                 </Tabs>
             </div>
 

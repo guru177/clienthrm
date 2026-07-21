@@ -3,12 +3,14 @@
 pub mod biometric_worker;
 pub mod payroll_queue;
 pub mod retention_worker;
+pub mod workflow_events_worker;
 
 use crate::db::pool::DbPool;
 
 pub fn spawn_all(pool: DbPool) {
     biometric_worker::spawn(pool.clone());
     retention_worker::spawn(pool.clone());
+    workflow_events_worker::spawn(pool.clone());
     payroll_queue::spawn(pool);
 }
 

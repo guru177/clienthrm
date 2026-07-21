@@ -1,4 +1,63 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Accept JSON bool, 0/1 numbers, or "0"/"1"/"true"/"false" strings (multipart/form + FE).
+fn deserialize_optional_boolish<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct BoolishVisitor;
+    impl<'de> Visitor<'de> for BoolishVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a boolean, 0/1, or string boolish value")
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let t = v.trim().to_ascii_lowercase();
+            if t.is_empty() {
+                return Ok(None);
+            }
+            match t.as_str() {
+                "1" | "true" | "yes" | "on" => Ok(Some(true)),
+                "0" | "false" | "no" | "off" => Ok(Some(false)),
+                _ => Err(E::custom(format!("invalid boolean value: {v}"))),
+            }
+        }
+    }
+
+    deserializer.deserialize_any(BoolishVisitor)
+}
+
+fn deserialize_boolish<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(deserialize_optional_boolish(deserializer)?.unwrap_or(false))
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
@@ -33,6 +92,8 @@ pub struct User {
     pub organization_id: i64,
     pub is_super_admin: bool,
     pub is_external: bool,
+    #[serde(default)]
+    pub hr_managed: bool,
     pub onboarded: bool,
     pub account_number: Option<String>,
     pub ifsc_code: Option<String>,
@@ -44,6 +105,11 @@ pub struct User {
     pub work_state: Option<String>,
     pub tax_regime: Option<String>,
     pub account_type: Option<String>,
+    pub emergency_contact: Option<String>,
+    pub doc_aadhaar: Option<String>,
+    pub doc_pan: Option<String>,
+    pub doc_id_proof: Option<String>,
+    pub doc_other: Option<String>,
     pub email_verified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -71,6 +137,8 @@ pub struct UserSummary {
     pub organization_id: i64,
     pub is_super_admin: bool,
     pub is_external: bool,
+    #[serde(default)]
+    pub hr_managed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_of_birth: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +182,16 @@ pub struct UserSummary {
     pub pf_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aadhar_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_contact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_aadhaar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_pan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_id_proof: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_other: Option<String>,
     pub email_verified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -169,7 +247,9 @@ pub struct JwtClaims {
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
     pub name: String,
+    #[serde(default)]
     pub email: String,
+    #[serde(default)]
     pub password: String,
     #[serde(default)]
     pub password_confirmation: Option<String>,
@@ -185,7 +265,14 @@ pub struct CreateUserRequest {
     pub role_ids: Option<Vec<i64>>,
     pub manager_id: Option<i64>,
     pub reporting_manager_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
     pub is_external: bool,
+    /// When true, employee never logs in — HR runs attendance/leave/pay for them.
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub hr_managed: bool,
+    /// Branches this user may administer (branch RBAC). Empty = fall back to work_location.
+    #[serde(default)]
+    pub managed_center_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,10 +310,20 @@ pub struct UpdateUserRequest {
     pub date_of_exit: Option<String>,
     pub work_state: Option<String>,
     pub tax_regime: Option<String>,
+    pub emergency_contact: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_boolish")]
     pub is_external: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_boolish")]
+    pub hr_managed: Option<bool>,
+    /// Required when turning off hr_managed (enable app login).
+    #[serde(default)]
+    pub password: Option<String>,
 
     // Roles
     pub roles: Option<Vec<i64>>,
+    /// Branches this user may administer (branch RBAC).
+    #[serde(default)]
+    pub managed_center_ids: Option<Vec<i64>>,
 }
 
 impl User {
@@ -264,6 +361,7 @@ impl User {
                 .unwrap_or(1),
             is_super_admin: row.get_boolish("is_super_admin")?,
             is_external: row.get_boolish("is_external").unwrap_or(false),
+            hr_managed: row.get_boolish("hr_managed").unwrap_or(false),
             onboarded: row.get_boolish("onboarded")?,
             account_number: row.get("account_number")?,
             ifsc_code: row.get("ifsc_code")?,
@@ -275,6 +373,11 @@ impl User {
             work_state: row.get("work_state").ok().flatten(),
             tax_regime: row.get("tax_regime").ok().flatten(),
             account_type: row.get("account_type").ok().flatten(),
+            emergency_contact: row.get("emergency_contact").ok().flatten(),
+            doc_aadhaar: row.get("doc_aadhaar").ok().flatten(),
+            doc_pan: row.get("doc_pan").ok().flatten(),
+            doc_id_proof: row.get("doc_id_proof").ok().flatten(),
+            doc_other: row.get("doc_other").ok().flatten(),
             email_verified_at: row.get("email_verified_at")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
@@ -297,6 +400,7 @@ impl User {
             organization_id: self.organization_id,
             is_super_admin: self.is_super_admin,
             is_external: self.is_external,
+            hr_managed: self.hr_managed,
             date_of_birth: self.date_of_birth.clone(),
             gender: self.gender.clone(),
             address: self.address.clone(),
@@ -319,6 +423,11 @@ impl User {
             esi_number: self.esi_number.clone(),
             pf_number: self.pf_number.clone(),
             aadhar_number: self.aadhar_number.clone(),
+            emergency_contact: self.emergency_contact.clone(),
+            doc_aadhaar: self.doc_aadhaar.clone(),
+            doc_pan: self.doc_pan.clone(),
+            doc_id_proof: self.doc_id_proof.clone(),
+            doc_other: self.doc_other.clone(),
             email_verified_at: self.email_verified_at.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),

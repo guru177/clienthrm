@@ -5,6 +5,7 @@ mod career_logic;
 mod chat_events;
 mod chat_department_channels;
 mod role_defaults;
+mod branch_scope;
 mod config;
 mod db;
 mod handlers;
@@ -23,8 +24,11 @@ mod arrears_logic;
 mod tds_logic;
 mod payroll_extras;
 mod attendance_logic;
+mod geo_policy;
+mod tenant_webhooks;
 mod workflow_logic;
 mod storage;
+mod object_storage;
 mod desktop_update_feed;
 mod tenant;
 mod plan_limits;
@@ -45,7 +49,15 @@ mod password_reset_otp_email;
 mod totp_logic;
 mod validation;
 mod jobs;
+mod tenant_email;
 mod asset_email;
+mod leave_email;
+mod grocery_email;
+mod doctor_report_email;
+mod task_email;
+mod user_lifecycle_email;
+mod attendance_shift_email;
+mod test_mail_blast;
 
 
 #[cfg(test)]
@@ -200,6 +212,11 @@ async fn main() -> std::io::Result<()> {
 
     let _ = std::fs::create_dir_all(crate::storage::storage_root());
     let _ = std::fs::create_dir_all(crate::storage::storage_root().join("desktop-updates"));
+    if crate::object_storage::s3_configured() {
+        log::info!("Object storage: AWS_S3_BUCKET set (S3 dual-write on first upload/download)");
+    } else {
+        log::info!("Object storage: local STORAGE_PATH only (set AWS_S3_BUCKET to enable S3)");
+    }
 
     jobs::spawn_all(pool.clone());
 

@@ -41,7 +41,7 @@ export function UserMenuContent({ user }: UserMenuContentProps) {
                 <button
                     className="block w-full cursor-pointer text-left"
                     onClick={handleLogout}
-                    data-test="logout-button"
+                    data-testid="logout-button"
                 >
                     <LogOut className="mr-2" />
                     Log out

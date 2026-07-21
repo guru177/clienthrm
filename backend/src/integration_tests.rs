@@ -251,6 +251,7 @@ async fn me_returns_user_with_valid_token() {
         1,
         TEST_ORG_SLUG,
         true,
+        false,
         &harness.jwt_secret,
         24,
     )
@@ -379,6 +380,7 @@ async fn expired_jwt_rejected() {
         organization_id: 1,
         org_slug: Some(TEST_ORG_SLUG.to_string()),
         is_super_admin: true,
+        is_external: false,
         aud: TENANT_AUD.to_string(),
         impersonated_by: None,
         impersonation: false,

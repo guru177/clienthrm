@@ -333,6 +333,10 @@ pub async fn assign_user(
     if !crate::tenant::user_in_organization(&conn, body.user_id, org_id) {
         return HttpResponse::BadRequest().json(ApiError::new("User not found in organization"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, body.user_id, org_id, &scope) {
+        return resp;
+    }
     let shift_ok = tx
         .query_row(
             "SELECT 1 FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
@@ -369,6 +373,37 @@ pub async fn assign_user(
         Ok(_) => {
             if tx.commit().is_err() {
                 return HttpResponse::InternalServerError().json(ApiError::new("Failed to persist assignment"));
+            }
+            let shift_meta: Option<(String, String, String)> = conn
+                .query_row(
+                    "SELECT name, start_time, end_time FROM shift_templates WHERE id = ?1 AND organization_id = ?2",
+                    crate::params![body.shift_template_id, org_id],
+                    |row| {
+                        Ok((
+                            row.get_idx::<String>(0)?,
+                            row.get_idx::<String>(1)?,
+                            row.get_idx::<String>(2)?,
+                        ))
+                    },
+                )
+                .ok();
+            if let Some((name, start, end)) = shift_meta {
+                if let Some(email) = crate::tenant_email::user_email(&conn, body.user_id) {
+                    let (text, html) = crate::attendance_shift_email::render_shift_assigned_email(
+                        &name,
+                        body.effective_from.trim(),
+                        &start,
+                        &end,
+                    );
+                    crate::tenant_email::send_tenant_email(
+                        &conn,
+                        org_id,
+                        &email,
+                        &format!("Shift Assigned: {name}"),
+                        text,
+                        html,
+                    );
+                }
             }
             HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
                 "message": "Shift assigned to user",
@@ -481,11 +516,16 @@ pub async fn roster(
         }
     }
 
-    let mut all_users: Vec<(i64, String, Option<String>, Option<String>)> = match conn.prepare(
-        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name",
-    ) {
-        Ok(stmt) => stmt
-            .query_map([org_id], |row| {
+    let mut all_users: Vec<(i64, String, Option<String>, Option<String>)> = {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        let mut sql = String::from(
+            "SELECT u.id, u.name, u.email, u.employee_id FROM users u WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND u.organization_id = ?1",
+        );
+        let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+        crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+        sql.push_str(" ORDER BY u.name");
+        match conn.prepare(&sql) {
+            Ok(stmt) => stmt.query_map(&params, |row| {
                 Ok((
                     row.get_idx::<i64>(0)?,
                     row.get_idx::<String>(1)?,
@@ -493,7 +533,8 @@ pub async fn roster(
                     row.get_idx::<Option<String>>(3)?,
                 ))
             }),
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+            Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+        }
     };
 
     let rows: Vec<serde_json::Value> = if shift_id == 0 {

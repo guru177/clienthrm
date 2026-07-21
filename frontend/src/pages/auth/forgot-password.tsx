@@ -377,7 +377,7 @@ export default function ForgotPassword() {
                         className="w-full"
                         type="submit"
                         disabled={processing}
-                        data-test="send-password-reset-otp-button"
+                        data-testid="send-password-reset-otp-button"
                     >
                         {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
                         Send verification code

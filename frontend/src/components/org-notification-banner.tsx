@@ -17,7 +17,7 @@ export function OrgNotificationBanner({
     alt = '',
 }: OrgNotificationBannerProps) {
     const storageSrc = useStorageSrc(imageUrl);
-    const src = previewSrc?.trim() || storageSrc;
+    const src = previewSrc?.trim() || storageSrc || undefined;
     if (!src) return null;
 
     return (

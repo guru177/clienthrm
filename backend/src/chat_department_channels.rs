@@ -141,6 +141,36 @@ pub fn sync_all_department_channels(conn: &Connection, org_id: i64, actor_user_i
     }
 }
 
+/// Add the current user to their department channel without re-syncing every member.
+/// Full member sync runs on department CRUD / user dept changes instead.
+pub fn ensure_viewer_department_membership(conn: &Connection, org_id: i64, user_id: i64) {
+    let dept_id: Option<i64> = match conn.query_row(
+        "SELECT department_id FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+        crate::params![user_id, org_id],
+        |r| r.get_idx::<Option<i64>>(0),
+    ) {
+        Ok(dept_id) => dept_id,
+        Err(_) => None,
+    };
+
+    let Some(dept_id) = dept_id else {
+        return;
+    };
+
+    if let Some(space_id) = space_id_for_department(conn, org_id, dept_id) {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO chat_space_members (space_id, user_id, role, joined_at) VALUES (?1, ?2, 'member', ?3)",
+            crate::params![space_id, user_id, now_ts()],
+        );
+        return;
+    }
+
+    // Channel missing (rare) — create once via full ensure.
+    if let Err(e) = ensure_department_channel(conn, org_id, dept_id, user_id) {
+        log::warn!("ensure viewer {user_id} department channel: {e}");
+    }
+}
+
 /// Add the user to their department channel and remove them from other department channels.
 pub fn sync_user_department_channel(conn: &Connection, org_id: i64, user_id: i64) {
     if let Err(e) = conn.execute(

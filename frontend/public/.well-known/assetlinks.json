@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.raintech.hrm",
+      "sha256_cert_fingerprints": [
+        "03:72:50:DA:15:60:9D:78:0C:5A:22:F9:94:D8:B5:F6:F9:8F:7C:91:29:FF:7A:F4:54:F1:F5:6E:08:20:B6:76"
+      ]
+    }
+  }
+]

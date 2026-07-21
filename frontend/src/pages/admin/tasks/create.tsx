@@ -68,7 +68,20 @@ export default function Create({ users = [], projects = [] }: Props) {
         setErrors({});
 
         try {
-            const response = await axios.post('/admin/tasks', formData);
+            const payload = {
+                title: formData.title,
+                description: formData.description || null,
+                status: formData.status,
+                priority: formData.priority,
+                type: formData.type,
+                due_date: formData.due_date || null,
+                due_time: formData.due_time || null,
+                assigned_to: formData.assigned_to,
+                project_id: formData.project_id,
+                related_type: formData.related_type,
+                related_id: formData.related_id || null,
+            };
+            const response = await axios.post('/admin/tasks', payload);
             handleApiResponse(response);
             navigate('/admin/tasks');
         } catch (error: any) {

@@ -1,7 +1,50 @@
 use std::path::{Path, PathBuf};
 
+use crate::object_storage;
+
 const MAX_PHOTO_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ANNOUNCEMENT_BANNER_BYTES: usize = 5 * 1024 * 1024;
+
+/// Write bytes to local STORAGE_PATH and, when configured, to S3.
+fn write_stored_bytes(relative: &str, data: &[u8], content_type: &str) -> Result<(), String> {
+    let relative = normalize_relative_path(relative).ok_or_else(|| "Invalid path".to_string())?;
+    let full = storage_root().join(&relative);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+
+    if let Err(e) = object_storage::put_object(&relative, data, content_type) {
+        let _ = std::fs::remove_file(&full);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Read bytes from local disk, or from S3 (caching locally) when missing.
+pub fn read_stored_bytes(relative: &str) -> Result<Vec<u8>, String> {
+    let relative = normalize_relative_path(relative).ok_or_else(|| "Invalid path".to_string())?;
+
+    let full = storage_root().join(&relative);
+    if full.is_file() {
+        return std::fs::read(&full).map_err(|e| e.to_string());
+    }
+
+    match object_storage::get_object(&relative)? {
+        Some(bytes) => {
+            if let Some(parent) = full.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&full, &bytes);
+            Ok(bytes)
+        }
+        None => Err("File not found".into()),
+    }
+}
+
+fn content_type_for_relative(relative: &str) -> &'static str {
+    mime_for_path(Path::new(relative))
+}
 
 pub fn storage_root() -> PathBuf {
     PathBuf::from(
@@ -51,11 +94,7 @@ pub fn save_user_photo(
     };
 
     let relative = format!("users/{}.{}", uuid::Uuid::new_v4(), ext);
-    let full = storage_root().join(&relative);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+    write_stored_bytes(&relative, data, content_type_for_relative(&relative))?;
     Ok(relative)
 }
 
@@ -153,6 +192,24 @@ pub fn can_access_storage_file(
             .is_ok();
     }
 
+    if relative.starts_with("user-docs/") {
+        return conn
+            .query_row(
+                "SELECT 1 FROM users
+                 WHERE organization_id = ?2 AND deleted_at IS NULL
+                   AND (
+                     doc_aadhaar = ?1 OR doc_aadhaar = ?3 OR doc_aadhaar = ?4
+                     OR doc_pan = ?1 OR doc_pan = ?3 OR doc_pan = ?4
+                     OR doc_id_proof = ?1 OR doc_id_proof = ?3 OR doc_id_proof = ?4
+                     OR doc_other = ?1 OR doc_other = ?3 OR doc_other = ?4
+                   )
+                 LIMIT 1",
+                crate::params![&relative, org_id, &legacy, &legacy2],
+                |_| Ok(()),
+            )
+            .is_ok();
+    }
+
     if relative.starts_with("announcements/") {
         return conn
             .query_row(
@@ -206,11 +263,12 @@ pub fn can_access_storage_file(
 }
 
 pub fn delete_photo_path(relative: &str) {
-    if relative.is_empty() || relative.contains("..") {
+    let Some(relative) = normalize_relative_path(relative) else {
         return;
-    }
-    let full = storage_root().join(relative);
+    };
+    let full = storage_root().join(&relative);
     let _ = std::fs::remove_file(full);
+    let _ = object_storage::delete_object(&relative);
 }
 
 pub fn mime_for_path(path: &Path) -> &'static str {
@@ -303,11 +361,7 @@ fn save_image_banner(
     };
 
     let relative = format!("{prefix}/{}.{}", uuid::Uuid::new_v4(), ext);
-    let full = storage_root().join(&relative);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+    write_stored_bytes(&relative, data, content_type_for_relative(&relative))?;
     Ok(relative)
 }
 
@@ -356,11 +410,27 @@ pub fn save_doctor_report_file(
     }
     let ext = doctor_report_extension(filename, content_type);
     let relative = format!("doctor-reports/{}.{}", uuid::Uuid::new_v4(), ext);
-    let full = storage_root().join(&relative);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    write_stored_bytes(&relative, data, content_type_for_relative(&relative))?;
+    Ok(relative)
+}
+
+const MAX_USER_DOC_BYTES: usize = 10 * 1024 * 1024;
+
+/// Save an employee identity/HR document; returns `user-docs/<uuid>.ext`.
+pub fn save_user_document(
+    data: &[u8],
+    content_type: Option<&str>,
+    filename: Option<&str>,
+) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("Empty file".into());
     }
-    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+    if data.len() > MAX_USER_DOC_BYTES {
+        return Err("Document must be less than 10MB".into());
+    }
+    let ext = doctor_report_extension(filename, content_type);
+    let relative = format!("user-docs/{}.{}", uuid::Uuid::new_v4(), ext);
+    write_stored_bytes(&relative, data, content_type_for_relative(&relative))?;
     Ok(relative)
 }
 
@@ -379,11 +449,7 @@ pub fn save_chat_file(
 
     let ext = chat_extension(filename, content_type);
     let relative = format!("chat/{}.{}", uuid::Uuid::new_v4(), ext);
-    let full = storage_root().join(&relative);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&full, data).map_err(|e| e.to_string())?;
+    write_stored_bytes(&relative, data, content_type_for_relative(&relative))?;
     Ok(relative)
 }
 

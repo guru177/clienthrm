@@ -2,7 +2,7 @@ import { Transition } from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Upload } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import axios from '@/lib/axios';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
 
@@ -15,6 +15,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
+import { useStorageSrc } from '@/hooks/use-storage-src';
+import { clearStorageBlobCache } from '@/lib/storage-url';
 import { type BreadcrumbItem } from '@/types';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -29,6 +31,7 @@ export default function Profile() {
     const user = authUser as any;
 
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+    const storedPhotoSrc = useStorageSrc(user?.photo || user?.avatar);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [photoFile, setPhotoFile] = useState<File | null>(null);
     const [photoUploading, setPhotoUploading] = useState(false);
@@ -48,6 +51,21 @@ export default function Profile() {
     const [personalProcessing, setPersonalProcessing] = useState(false);
     const [personalSuccess, setPersonalSuccess] = useState(false);
     const [personalErrors, setPersonalErrors] = useState<Record<string, string>>({});
+
+    // Keep personal form in sync when auth user arrives / refreshes
+    useEffect(() => {
+        if (!user) return;
+        setPersonalForm((prev) => ({
+            ...prev,
+            name: user.name || prev.name,
+            email: user.email || prev.email,
+            phone: user.phone || prev.phone,
+            date_of_birth: user.date_of_birth || prev.date_of_birth,
+            gender: user.gender || prev.gender,
+            timezone: user.timezone || prev.timezone,
+            bio: user.bio || prev.bio,
+        }));
+    }, [user?.id, user?.name, user?.email, user?.phone, user?.date_of_birth, user?.gender, user?.timezone, user?.bio]);
 
     // Address form state
     const [addressForm, setAddressForm] = useState({
@@ -73,11 +91,12 @@ export default function Profile() {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             handleApiResponse(response);
+            clearStorageBlobCache();
             setPhotoPreview(null);
             setPhotoFile(null);
             setPhotoSuccess(true);
             setTimeout(() => setPhotoSuccess(false), 2000);
-            if (refreshUser) refreshUser();
+            await refreshUser?.();
         } catch (error: any) {
             if (error.response?.data?.errors) {
                 setPhotoErrors(error.response.data.errors);
@@ -144,22 +163,24 @@ export default function Profile() {
                         <CardContent>
                         <form onSubmit={handlePhotoSubmit} className="space-y-4">
                             <div className="flex gap-6">
-                                <div className="flex-shrink-0">
-                                    <img
-                                        src={
-                                            photoPreview ||
-                                            user?.photo ||
-                                            `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || '')}&background=random`
-                                        }
-                                        alt={user?.name || 'Profile'}
-                                        className="h-24 w-24 rounded-full object-cover"
-                                    />
+                                <div className="flex h-24 w-24 flex-shrink-0 items-center justify-center overflow-hidden rounded-full bg-neutral-200 text-2xl font-semibold text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100">
+                                    {photoPreview || storedPhotoSrc ? (
+                                        <img
+                                            src={photoPreview || storedPhotoSrc}
+                                            alt={user?.name || 'Profile'}
+                                            className="h-24 w-24 rounded-full object-cover"
+                                        />
+                                    ) : (
+                                        <span aria-hidden>
+                                            {(user?.name || 'U').trim().charAt(0).toUpperCase()}
+                                        </span>
+                                    )}
                                 </div>
 
                                 <div className="space-y-3">
                                     <Label htmlFor="photo">Change photo</Label>
                                     <p className="text-xs text-muted-foreground">
-                                        JPG, PNG, GIF up to 5MB
+                                        JPG, PNG, GIF up to 2MB
                                     </p>
                                     <input
                                         ref={fileInputRef}
@@ -257,6 +278,7 @@ export default function Profile() {
                                     <Label htmlFor="phone">Phone</Label>
                                     <Input
                                         id="phone"
+                                        name="phone"
                                         type="tel"
                                         className="mt-1 block w-full"
                                         value={personalForm.phone}
@@ -322,7 +344,7 @@ export default function Profile() {
                             </div>
 
                             <div className="flex items-center gap-4">
-                                <Button disabled={personalProcessing} data-test="update-profile-button">
+                                <Button disabled={personalProcessing} data-testid="update-profile-button">
                                     Save personal info
                                 </Button>
                                 <Transition
@@ -410,7 +432,7 @@ export default function Profile() {
                             </div>
 
                             <div className="flex items-center gap-4">
-                                <Button disabled={addressProcessing} data-test="update-profile-button">
+                                <Button disabled={addressProcessing} data-testid="update-profile-button">
                                     Save address
                                 </Button>
                                 <Transition

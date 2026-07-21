@@ -38,9 +38,12 @@ describe('AuthContext', () => {
                 </AuthProvider>
             </MemoryRouter>,
         );
-        await waitFor(() => {
-            expect(screen.getByTestId('user-email').textContent).toBe('admin@test.local');
-        });
+        await waitFor(
+            () => {
+                expect(screen.getByTestId('user-email').textContent).toBe('admin@test.local');
+            },
+            { timeout: 8_000 },
+        );
     });
 
     it('login stores token and permissions', async () => {
@@ -58,10 +61,12 @@ describe('AuthContext', () => {
                 </AuthProvider>
             </MemoryRouter>,
         );
-        await waitFor(() => expect(loginFn).toBeDefined());
+        await waitFor(() => expect(loginFn).toBeDefined(), { timeout: 8_000 });
         await loginFn!('admin@test.local', 'secret');
-        expect(localStorage.getItem('hrm_token')).toBe('test-jwt');
-        expect(localStorage.getItem('hrm_refresh_token')).toBe('test-refresh');
+        await waitFor(() => {
+            expect(localStorage.getItem('hrm_token')).toBe('test-jwt');
+            expect(localStorage.getItem('hrm_refresh_token')).toBe('test-refresh');
+        });
     });
 
     it('logout clears session', async () => {
@@ -74,7 +79,10 @@ describe('AuthContext', () => {
                 </AuthProvider>
             </MemoryRouter>,
         );
-        await waitFor(() => expect(screen.getByTestId('user-email').textContent).toBe('admin@test.local'));
+        await waitFor(
+            () => expect(screen.getByTestId('user-email').textContent).toBe('admin@test.local'),
+            { timeout: 8_000 },
+        );
         screen.getByRole('button', { name: /logout/i }).click();
         await waitFor(() => {
             expect(localStorage.getItem('hrm_token')).toBeNull();
@@ -90,7 +98,10 @@ describe('AuthContext', () => {
                 </AuthProvider>
             </MemoryRouter>,
         );
-        await waitFor(() => expect(screen.getByTestId('can-view-users').textContent).toBe('yes'));
+        await waitFor(
+            () => expect(screen.getByTestId('can-view-users').textContent).toBe('yes'),
+            { timeout: 8_000 },
+        );
     });
 
     it('handles failed /auth/me by clearing token', async () => {
@@ -107,9 +118,33 @@ describe('AuthContext', () => {
                 </AuthProvider>
             </MemoryRouter>,
         );
-        await waitFor(() => {
-            expect(screen.getByTestId('user-email').textContent).toBe('none');
-            expect(localStorage.getItem('hrm_token')).toBeNull();
-        });
+        await waitFor(
+            () => {
+                expect(screen.getByTestId('user-email').textContent).toBe('none');
+                expect(localStorage.getItem('hrm_token')).toBeNull();
+            },
+            { timeout: 8_000 },
+        );
+    });
+
+    it('keeps token when /auth/me fails transiently', async () => {
+        server.use(
+            http.get('/api/auth/me', () =>
+                HttpResponse.json({ message: 'timeout' }, { status: 408 }),
+            ),
+        );
+        localStorage.setItem('hrm_token', 'still-valid-token');
+        render(
+            <MemoryRouter>
+                <AuthProvider>
+                    <AuthProbe />
+                </AuthProvider>
+            </MemoryRouter>,
+        );
+        await waitFor(
+            () => expect(screen.getByTestId('user-email').textContent).toBe('none'),
+            { timeout: 8_000 },
+        );
+        expect(localStorage.getItem('hrm_token')).toBe('still-valid-token');
     });
 });

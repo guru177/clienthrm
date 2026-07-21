@@ -56,6 +56,14 @@ pub async fn index(
         params.push(crate::db::into_param_value(uid));
     }
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(&mut conditions, &mut params, &scope, "u");
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
+
     sql.push_str(" ORDER BY gb.created_at DESC");
 
     let items: Vec<GroceryBenefit> = conn
@@ -88,22 +96,48 @@ pub async fn store(
         return HttpResponse::Forbidden().json(ApiError::new("Missing permission: manage-grocery-benefits"));
     }
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, body.user_id, org_id, &scope)
+    {
+        return resp;
+    }
+
     let start_date = match crate::validation::validate_date_yyyy_mm_dd(&body.start_date, "Start date") {
         Ok(d) => d,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
     };
     let subsidy_pct = body.subsidy_percentage.unwrap_or(50);
     let allowance = body.monthly_allowance.unwrap_or(5000.0);
-    let now = chrono::Utc::now().naive_utc();
+    // created_at/updated_at are TEXT in Postgres schema — bind as strings.
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     match conn.execute(
         "INSERT INTO grocery_benefits (organization_id, user_id, start_date, subsidy_percentage, monthly_allowance, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)",
         crate::params![org_id, body.user_id, start_date, subsidy_pct, allowance, now, now],
     ) {
-        Ok(_) => HttpResponse::Created().json(ApiResponse::success(
-            serde_json::json!({"id": conn.last_insert_rowid(), "message": "Employee enrolled in grocery benefit"}),
-        )),
+        Ok(_) => {
+            let id = conn.last_insert_rowid();
+            if let Some(email) = crate::tenant_email::user_email(&conn, body.user_id) {
+                let (text, html) = crate::grocery_email::render_enrolled_email(
+                    subsidy_pct,
+                    allowance,
+                    &start_date,
+                );
+                crate::tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &email,
+                    "Grocery Benefit Enrolled",
+                    text,
+                    html,
+                );
+            }
+            HttpResponse::Created().json(ApiResponse::success(
+                serde_json::json!({"id": id, "message": "Employee enrolled in grocery benefit"}),
+            ))
+        }
         Err(e) => {
             let msg = format!("{e}");
             if msg.contains("UNIQUE") || msg.contains("unique") || msg.contains("duplicate") {
@@ -339,6 +373,14 @@ pub async fn claims_index(
         params.push(crate::db::into_param_value(uid));
     }
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(&mut conditions, &mut params, &scope, "u");
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
+
     sql.push_str(" ORDER BY gc.created_at DESC");
 
     let items: Vec<GroceryClaim> = conn
@@ -393,8 +435,8 @@ pub async fn claims_store(
         None => return HttpResponse::BadRequest().json(ApiError::new("No active grocery benefit found. Contact HR.")),
     };
 
-    let now = chrono::Utc::now().naive_utc();
-    let today = now.date();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let today = chrono::Utc::now().date_naive();
     let claim_month = body.claim_month.unwrap_or_else(|| today.format("%m").to_string().parse().unwrap_or(1));
     let claim_year = body.claim_year.unwrap_or_else(|| today.format("%Y").to_string().parse().unwrap_or(2026));
 
@@ -442,13 +484,57 @@ pub async fn claims_store(
             description, now, now
         ],
     ) {
-        Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
-            "id": conn.last_insert_rowid(),
-            "company_share": company_share,
-            "employee_share": employee_share,
-            "is_free_month": is_free_month,
-            "message": "Grocery claim submitted"
-        }))),
+        Ok(_) => {
+            let id = conn.last_insert_rowid();
+            let employee_name = crate::tenant_email::user_name(&conn, claims.sub)
+                .unwrap_or_else(|| "Employee".to_string());
+            let admin_emails = crate::tenant_email::emails_with_permission(
+                &conn,
+                org_id,
+                "manage-grocery-benefits",
+            );
+            if !admin_emails.is_empty() {
+                let (text, html) = crate::grocery_email::render_claim_logged_email(
+                    &employee_name,
+                    body.amount,
+                    claim_month,
+                    claim_year,
+                );
+                crate::tenant_email::send_tenant_email_bulk(
+                    &conn,
+                    org_id,
+                    &admin_emails,
+                    &format!("Grocery Claim: {employee_name}"),
+                    text,
+                    html,
+                );
+            }
+            crate::workflow_logic::trigger(
+                &conn,
+                org_id,
+                "grocery_claim_submitted",
+                &serde_json::json!({
+                    "claim_id": id,
+                    "user_id": claims.sub,
+                    "benefit_id": benefit.id,
+                    "amount": body.amount,
+                    "company_share": company_share,
+                    "employee_share": employee_share,
+                    "claim_month": claim_month,
+                    "claim_year": claim_year,
+                    "is_free_month": is_free_month,
+                    "organization_id": org_id,
+                    "created_by": claims.sub,
+                }),
+            );
+            HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
+                "id": id,
+                "company_share": company_share,
+                "employee_share": employee_share,
+                "is_free_month": is_free_month,
+                "message": "Grocery claim submitted"
+            })))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{e}"))),
     }
 }
@@ -480,14 +566,41 @@ pub async fn claims_review(
         return HttpResponse::BadRequest().json(ApiError::new("Status must be 'approved' or 'rejected'"));
     }
 
-    let now = chrono::Utc::now().naive_utc();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let notes = crate::validation::normalize_optional(body.review_notes.clone());
+    let claim_id = path.into_inner();
+    let claim_info: Option<(i64, f64)> = conn
+        .query_row(
+            "SELECT user_id, amount FROM grocery_claims WHERE id = ?1 AND organization_id = ?2 AND status = 'pending'",
+            crate::params![claim_id, org_id],
+            |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<f64>(1)?)),
+        )
+        .ok();
 
     match conn.execute(
         "UPDATE grocery_claims SET status = ?1, reviewed_by = ?2, reviewed_at = ?3, review_notes = ?4, updated_at = ?5 WHERE id = ?6 AND organization_id = ?7 AND status = 'pending'",
-        crate::params![body.status, claims.sub, now, notes, now, path.into_inner(), org_id],
+        crate::params![body.status, claims.sub, now, notes.clone(), now, claim_id, org_id],
     ) {
-        Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": format!("Claim {}", body.status)}))),
+        Ok(n) if n > 0 => {
+            if let Some((user_id, amount)) = claim_info {
+                if let Some(email) = crate::tenant_email::user_email(&conn, user_id) {
+                    let (text, html) = crate::grocery_email::render_claim_reviewed_email(
+                        amount,
+                        &body.status,
+                        notes.as_deref(),
+                    );
+                    crate::tenant_email::send_tenant_email(
+                        &conn,
+                        org_id,
+                        &email,
+                        &format!("Grocery Claim {}", body.status.to_uppercase()),
+                        text,
+                        html,
+                    );
+                }
+            }
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": format!("Claim {}", body.status)})))
+        }
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Claim not found or already reviewed")),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{e}"))),
     }

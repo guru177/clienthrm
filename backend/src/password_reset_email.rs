@@ -1,12 +1,7 @@
-//! Branded HTML email for password reset links.
+//! Branded HTML email for password reset links — uses shared tenant email shell.
 #![allow(dead_code)]
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
+use crate::tenant_email::{html_escape, render_base_template};
 
 /// Plain-text + HTML bodies for the password reset email.
 pub fn render_password_reset_email(
@@ -14,13 +9,9 @@ pub fn render_password_reset_email(
     recipient_email: &str,
     org_name: &str,
 ) -> (String, String) {
-    let safe_url = html_escape(reset_url);
-    let safe_email = html_escape(recipient_email);
-    let safe_org = html_escape(org_name);
-    let year = chrono::Utc::now().format("%Y");
-
     let app_name = std::env::var("APP_NAME").unwrap_or_else(|_| "RAINTECH HRM".to_string());
-    let safe_app = html_escape(&app_name);
+    let year = chrono::Utc::now().format("%Y");
+    let safe_url = html_escape(reset_url);
 
     let plain = format!(
         "{app_name} — Reset your password\n\n\
@@ -31,64 +22,31 @@ pub fn render_password_reset_email(
          © {year} {app_name}"
     );
 
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reset your password — {safe_app}</title>
-</head>
-<body style="margin:0;padding:0;background-color:#F0F4F8;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F0F4F8;">
-    <tr>
-      <td align="center" style="padding:32px 16px;">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
-          <tr>
-            <td style="border-radius:16px 16px 0 0;background:linear-gradient(135deg,#040e1e 0%,#092244 45%,#071b3a 100%);padding:28px 32px;text-align:center;">
-              <span style="font-size:18px;font-weight:700;color:#ffffff;">{safe_app}</span>
-            </td>
-          </tr>
-          <tr>
-            <td style="background-color:#ffffff;border-left:1px solid #dce8f8;border-right:1px solid #dce8f8;padding:36px 32px 28px;">
-              <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#001f3f;">Reset your password</h1>
-              <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#64748b;">
-                A password reset was requested for <strong style="color:#071b3a;">{safe_email}</strong>
-                at <strong style="color:#071b3a;">{safe_org}</strong>.
-              </p>
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">
-                <tr>
-                  <td align="center">
-                    <a href="{safe_url}" style="display:inline-block;background-color:#001f3f;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 28px;border-radius:10px;">
-                      Reset password
-                    </a>
-                  </td>
-                </tr>
-              </table>
-              <p style="margin:0 0 12px;font-size:13px;line-height:1.6;color:#64748b;">
-                Or copy this link into your browser:<br />
-                <span style="word-break:break-all;color:#071b3a;">{safe_url}</span>
-              </p>
-              <p style="margin:0;font-size:13px;color:#94a3b8;">This link expires in 60 minutes. If you did not request a reset, ignore this email.</p>
-            </td>
-          </tr>
-          <tr>
-            <td style="border-radius:0 0 16px 16px;background-color:#001f3f;padding:22px 32px;text-align:center;">
-              <p style="margin:0;font-size:11px;color:rgba(191,219,254,0.65);">&copy; {year} {safe_app}</p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>"#,
-        safe_app = safe_app,
-        safe_email = safe_email,
-        safe_org = safe_org,
+    let body_html = format!(
+        r#"<p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#64748b;">
+             A password reset was requested for
+             <strong style="color:#071b3a;">{safe_email}</strong>
+             at <strong style="color:#071b3a;">{safe_org}</strong>.
+           </p>
+           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px;">
+             <tr>
+               <td align="center">
+                 <a href="{safe_url}" style="display:inline-block;background-color:#001f3f;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 28px;border-radius:10px;">
+                   Reset password
+                 </a>
+               </td>
+             </tr>
+           </table>
+           <p style="margin:0 0 12px;font-size:13px;line-height:1.6;color:#64748b;">
+             Or copy this link into your browser:<br />
+             <span style="word-break:break-all;color:#071b3a;">{safe_url}</span>
+           </p>
+           <p style="margin:0;font-size:13px;color:#94a3b8;">This link expires in 60 minutes. If you did not request a reset, ignore this email.</p>"#,
+        safe_email = html_escape(recipient_email),
+        safe_org = html_escape(org_name),
         safe_url = safe_url,
-        year = year,
     );
+    let html = render_base_template("Reset your password", &body_html);
 
     (plain, html)
 }

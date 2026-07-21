@@ -145,6 +145,7 @@ pub(crate) fn normalize_punch_timestamp(timestamp: &str) -> String {
 
 /// Insert a punch row. Unmapped PINs are stored (user_id NULL) for the Punch Log.
 /// Returns true when a new row was inserted.
+/// When `trust_device_status` is true, `status` is stored as punch_type without resolve logic.
 pub(crate) fn store_incoming_punch(
     conn: &crate::db::Connection,
     sn: &str,
@@ -153,6 +154,19 @@ pub(crate) fn store_incoming_punch(
     status: i64,
     verify: i64,
     now: &str,
+) -> bool {
+    store_incoming_punch_ex(conn, sn, pin, timestamp, status, verify, now, false)
+}
+
+pub(crate) fn store_incoming_punch_ex(
+    conn: &crate::db::Connection,
+    sn: &str,
+    pin: &str,
+    timestamp: &str,
+    status: i64,
+    verify: i64,
+    now: &str,
+    trust_device_status: bool,
 ) -> bool {
     let timestamp = normalize_punch_timestamp(timestamp);
     let user_id: Option<i64> = conn
@@ -183,16 +197,22 @@ pub(crate) fn store_incoming_punch(
         return false;
     }
 
-    let punch_type = resolve_effective_punch_type(conn, user_id, sn, pin, status, &timestamp, verify);
-    if punch_type != status {
-        log::info!(
-            "  🔄 Resolved punch type {} → {} for PIN={} (device sent status={})",
-            status,
-            punch_type,
-            pin,
-            status
-        );
-    }
+    let punch_type = if trust_device_status {
+        status
+    } else {
+        let resolved =
+            resolve_effective_punch_type(conn, user_id, sn, pin, status, &timestamp, verify);
+        if resolved != status {
+            log::info!(
+                "  🔄 Resolved punch type {} → {} for PIN={} (device sent status={})",
+                status,
+                resolved,
+                pin,
+                status
+            );
+        }
+        resolved
+    };
 
     if conn
         .execute(
@@ -325,11 +345,8 @@ pub async fn iclock_receive(
             }
         }
 
-        // Update device heartbeat
-        let _ = conn.execute(
-            "UPDATE biometric_devices SET last_heartbeat=?1, updated_at=?1 WHERE serial_number=?2",
-            crate::params![&now, &sn],
-        );
+        // Update device heartbeat (punches = online activity)
+        record_device_touch(&conn, &events, &sn, &ip, "device_heartbeat");
 
         log::info!("✅ [BIOMETRIC] Processed {} punches from SN={}", processed, sn);
         if processed > 0 {
@@ -551,11 +568,39 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
     let active_session = find_open_attendance_session(conn, user_id, date);
 
     let insert_clock_in = |is_late: bool| {
-        let _ = conn.execute(
-            "INSERT INTO attendance (user_id, date, clock_in, status, is_late, source, created_at, updated_at)
+        let ok = conn
+            .execute(
+                "INSERT INTO attendance (user_id, date, clock_in, status, is_late, source, created_at, updated_at)
              VALUES (?1, ?2, ?3, 'present', ?4, 'biometric', ?5, ?5)",
-            crate::params![user_id, date, time, if is_late { 1 } else { 0 }, &now],
-        );
+                crate::params![user_id, date, time, if is_late { 1 } else { 0 }, &now],
+            )
+            .is_ok();
+        if ok {
+            let attendance_id = conn.last_insert_rowid();
+            let org_id: i64 = conn
+                .query_row(
+                    "SELECT organization_id FROM users WHERE id = ?1",
+                    crate::params![user_id],
+                    |r| r.get_idx::<i64>(0),
+                )
+                .unwrap_or(0);
+            if org_id > 0 {
+                let ctx = serde_json::json!({
+                    "attendance_id": attendance_id,
+                    "user_id": user_id,
+                    "date": date,
+                    "clock_in": time,
+                    "is_late": is_late,
+                    "source": "biometric",
+                    "organization_id": org_id,
+                    "created_by": user_id,
+                });
+                crate::workflow_logic::trigger(conn, org_id, "attendance_clock_in", &ctx);
+                if is_late {
+                    crate::workflow_logic::trigger(conn, org_id, "attendance_late", &ctx);
+                }
+            }
+        }
     };
 
     let clock_out_session = |att_id: i64, session_date: &str| {
@@ -911,10 +956,16 @@ pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
         |r| r.get_idx::<i64>(0),
     ).unwrap_or(0);
     let active_devices: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM biometric_devices
-         WHERE organization_id = ?1
-           AND last_heartbeat IS NOT NULL
-           AND last_heartbeat >= datetime('now', '-10 minutes')",
+        "SELECT COUNT(*) FROM biometric_devices bd
+         WHERE bd.organization_id = ?1
+           AND (
+             (bd.last_heartbeat IS NOT NULL AND bd.last_heartbeat >= datetime('now', '-10 minutes'))
+             OR EXISTS (
+               SELECT 1 FROM biometric_punches bp
+               WHERE bp.device_serial = bd.serial_number
+                 AND bp.created_at >= datetime('now', '-10 minutes')
+             )
+           )",
         [org_id],
         |r| r.get_idx::<i64>(0),
     ).unwrap_or(0);
@@ -944,9 +995,15 @@ pub async fn biometric_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpR
     ).unwrap_or(0);
 
     let last_heartbeat: Option<String> = conn.query_row(
-        "SELECT last_heartbeat FROM biometric_devices
-         WHERE organization_id = ?1
-         ORDER BY last_heartbeat DESC LIMIT 1",
+        "SELECT COALESCE(
+            (SELECT last_heartbeat FROM biometric_devices
+             WHERE organization_id = ?1 AND last_heartbeat IS NOT NULL
+             ORDER BY last_heartbeat DESC LIMIT 1),
+            (SELECT bp.created_at FROM biometric_punches bp
+             INNER JOIN biometric_devices bd ON bd.serial_number = bp.device_serial
+             WHERE bd.organization_id = ?1
+             ORDER BY bp.created_at DESC LIMIT 1)
+         )",
         [org_id],
         |r| r.get_idx::<Option<String>>(0),
     ).ok().flatten();
@@ -1446,11 +1503,8 @@ pub async fn adms_chat_post(
             }
         }
 
-        // Update heartbeat
-        let _ = conn.execute(
-            "UPDATE biometric_devices SET last_heartbeat=?1, updated_at=?1 WHERE serial_number=?2",
-            crate::params![&now, &sn],
-        );
+        // Update heartbeat from punch upload
+        record_device_touch(&conn, &events, &sn, &peer_ip, "device_heartbeat");
 
         log::info!("✅ [ADMS] Processed {} punches from SN={}", processed, sn);
         if processed > 0 {
@@ -1493,4 +1547,369 @@ pub async fn adms_getrequest(
     }
 
     HttpResponse::Ok().content_type("text/plain").body("OK")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Generic Punch Push API (any brand via bridge / middleware)
+// ═══════════════════════════════════════════════════════════════════
+
+const INGEST_KEY_PREFIX: &str = "hrm_bio_";
+/// verify_method value stored for HTTP push ingest (distinct from device SDK codes).
+const INGEST_VERIFY_METHOD: i64 = 99;
+
+fn hash_ingest_key(plaintext: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(plaintext.as_bytes()))
+}
+
+fn generate_ingest_key_plaintext() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| "Failed to generate key".to_string())?;
+    Ok(format!("{INGEST_KEY_PREFIX}{}", hex::encode(bytes)))
+}
+
+fn extract_biometric_ingest_key(req: &HttpRequest) -> Option<String> {
+    if let Some(h) = req.headers().get("X-Biometric-Key") {
+        let v = h.to_str().ok()?.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    let auth = req.headers().get("Authorization")?.to_str().ok()?;
+    let token = auth
+        .strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))?
+        .trim();
+    if token.starts_with(INGEST_KEY_PREFIX) {
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
+fn resolve_org_from_ingest_key(
+    conn: &crate::db::Connection,
+    plaintext: &str,
+) -> Result<i64, String> {
+    if !plaintext.starts_with(INGEST_KEY_PREFIX) || plaintext.len() < 16 {
+        return Err("Invalid ingest key".into());
+    }
+    let prefix: String = plaintext.chars().take(16).collect();
+    let hash = hash_ingest_key(plaintext);
+    let stmt = conn
+        .prepare(
+            "SELECT id, organization_id, key_hash FROM biometric_ingest_keys
+             WHERE key_prefix = ?1 AND revoked_at IS NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, i64, String)> = stmt.query_map([&prefix], |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            row.get_idx::<i64>(1)?,
+            row.get_idx::<String>(2)?,
+        ))
+    });
+    for (_id, org_id, stored_hash) in rows {
+        if stored_hash == hash {
+            return Ok(org_id);
+        }
+    }
+    Err("Invalid or revoked ingest key".into())
+}
+
+#[derive(Debug, Clone)]
+struct IngestPunchItem {
+    device_serial: String,
+    device_pin: String,
+    punch_time: String,
+    punch_type: Option<i64>,
+}
+
+fn parse_ingest_punch_obj(v: &serde_json::Value) -> Result<IngestPunchItem, String> {
+    let device_serial = v
+        .get("device_serial")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let device_pin = v
+        .get("device_pin")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            v.get("device_pin")
+                .and_then(|x| x.as_i64())
+                .map(|n| n.to_string())
+        })
+        .unwrap_or_default();
+    let punch_time = v
+        .get("punch_time")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let punch_type = v.get("punch_type").and_then(|x| {
+        x.as_i64()
+            .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+    });
+    if device_serial.is_empty() {
+        return Err("device_serial is required".into());
+    }
+    if device_pin.is_empty() {
+        return Err("device_pin is required".into());
+    }
+    if punch_time.is_empty() {
+        return Err("punch_time is required (YYYY-MM-DD HH:MM:SS)".into());
+    }
+    if let Some(t) = punch_type {
+        if t != 0 && t != 1 {
+            return Err("punch_type must be 0 (in) or 1 (out)".into());
+        }
+    }
+    Ok(IngestPunchItem {
+        device_serial,
+        device_pin,
+        punch_time,
+        punch_type,
+    })
+}
+
+fn parse_ingest_body(body: &serde_json::Value) -> Result<Vec<IngestPunchItem>, String> {
+    if let Some(arr) = body.as_array() {
+        return arr.iter().map(parse_ingest_punch_obj).collect();
+    }
+    if let Some(arr) = body.get("punches").and_then(|v| v.as_array()) {
+        return arr.iter().map(parse_ingest_punch_obj).collect();
+    }
+    Ok(vec![parse_ingest_punch_obj(body)?])
+}
+
+/// GET /api/admin/biometric/ingest-keys
+pub async fn ingest_keys_list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let stmt = match conn.prepare(
+        "SELECT id, name, key_prefix, created_by, created_at, revoked_at
+         FROM biometric_ingest_keys
+         WHERE organization_id = ?1
+         ORDER BY id DESC",
+    ) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&e.to_string())),
+    };
+    let items: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get_idx::<i64>(0)?,
+            "name": row.get_idx::<String>(1)?,
+            "key_prefix": row.get_idx::<String>(2)?,
+            "created_by": row.get_idx::<Option<i64>>(3)?,
+            "created_at": row.get_idx::<Option<String>>(4)?,
+            "revoked_at": row.get_idx::<Option<String>>(5)?,
+            "revoked": row.get_idx::<Option<String>>(5)?.is_some(),
+        }))
+    });
+    HttpResponse::Ok().json(ApiResponse::success(items))
+}
+
+/// POST /api/admin/biometric/ingest-keys — create key; plaintext returned once
+pub async fn ingest_keys_create(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Push API key")
+        .trim();
+    let name = if name.is_empty() { "Push API key" } else { name };
+
+    let plaintext = match generate_ingest_key_plaintext() {
+        Ok(k) => k,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&e)),
+    };
+    let prefix: String = plaintext.chars().take(16).collect();
+    let key_hash = hash_ingest_key(&plaintext);
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    match conn.execute(
+        "INSERT INTO biometric_ingest_keys
+         (organization_id, name, key_prefix, key_hash, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        crate::params![org_id, name, &prefix, &key_hash, claims.sub, &now],
+    ) {
+        Ok(_) => {
+            let id = conn.last_insert_rowid();
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "id": id,
+                "name": name,
+                "key_prefix": prefix,
+                "key": plaintext,
+                "created_at": now,
+                "message": "Copy this key now — it will not be shown again.",
+            })))
+        }
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {e}"))),
+    }
+}
+
+/// DELETE /api/admin/biometric/ingest-keys/{id} — soft-revoke
+pub async fn ingest_keys_revoke(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let id = path.into_inner();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    match conn.execute(
+        "UPDATE biometric_ingest_keys SET revoked_at = ?1
+         WHERE id = ?2 AND organization_id = ?3 AND revoked_at IS NULL",
+        crate::params![&now, id, org_id],
+    ) {
+        Ok(0) => HttpResponse::NotFound().json(ApiError::new("Key not found or already revoked")),
+        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+            "message": "Key revoked"
+        }))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed: {e}"))),
+    }
+}
+
+/// POST /api/integrations/biometric/punches — generic ingest (no JWT; ingest key auth)
+pub async fn integration_punches_push(
+    pool: web::Data<DbPool>,
+    events: web::Data<BiometricEvents>,
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> HttpResponse {
+    let key = match extract_biometric_ingest_key(&req) {
+        Some(k) => k,
+        None => {
+            return HttpResponse::Unauthorized().json(ApiError::new(
+                "Missing ingest key (Authorization: Bearer hrm_bio_… or X-Biometric-Key)",
+            ));
+        }
+    };
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let org_id = match resolve_org_from_ingest_key(&conn, &key) {
+        Ok(id) => id,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e)),
+    };
+
+    let items = match parse_ingest_body(&body) {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) => return HttpResponse::BadRequest().json(ApiError::new("No punches in body")),
+        Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
+    };
+
+    let peer = peer_ip(&req);
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut accepted = 0u32;
+    let mut skipped = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for item in &items {
+        let device_org: Option<i64> = conn
+            .query_row(
+                "SELECT organization_id FROM biometric_devices WHERE serial_number = ?1",
+                [&item.device_serial],
+                |r| r.get_idx::<i64>(0),
+            )
+            .ok();
+        match device_org {
+            None => {
+                errors.push(format!(
+                    "device_serial {} is not registered",
+                    item.device_serial
+                ));
+                continue;
+            }
+            Some(dorg) if dorg != org_id => {
+                errors.push(format!(
+                    "device_serial {} does not belong to this organization",
+                    item.device_serial
+                ));
+                continue;
+            }
+            Some(_) => {}
+        }
+
+        let (status, trust) = match item.punch_type {
+            Some(t) => (t, true),
+            None => (0, false),
+        };
+
+        if store_incoming_punch_ex(
+            &conn,
+            &item.device_serial,
+            &item.device_pin,
+            &item.punch_time,
+            status,
+            INGEST_VERIFY_METHOD,
+            &now,
+            trust,
+        ) {
+            accepted += 1;
+            touched.insert(item.device_serial.clone());
+        } else {
+            skipped += 1;
+        }
+    }
+
+    for sn in &touched {
+        record_device_touch(&conn, &events, sn, &peer, "device_heartbeat");
+    }
+    if accepted > 0 {
+        events.emit(
+            "punches_received",
+            serde_json::json!({
+                "source": "push_api",
+                "organization_id": org_id,
+                "count": accepted,
+            }),
+        );
+    }
+
+    let status = if accepted > 0 || skipped > 0 {
+        actix_web::http::StatusCode::OK
+    } else {
+        actix_web::http::StatusCode::BAD_REQUEST
+    };
+    HttpResponse::build(status).json(ApiResponse::success(serde_json::json!({
+        "accepted": accepted,
+        "skipped_duplicates": skipped,
+        "errors": errors,
+    })))
 }

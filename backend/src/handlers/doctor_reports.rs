@@ -63,6 +63,18 @@ pub async fn index(
             sql.push_str(" AND dr.status = ?");
             params.push(crate::db::into_param_value(status.clone()));
         }
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        let mut conditions = Vec::new();
+        crate::branch_scope::push_users_branch_condition_qmark(
+            &mut conditions,
+            &mut params,
+            &scope,
+            "eu",
+        );
+        for c in &conditions {
+            sql.push_str(" AND ");
+            sql.push_str(c);
+        }
     } else {
         // Employee self-service: only own published reports
         sql.push_str(" AND dr.employee_user_id = ? AND dr.status = 'published'");
@@ -133,6 +145,12 @@ pub async fn store(
     if !crate::tenant::user_in_organization(&conn, body.employee_user_id, org_id) {
         return HttpResponse::BadRequest().json(ApiError::new("Employee not found in this organization"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, body.employee_user_id, org_id, &scope)
+    {
+        return resp;
+    }
 
     let status = body.status.as_deref().unwrap_or("draft");
     if status != "draft" && status != "published" {
@@ -158,10 +176,45 @@ pub async fn store(
             &now
         ],
     ) {
-        Ok(_) => HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
-            "id": conn.last_insert_rowid(),
-            "message": "Report created"
-        }))),
+        Ok(_) => {
+            let id = conn.last_insert_rowid();
+            if status == "published" {
+                if let Some(email) = crate::tenant_email::user_email(&conn, body.employee_user_id) {
+                    let doctor_name = crate::tenant_email::user_name(&conn, claims.sub)
+                        .unwrap_or_else(|| "Doctor".to_string());
+                    let (text, html) = crate::doctor_report_email::render_published_email(
+                        body.consultation_date.trim(),
+                        &doctor_name,
+                    );
+                    crate::tenant_email::send_tenant_email(
+                        &conn,
+                        org_id,
+                        &email,
+                        "Doctor Report Published",
+                        text,
+                        html,
+                    );
+                }
+                crate::workflow_logic::trigger(
+                    &conn,
+                    org_id,
+                    "doctor_report_published",
+                    &serde_json::json!({
+                        "report_id": id,
+                        "employee_user_id": body.employee_user_id,
+                        "user_id": body.employee_user_id,
+                        "doctor_user_id": claims.sub,
+                        "consultation_date": body.consultation_date.trim(),
+                        "organization_id": org_id,
+                        "created_by": claims.sub,
+                    }),
+                );
+            }
+            HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
+                "id": id,
+                "message": "Report created"
+            })))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
@@ -233,10 +286,10 @@ pub async fn update(
     let report_id = path.into_inner();
 
     // Check existing report and ownership
-    let existing_doctor: i64 = match conn.query_row(
-        "SELECT doctor_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
+    let (existing_doctor, previous_status): (i64, String) = match conn.query_row(
+        "SELECT doctor_user_id, status FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
         crate::params![report_id, org_id],
-        |row| row.get_idx::<i64>(0),
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
     ) {
         Ok(d) => d,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Report not found")),
@@ -277,7 +330,41 @@ pub async fn update(
         ],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Report not found")),
-        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
+        Ok(_) => {
+            if status == "published" && previous_status != "published" {
+                if let Some(email) = crate::tenant_email::user_email(&conn, body.employee_user_id) {
+                    let doctor_name = crate::tenant_email::user_name(&conn, claims.sub)
+                        .unwrap_or_else(|| "Doctor".to_string());
+                    let (text, html) = crate::doctor_report_email::render_published_email(
+                        body.consultation_date.trim(),
+                        &doctor_name,
+                    );
+                    crate::tenant_email::send_tenant_email(
+                        &conn,
+                        org_id,
+                        &email,
+                        "Doctor Report Published",
+                        text,
+                        html,
+                    );
+                }
+                crate::workflow_logic::trigger(
+                    &conn,
+                    org_id,
+                    "doctor_report_published",
+                    &serde_json::json!({
+                        "report_id": report_id,
+                        "employee_user_id": body.employee_user_id,
+                        "user_id": body.employee_user_id,
+                        "doctor_user_id": claims.sub,
+                        "consultation_date": body.consultation_date.trim(),
+                        "organization_id": org_id,
+                        "created_by": claims.sub,
+                    }),
+                );
+            }
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"})))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }

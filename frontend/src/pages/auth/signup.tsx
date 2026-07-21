@@ -18,7 +18,7 @@ import { SearchableSelect } from '@/components/ui/searchable-select';
 
 import AuthLayout from '@/layouts/auth-layout';
 
-import { defaultAdminRoute } from '@/lib/default-route';
+import { defaultAdminRouteForViewport } from '@/lib/default-route';
 
 import {
 
@@ -429,7 +429,7 @@ export default function Signup() {
 
             await refreshUser();
 
-            navigate(defaultAdminRoute(has), { replace: true });
+            navigate(defaultAdminRouteForViewport(has), { replace: true });
 
         } catch (err: unknown) {
 

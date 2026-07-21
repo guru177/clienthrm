@@ -150,20 +150,29 @@
 .dark [data-sidebar="sidebar"] .sidebar-blob-2 { fill: #162e4a; }
 .dark [data-sidebar="sidebar"] .sidebar-blob-3 { fill: #0f2538; }
 
-/* Light mode active nav item — gradient blue */
+/* Light mode active nav item — solid navy pill */
 [data-sidebar="menu-button"][data-active="true"] {
-    background: linear-gradient(to right, #071b3a, #0d4a8a) !important;
+    background: #071b3a !important;
     color: #ffffff !important;
-    box-shadow: 0 4px 14px rgba(3, 107, 211, 0.35) !important;
+    box-shadow: 0 6px 16px -4px rgba(7, 27, 58, 0.45) !important;
 }
 
-/* Dark mode active nav item — gradient blue */
+[data-sidebar="menu-button"][data-active="true"] svg {
+    color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+/* Soft hover for inactive items */
+[data-sidebar="menu-button"]:not([data-active="true"]):hover {
+    background-color: rgba(255, 255, 255, 0.55) !important;
+}
+
+/* Dark mode active nav item */
 .dark [data-sidebar="menu-button"][data-active="true"] {
-    background: linear-gradient(to right, #0d2d5e, #1a4a8a) !important;
+    background: linear-gradient(135deg, #1a4a8a 0%, #0d2d5e 100%) !important;
     color: #ffffff !important;
-    box-shadow: 0 4px 14px rgba(58, 155, 255, 0.35) !important;
+    box-shadow: 0 6px 16px -4px rgba(58, 155, 255, 0.35) !important;
 }
-
 
 /* Dark mode hover state */
 .dark [data-sidebar="menu-button"]:not([data-active="true"]):hover {
@@ -178,12 +187,12 @@
 }
 
 /* Dark mode user footer card */
-.dark [data-test="sidebar-menu-button"] {
+.dark [data-testid="sidebar-menu-button"] {
     background-color: rgba(255, 255, 255, 0.06) !important;
     border-color: rgba(255, 255, 255, 0.12) !important;
     color: #b8d0e8 !important;
 }
-.dark [data-test="sidebar-menu-button"]:hover {
+.dark [data-testid="sidebar-menu-button"]:hover {
     background-color: rgba(255, 255, 255, 0.1) !important;
 }
 
@@ -393,6 +402,17 @@
     }
 }
 
+/* PWA / notched-device safe areas */
+html {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+/* Keep page content inside the viewport frame (flex children can shrink) */
+.page-frame {
+    min-width: 0;
+    max-width: 100%;
+}
+
 /* Sidebar Specific Scrollbar */
 [data-sidebar="content"]::-webkit-scrollbar {
     width: 6px;
@@ -404,4 +424,49 @@
 
 [data-sidebar="content"]::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(180deg, #071b3a 0%, #001f3f 100%);
+}
+
+.live-loc-tooltip.leaflet-tooltip {
+    border: 1px solid rgba(3, 107, 211, 0.15);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(3, 107, 211, 0.12);
+    padding: 8px 10px;
+}
+
+.live-loc-marker {
+    background: transparent !important;
+    border: none !important;
+}
+
+.live-loc-pin-wrap {
+    position: relative;
+    width: 22px;
+    height: 22px;
+}
+
+.live-loc-pin {
+    position: absolute;
+    inset: 4px;
+    border-radius: 9999px;
+    border: 2px solid #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.live-loc-pulse {
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    opacity: 0.45;
+    animation: live-loc-pulse 1.6s ease-out infinite;
+}
+
+@keyframes live-loc-pulse {
+    0% {
+        transform: scale(0.55);
+        opacity: 0.55;
+    }
+    100% {
+        transform: scale(1.8);
+        opacity: 0;
+    }
 }

@@ -3,15 +3,60 @@
 <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/favicon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="apple-touch-icon" href="/logo192.png" />
+    <meta name="msapplication-navbutton-color" content="#ffffff" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="description" content="HRM Portal — Human Resource Management System" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="HRM" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>HRM Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+        html, body {
+            background: #ffffff !important;
+            margin: 0;
+        }
+        #app-splash-html {
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #ffffff;
+            transition: opacity 0.4s ease;
+        }
+        #app-splash-html.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #app-splash-html img {
+            width: min(72vw, 280px);
+            height: auto;
+            max-height: 40vh;
+            object-fit: contain;
+            opacity: 0;
+            transform: scale(0.72) translateY(18px);
+            animation: splash-logo-in 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+        @keyframes splash-logo-in {
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+    </style>
 </head>
 <body class="font-sans antialiased">
+    <div id="app-splash-html" aria-hidden="true">
+        <img src="./images/logo.png" alt="" width="280" height="200" />
+    </div>
+    <script>window.__splashStartedAt = performance.now();</script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
 </body>

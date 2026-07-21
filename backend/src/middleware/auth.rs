@@ -258,6 +258,7 @@ mod tests {
             organization_id: 1,
             org_slug: Some("acme".to_string()),
             is_super_admin: false,
+            is_external: false,
             aud: PLATFORM_AUD.to_string(),
             impersonated_by: None,
             impersonation: false,

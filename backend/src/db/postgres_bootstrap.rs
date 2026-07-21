@@ -112,10 +112,29 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     }
 
     if let Err(e) = conn.execute_batch(&adapt_sql(
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_external INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_external INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE users ADD COLUMN IF NOT EXISTS hr_managed INTEGER NOT NULL DEFAULT 0;",
         Backend::Postgres,
     )) {
-        log::warn!("PostgreSQL add is_external to users: {e}");
+        log::warn!("PostgreSQL add is_external/hr_managed to users: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "ALTER TABLE attendance ADD COLUMN IF NOT EXISTS clock_out_location TEXT;",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL add clock_out_location to attendance: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "ALTER TABLE centers ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+         ALTER TABLE centers ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
+         ALTER TABLE centers ADD COLUMN IF NOT EXISTS geofence_radius_m DOUBLE PRECISION;
+         ALTER TABLE attendance ADD COLUMN IF NOT EXISTS out_of_zone INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE attendance ADD COLUMN IF NOT EXISTS geofence_distance_m DOUBLE PRECISION;",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL geofence columns: {e}");
     }
 
     if let Err(e) = conn.execute_batch(&adapt_sql(
@@ -127,6 +146,12 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
 
     super::migrations::migrate_department_center_links(&conn);
     super::migrations::migrate_doctor_reports(&conn);
+    super::migrations::migrate_user_centers(&conn);
+    super::migrations::migrate_user_profile_docs(&conn);
+    super::migrations::migrate_user_hr_managed(&conn);
+    super::migrations::migrate_users_unique_org_email(&conn);
+    super::migrations::migrate_biometric_ingest_keys(&conn);
+    crate::tenant_webhooks::migrate_tenant_webhooks(&conn);
 
     if let Err(e) = conn.execute_batch(&adapt_sql(
         "UPDATE subscription_plans 
@@ -135,6 +160,15 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
         Backend::Postgres,
     )) {
         log::warn!("PostgreSQL backfill doctor_reports modules: {e}");
+    }
+
+    if let Err(e) = conn.execute_batch(&adapt_sql(
+        "UPDATE subscription_plans 
+         SET modules = (modules::jsonb || '[\"grocery_benefits\", \"my_grocery_benefits\", \"assets\", \"my_assets\"]'::jsonb)::text
+         WHERE modules NOT LIKE '%grocery_benefits%' OR modules NOT LIKE '%assets%';",
+        Backend::Postgres,
+    )) {
+        log::warn!("PostgreSQL backfill grocery/assets modules: {e}");
     }
 
     super::postgres_seeds::run_postgres_seeds(&conn);

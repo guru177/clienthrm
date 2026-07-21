@@ -44,7 +44,7 @@ export function normalizeRole(
 }
 
 export async function fetchRolesList(): Promise<Role[]> {
-    const response = await axios.get('/admin/roles/list', {
+    const response = await axios.get('/admin/roles', {
         headers: { 'Cache-Control': 'no-cache' },
     });
     if (!response.data?.success) {

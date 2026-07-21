@@ -27,6 +27,11 @@ fn load_tenant_settings(
                 row.get_idx::<Option<String>>(1)?.unwrap_or_default(),
             ))
         }) {
+            // Never ship base64 data-URIs / multi-KB blobs on /auth/me — they made
+            // every navigation wait seconds (app_logo alone was ~140KB).
+            if value.starts_with("data:") || value.len() > 4096 {
+                continue;
+            }
             settings.insert(key, value);
         }
     }
@@ -75,9 +80,10 @@ struct LoginCandidate {
     organization_id: i64,
     name: String,
     is_super_admin: bool,
+    hr_managed: bool,
 }
 
-const LOGIN_USER_COLUMNS: &str = "u.id, u.email, u.password, u.organization_id, u.name, COALESCE(u.is_super_admin, 0) AS is_super_admin";
+const LOGIN_USER_COLUMNS: &str = "u.id, u.email, u.password, u.organization_id, u.name, COALESCE(u.is_super_admin, 0) AS is_super_admin, COALESCE(u.hr_managed, 0) AS hr_managed";
 
 fn login_candidate_from_row(row: &crate::db::Row) -> crate::db::Result<LoginCandidate> {
     Ok(LoginCandidate {
@@ -89,6 +95,7 @@ fn login_candidate_from_row(row: &crate::db::Row) -> crate::db::Result<LoginCand
             .unwrap_or(1),
         name: row.get("name")?,
         is_super_admin: row.get_boolish("is_super_admin")?,
+        hr_managed: row.get_boolish("hr_managed").unwrap_or(false),
     })
 }
 
@@ -132,7 +139,15 @@ fn login_with_pool(
             crate::params![body.email, org_id],
             login_candidate_from_row,
         ) {
-            Ok(candidate) => candidate,
+            Ok(candidate) => {
+                if candidate.hr_managed {
+                    return BlockJson::error(
+                        403,
+                        "This account is HR-managed and cannot sign in. Ask your admin to manage attendance and leave.",
+                    );
+                }
+                candidate
+            }
             Err(_) => return BlockJson::error(401, "Invalid credentials"),
         }
     } else {
@@ -153,8 +168,15 @@ fn login_with_pool(
             }
         };
         log::debug!("[login] found {} candidate(s) for {}", candidates.len(), body.email);
+        if candidates.iter().any(|c| c.hr_managed) && candidates.iter().all(|c| c.hr_managed) {
+            return BlockJson::error(
+                403,
+                "This account is HR-managed and cannot sign in. Ask your admin to manage attendance and leave.",
+            );
+        }
         let valid: Vec<LoginCandidate> = candidates
             .into_iter()
+            .filter(|c| !c.hr_managed)
             .filter(|candidate| {
                 let hash = candidate.password.replace("$2y$", "$2b$");
                 bcrypt::verify(&body.password, &hash).unwrap_or(false)
@@ -184,6 +206,13 @@ fn login_with_pool(
             return BlockJson::error(401, "Invalid credentials");
         }
     };
+
+    if user.hr_managed {
+        return BlockJson::error(
+            403,
+            "This account is HR-managed and cannot sign in. Ask your admin to manage attendance and leave.",
+        );
+    }
 
     let org_id = user.organization_id;
 
@@ -305,6 +334,14 @@ pub fn complete_login_after_auth(
 
     let settings = load_tenant_settings(conn, org_id);
 
+    let branch_scope = crate::branch_scope::resolve_branch_scope(
+        conn,
+        user.id,
+        org_id,
+        &permissions,
+        user.is_super_admin,
+    );
+
     #[derive(serde::Serialize)]
     struct LoginResponseExt {
         token: String,
@@ -313,6 +350,7 @@ pub fn complete_login_after_auth(
         permissions: Vec<String>,
         settings: std::collections::HashMap<String, String>,
         plan: Option<crate::plan_limits::OrgPlanInfo>,
+        branch_scope: serde_json::Value,
     }
 
     let cookie = crate::middleware::auth::session_cookie_header(
@@ -328,6 +366,7 @@ pub fn complete_login_after_auth(
             permissions,
             settings,
             plan,
+            branch_scope: branch_scope.to_json(),
         },
         cookie,
     )
@@ -388,6 +427,14 @@ pub async fn me(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
 
     let settings = load_tenant_settings(&conn, org_id);
 
+    let branch_scope = crate::branch_scope::resolve_branch_scope(
+        &conn,
+        user.id,
+        org_id,
+        &permissions,
+        user.is_super_admin,
+    );
+
     if user.is_super_admin {
         let ip = crate::presence::client_ip(&req);
         let _ = crate::presence::upsert_user_presence(
@@ -409,6 +456,7 @@ pub async fn me(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         permissions: Vec<String>,
         settings: std::collections::HashMap<String, String>,
         plan: Option<crate::plan_limits::OrgPlanInfo>,
+        branch_scope: serde_json::Value,
     }
 
     HttpResponse::Ok().json(ApiResponse::success(MeResponse {
@@ -416,6 +464,7 @@ pub async fn me(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         permissions,
         settings,
         plan,
+        branch_scope: branch_scope.to_json(),
     }))
 }
 
@@ -549,7 +598,7 @@ pub struct PresenceRequest {
     pub accuracy_meters: Option<f64>,
 }
 
-/// POST /api/auth/presence — heartbeat for company admin live tracking
+/// POST /api/auth/presence — heartbeat with live coords for platform IP tracking
 pub async fn presence(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -575,9 +624,6 @@ pub async fn presence(
             Ok(c) => c,
             Err(_) => return BlockJson::error(500, "Database error"),
         };
-        if !crate::tenant::user_is_super_admin(&conn, user_id, org_id) {
-            return BlockJson::error(403, "Only company admins are tracked");
-        }
         if let Err(e) = crate::presence::upsert_user_presence(
             &conn,
             user_id,
@@ -1364,6 +1410,20 @@ pub async fn forgot_password(
             "message": FORGOT_PASSWORD_OTP_MESSAGE,
         })));
     };
+
+    let hr_managed: bool = conn
+        .query_row(
+            "SELECT COALESCE(hr_managed, 0) FROM users WHERE id = ?1",
+            [user_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false);
+    if hr_managed {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "This account is HR-managed and cannot reset a password. Ask your admin.",
+        ));
+    }
 
     let account_email = match conn.query_row(
         "SELECT email FROM users WHERE id = ?1",

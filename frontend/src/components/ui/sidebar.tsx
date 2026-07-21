@@ -319,7 +319,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background relative flex max-w-full min-h-svh flex-1 flex-col",
+        "bg-background relative flex min-w-0 max-w-full min-h-svh flex-1 flex-col",
         "peer-data-[variant=inset]:min-h-[calc(100svh-(--spacing(4)))] md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-0",
         className
       )}
@@ -466,7 +466,7 @@ function SidebarMenu({ className, ...props }: React.ComponentProps<"ul">) {
     <ul
       data-slot="sidebar-menu"
       data-sidebar="menu"
-      className={cn("flex w-full min-w-0 flex-col gap-1", className)}
+        className={cn("flex w-full min-w-0 flex-col gap-0.5", className)}
       {...props}
     />
   )
@@ -484,17 +484,35 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-lg p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-all duration-200 hover:bg-white/50 hover:text-sidebar-foreground focus-visible:ring-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-gradient-to-r data-[active=true]:from-[#071b3a] data-[active=true]:to-[#0d4a8a] data-[active=true]:font-semibold data-[active=true]:text-white data-[active=true]:shadow-[0_4px_14px_rgba(3,107,211,0.35)] data-[state=open]:hover:bg-white/50 data-[state=open]:hover:text-sidebar-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+  [
+    "peer/menu-button flex w-full items-center gap-2.5 overflow-hidden rounded-full px-3 py-2 text-left text-sm font-medium tracking-tight outline-hidden ring-sidebar-ring",
+    "text-sidebar-foreground/85 transition-[background-color,color,box-shadow,transform] duration-200 ease-out",
+    "hover:bg-white/55 hover:text-sidebar-foreground hover:shadow-[inset_0_0_0_1px_rgba(3,107,211,0.08)]",
+    "focus-visible:ring-2 focus-visible:ring-sidebar-ring/40",
+    "active:scale-[0.985] disabled:pointer-events-none disabled:opacity-50",
+    "group-has-data-[sidebar=menu-action]/menu-item:pr-8",
+    "aria-disabled:pointer-events-none aria-disabled:opacity-50",
+    // Active (current page)
+    "data-[active=true]:bg-sidebar-primary data-[active=true]:text-sidebar-primary-foreground",
+    "data-[active=true]:font-semibold data-[active=true]:shadow-[0_6px_16px_-4px_rgba(7,27,58,0.45)]",
+    "data-[active=true]:hover:bg-sidebar-primary data-[active=true]:hover:text-sidebar-primary-foreground",
+    // Open collapsible parent
+    "data-[state=open]:bg-white/40 data-[state=open]:text-sidebar-foreground",
+    "data-[state=open]:hover:bg-white/55",
+    "group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:rounded-full! group-data-[collapsible=icon]:p-2!",
+    "[&>span:last-child]:truncate [&>svg]:size-[1.125rem] [&>svg]:shrink-0 [&>svg]:opacity-80",
+    "data-[active=true]:[&>svg]:opacity-100 hover:[&>svg]:opacity-100",
+  ].join(" "),
   {
     variants: {
       variant: {
-        default: "hover:bg-white/50 hover:text-sidebar-foreground",
+        default: "",
         outline:
-          "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-white/50 hover:text-sidebar-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
+          "bg-white/40 shadow-[inset_0_0_0_1px_rgba(3,107,211,0.12)] hover:bg-white/60",
       },
       size: {
-        default: "h-9 text-sm",
-        sm: "h-7 text-xs",
+        default: "h-10",
+        sm: "h-8 text-xs",
         lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
       },
     },
@@ -652,8 +670,8 @@ function SidebarMenuSub({ className, ...props }: React.ComponentProps<"ul">) {
     <ul
       data-slot="sidebar-menu-sub"
       data-sidebar="menu-sub"
-      className={cn(
-        "border-sidebar-border mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l px-2.5 py-0.5",
+        className={cn(
+        "border-sidebar-border/70 mx-3.5 mt-0.5 mb-1 flex min-w-0 translate-x-px flex-col gap-0.5 border-l px-2.5 py-1",
         "group-data-[collapsible=icon]:hidden",
         className
       )}
@@ -696,9 +714,14 @@ function SidebarMenuSubButton({
       data-size={size}
       data-active={isActive}
       className={cn(
-        "text-sidebar-foreground/80 ring-sidebar-ring hover:bg-white/50 hover:text-sidebar-foreground active:bg-white/50 active:text-sidebar-foreground [&>svg]:text-sidebar-foreground flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-lg px-2 outline-hidden focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
-        "data-[active=true]:bg-[#071b3a]/15 data-[active=true]:text-[#071b3a] data-[active=true]:font-medium",
-        size === "sm" && "text-xs",
+        "text-sidebar-foreground/75 ring-sidebar-ring flex h-8 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-full px-3 text-sm font-medium outline-hidden transition-[background-color,color] duration-200",
+        "hover:bg-white/55 hover:text-sidebar-foreground",
+        "focus-visible:ring-2 focus-visible:ring-sidebar-ring/40",
+        "disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50",
+        "[&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:opacity-75",
+        "data-[active=true]:bg-white/70 data-[active=true]:text-sidebar-primary data-[active=true]:font-semibold data-[active=true]:shadow-[inset_0_0_0_1px_rgba(7,27,58,0.08)]",
+        "data-[active=true]:[&>svg]:opacity-100 data-[active=true]:[&>svg]:text-sidebar-primary",
+        size === "sm" && "h-7 text-xs",
         size === "md" && "text-sm",
         "group-data-[collapsible=icon]:hidden",
         className

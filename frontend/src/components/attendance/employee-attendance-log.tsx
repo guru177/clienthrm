@@ -152,7 +152,7 @@ export default function EmployeeAttendanceLog() {
             <CardContent className="space-y-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
                     {canManage && (
-                        <div className="space-y-1 min-w-[220px]">
+                        <div className="w-full min-w-0 space-y-1 sm:min-w-[220px] sm:w-auto">
                             <Label>Employee</Label>
                             <Select
                                 value={userId}
@@ -174,7 +174,7 @@ export default function EmployeeAttendanceLog() {
                             </Select>
                         </div>
                     )}
-                    <div className="space-y-1">
+                    <div className="w-full min-w-0 space-y-1 sm:w-auto">
                         <Label htmlFor="log_start">Start date</Label>
                         <Input
                             id="log_start"
@@ -184,10 +184,10 @@ export default function EmployeeAttendanceLog() {
                                 setStartDate(e.target.value);
                                 setPage(1);
                             }}
-                            className="w-[170px]"
+                            className="w-full sm:w-[170px]"
                         />
                     </div>
-                    <div className="space-y-1">
+                    <div className="w-full min-w-0 space-y-1 sm:w-auto">
                         <Label htmlFor="log_end">End date</Label>
                         <Input
                             id="log_end"
@@ -197,7 +197,7 @@ export default function EmployeeAttendanceLog() {
                                 setEndDate(e.target.value);
                                 setPage(1);
                             }}
-                            className="w-[170px]"
+                            className="w-full sm:w-[170px]"
                         />
                     </div>
                 </div>

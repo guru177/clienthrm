@@ -1,10 +1,40 @@
 import './app.css';
+import { registerSW } from 'virtual:pwa-register';
+
+/**
+ * PWA SW is for production (and optional tunnel QA).
+ * In normal Vite dev it CacheFirst-caches /src modules and floods the console —
+ * unregister any leftover SW so HMR stays fresh.
+ */
+async function setupServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+
+    const enableDevPwa =
+        import.meta.env.VITE_PWA_DEV === '1' || import.meta.env.VITE_DEV_TUNNEL === '1';
+
+    if (import.meta.env.DEV && !enableDevPwa) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+        if ('caches' in window) {
+            const keys = await caches.keys();
+            await Promise.all(
+                keys
+                    .filter((k) => k.startsWith('hrm-') || k.startsWith('workbox-'))
+                    .map((k) => caches.delete(k)),
+            );
+        }
+        return;
+    }
+
+    registerSW({ immediate: true });
+}
+
+void setupServiceWorker();
 
 import { StrictMode, lazy, Suspense, Component, type ReactNode, type ErrorInfo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { isElectronApp } from '@/lib/is-electron';
-import { ElectronSplashLoader } from '@/components/electron-splash-loader';
 import { BreadcrumbProvider, useBreadcrumbs } from '@/contexts/BreadcrumbContext';
 import AppLayoutTemplate from '@/layouts/app/app-sidebar-layout';
 import { Outlet } from 'react-router-dom';
@@ -15,12 +45,13 @@ import { ChatNotificationProvider } from '@/contexts/ChatNotificationContext';
 import { Toaster } from 'react-hot-toast';
 import { PermissionRoute } from '@/components/permission-route';
 import { initializeTheme } from '@/hooks/use-appearance';
-import { defaultAdminRoute } from '@/lib/default-route';
+import { defaultAdminRouteForViewport } from '@/lib/default-route';
+import { ConfirmProvider } from '@/lib/confirm';
 
 function DefaultAdminRedirect() {
     const { loading, hasPermission } = useAuth();
     if (loading) return <PageLoader />;
-    return <Navigate to={defaultAdminRoute(hasPermission)} replace />;
+    return <Navigate to={defaultAdminRouteForViewport(hasPermission)} replace />;
 }
 
 // ── Error Boundary to capture exact crash details ──
@@ -78,6 +109,7 @@ const DesignationsIndex = lazy(() => import('@/pages/admin/designations/index'))
 const CentersIndex = lazy(() => import('@/pages/admin/centers/index'));
 const JobApplicationsIndex = lazy(() => import('@/pages/admin/careers/applications'));
 const AttendanceIndex = lazy(() => import('@/pages/admin/attendance/index'));
+const LiveLocationsIndex = lazy(() => import('@/pages/admin/live-locations/index'));
 const ManualAttendanceIndex = lazy(() => import('@/pages/admin/manual-attendance/index'));
 const ShiftsIndex = lazy(() => import('@/pages/admin/shifts/index'));
 const ShiftRoster = lazy(() => import('@/pages/admin/shifts/roster'));
@@ -109,7 +141,12 @@ const DoctorReportsCreate = lazy(() => import('@/pages/admin/doctor-reports/crea
 const DoctorReportsEdit = lazy(() => import('@/pages/admin/doctor-reports/edit'));
 const DoctorReportsView = lazy(() => import('@/pages/admin/doctor-reports/view'));
 const MyDoctorReports = lazy(() => import('@/pages/admin/my-doctor-reports'));
+const GroceryBenefitsAdminPage = lazy(() => import('@/pages/admin/grocery-benefits/index'));
+const MyGroceryBenefitsPage = lazy(() => import('@/pages/admin/my-grocery-benefits'));
+const AssetsAdminPage = lazy(() => import('@/pages/admin/assets/index'));
+const MyAssetsPage = lazy(() => import('@/pages/admin/my-assets'));
 const AppSettings = lazy(() => import('@/pages/admin/settings/app-settings'));
+const IntegrationsSettings = lazy(() => import('@/pages/admin/settings/integrations'));
 const LeaveTypesSettings = lazy(() => import('@/pages/admin/settings/leave-types'));
 const SettingsProfile = lazy(() => import('@/pages/admin/settings/profile'));
 const SettingsPassword = lazy(() => import('@/pages/admin/settings/password'));
@@ -127,18 +164,11 @@ const SubscriptionPage = lazy(() => import('@/pages/admin/subscription/index'));
 const SupportPage = lazy(() => import('@/pages/admin/support/index'));
 const NotificationsAdminPage = lazy(() => import('@/pages/admin/notifications/index'));
 
-// ── Loading Spinner ──
+// ── In-route loader (not a second splash) ──
 function PageLoader() {
-    if (isElectronApp()) {
-        return <ElectronSplashLoader />;
-    }
-
     return (
-        <div className="flex min-h-screen items-center justify-center bg-background">
-            <div className="flex flex-col items-center gap-4">
-                <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                <p className="text-sm text-muted-foreground">Loading...</p>
-            </div>
+        <div className="flex min-h-screen items-center justify-center bg-white">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
     );
 }
@@ -155,7 +185,7 @@ function GuestRoute({ children }: { children: React.ReactNode }) {
     const { user, loading, hasPermission } = useAuth();
     if (loading) return <PageLoader />;
     if (user) {
-        return <Navigate to={defaultAdminRoute(hasPermission)} replace />;
+        return <Navigate to={defaultAdminRouteForViewport(hasPermission)} replace />;
     }
     return <>{children}</>;
 }
@@ -176,7 +206,7 @@ function AdminLayoutContent() {
 
 function AdminLayout() {
     const { user } = useAuth();
-    useAdminPresence(!!user?.is_super_admin);
+    useAdminPresence(!!user);
 
     return (
         <ProtectedRoute>
@@ -224,6 +254,7 @@ function App() {
 
                 {/* Attendance & Leave */}
                 <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
+                <Route path="/admin/live-locations" element={<PermissionRoute permission="view-attendance" module="attendance"><LiveLocationsIndex /></PermissionRoute>} />
                 <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
                 <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
 
@@ -233,6 +264,14 @@ function App() {
                 <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsView /></PermissionRoute>} />
                 <Route path="/admin/doctor-reports/:id/edit" element={<PermissionRoute permission="edit-doctor-reports" module="doctor_reports"><DoctorReportsEdit /></PermissionRoute>} />
                 <Route path="/admin/my-doctor-reports" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><MyDoctorReports /></PermissionRoute>} />
+
+                {/* Grocery Benefits */}
+                <Route path="/admin/grocery-benefits" element={<PermissionRoute permission="view-grocery-benefits" module="grocery_benefits"><GroceryBenefitsAdminPage /></PermissionRoute>} />
+                <Route path="/admin/my-grocery-benefits" element={<PermissionRoute permission="view-my-grocery-benefits" module="my_grocery_benefits"><MyGroceryBenefitsPage /></PermissionRoute>} />
+
+                {/* Assets */}
+                <Route path="/admin/assets" element={<PermissionRoute permission="view-assets" module="assets"><AssetsAdminPage /></PermissionRoute>} />
+                <Route path="/admin/my-assets" element={<PermissionRoute permission="view-my-assets" module="my_assets"><MyAssetsPage /></PermissionRoute>} />
 
                 <Route path="/admin/reports" element={<PermissionRoute permission="view-reports" module="reports"><ReportsIndex /></PermissionRoute>} />
                 <Route path="/admin/shifts">
@@ -282,6 +321,7 @@ function App() {
 
                 {/* Settings */}
                 <Route path="/admin/settings/app" element={<PermissionRoute permission="manage-settings" module="settings"><AppSettings /></PermissionRoute>} />
+                <Route path="/admin/settings/integrations" element={<PermissionRoute permission="manage-settings" module="settings"><IntegrationsSettings /></PermissionRoute>} />
                 <Route path="/admin/settings/leave-types" element={<PermissionRoute permission="manage-settings" module="settings"><LeaveTypesSettings /></PermissionRoute>} />
                 <Route path="/admin/settings/profile" element={<SettingsProfile />} />
                 <Route path="/admin/settings/password" element={<SettingsPassword />} />
@@ -309,15 +349,26 @@ function App() {
 const root = document.getElementById('root')!;
 const AppRouter = isElectronApp() ? HashRouter : BrowserRouter;
 initializeTheme();
+
+// Dismiss the HTML splash after first paint (no React splash component)
+window.setTimeout(() => {
+    const el = document.getElementById('app-splash-html');
+    if (!el) return;
+    el.classList.add('fade-out');
+    window.setTimeout(() => el.remove(), 400);
+}, 900);
+
 createRoot(root).render(
     <StrictMode>
         <AppRouter>
             <AuthProvider>
                 <BreadcrumbProvider>
-                    <ErrorBoundary>
-                        <App />
-                    </ErrorBoundary>
-                    <Toaster position="top-right" />
+                    <ConfirmProvider>
+                        <ErrorBoundary>
+                            <App />
+                        </ErrorBoundary>
+                        <Toaster position="top-right" />
+                    </ConfirmProvider>
                 </BreadcrumbProvider>
             </AuthProvider>
         </AppRouter>

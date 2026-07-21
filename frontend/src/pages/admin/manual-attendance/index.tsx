@@ -34,7 +34,8 @@ export default function ManualAttendancePage() {
                     </h1>
                     <p className="text-muted-foreground mt-1">
                         Mark employee attendance when your deployment uses manual capture instead of app face
-                        recognition or biometric devices.
+                        recognition or biometric devices. For staff who don’t log in (HR-managed), mark
+                        attendance here.
                     </p>
                 </div>
 

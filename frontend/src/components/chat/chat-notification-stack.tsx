@@ -1,7 +1,7 @@
 import { MessageSquare, X } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useChatNotificationInbox } from '@/contexts/ChatNotificationContext';
-import { chatUserPhotoUrl } from '@/lib/chat-notification-utils';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import type { ChatSpace } from '@/lib/chat-api';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +24,18 @@ function spaceTitle(space: ChatSpace, currentUserId?: number): string {
     return space.name || 'Direct message';
 }
 
+function NotifyAvatar({ photo, name }: { photo?: string | null; name: string }) {
+    const src = useStorageSrc(photo);
+    return (
+        <Avatar className="size-10 shrink-0">
+            {src && <AvatarImage src={src} alt={name} />}
+            <AvatarFallback className="bg-[#071b3a]/10 text-xs font-medium text-[#071b3a] dark:text-blue-200">
+                {initials(name)}
+            </AvatarFallback>
+        </Avatar>
+    );
+}
+
 type ChatNotificationStackProps = {
     spaces: ChatSpace[];
     currentUserId?: number;
@@ -44,7 +56,6 @@ export function ChatNotificationStack({ spaces, currentUserId }: ChatNotificatio
             {items.map((item) => {
                 const space = spaceById.get(item.spaceId);
                 const fromLabel = space ? spaceTitle(space, currentUserId) : 'Another conversation';
-                const photoUrl = chatUserPhotoUrl(item.userPhoto);
 
                 return (
                     <div
@@ -64,12 +75,7 @@ export function ChatNotificationStack({ spaces, currentUserId }: ChatNotificatio
                                 openChat(item.spaceId);
                             }}
                         >
-                            <Avatar className="size-10 shrink-0">
-                                {photoUrl && <AvatarImage src={photoUrl} alt={item.senderName} />}
-                                <AvatarFallback className="bg-[#071b3a]/10 text-xs font-medium text-[#071b3a] dark:text-blue-200">
-                                    {initials(item.senderName)}
-                                </AvatarFallback>
-                            </Avatar>
+                            <NotifyAvatar photo={item.userPhoto} name={item.senderName} />
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5">
                                     <MessageSquare className="size-3.5 shrink-0 text-[#071b3a] dark:text-blue-300" />

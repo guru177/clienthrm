@@ -36,10 +36,17 @@ export function useBiometricLive({ enabled = true, onEvent }: Options) {
         let closed = false;
 
         const connect = () => {
-            const url = wsUrl(`/api/admin/biometric/ws?token=${encodeURIComponent(token)}`);
+            if (closed) return;
+            // Prefer backend origin in local Vite so WS does not depend on the
+            // HTTP proxy upgrade path (avoids flaky "closed before established").
+            const url = wsUrl(`/api/admin/biometric/ws?token=${encodeURIComponent(token)}`, {
+                preferBackendInDev: true,
+            });
             ws = new WebSocket(url);
 
-            ws.onopen = () => setConnected(true);
+            ws.onopen = () => {
+                if (!closed) setConnected(true);
+            };
 
             ws.onmessage = (ev) => {
                 try {
@@ -57,7 +64,13 @@ export function useBiometricLive({ enabled = true, onEvent }: Options) {
                 }
             };
 
-            ws.onerror = () => ws?.close();
+            ws.onerror = () => {
+                // Closing a still-connecting socket triggers browser console noise;
+                // only close after an error if we intend to reconnect.
+                if (!closed && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+            };
         };
 
         connect();
@@ -65,7 +78,33 @@ export function useBiometricLive({ enabled = true, onEvent }: Options) {
         return () => {
             closed = true;
             if (reconnectTimer) clearTimeout(reconnectTimer);
-            ws?.close();
+            const socket = ws;
+            ws = null;
+            if (socket) {
+                socket.onopen = null;
+                socket.onmessage = null;
+                socket.onerror = null;
+                socket.onclose = null;
+                if (socket.readyState === WebSocket.CONNECTING) {
+                    // Defer close until open to avoid "closed before established".
+                    socket.addEventListener('open', () => {
+                        try {
+                            socket.close();
+                        } catch {
+                            /* ignore */
+                        }
+                    });
+                } else if (
+                    socket.readyState === WebSocket.OPEN ||
+                    socket.readyState === WebSocket.CLOSING
+                ) {
+                    try {
+                        socket.close();
+                    } catch {
+                        /* ignore */
+                    }
+                }
+            }
             setConnected(false);
         };
     }, [enabled]);

@@ -28,6 +28,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { usePermissions } from '@/hooks/use-permissions';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
+interface NamedOption {
+    id: number;
+    name: string;
+}
+
 interface DailyRow {
     user_id: number;
     name: string;
@@ -78,6 +83,10 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
     const canManage = hasPermission('manage-attendance');
 
     const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+    const [branchId, setBranchId] = useState('all');
+    const [designationId, setDesignationId] = useState('all');
+    const [branches, setBranches] = useState<NamedOption[]>([]);
+    const [designations, setDesignations] = useState<NamedOption[]>([]);
     const [search, setSearch] = useState('');
     const [debouncedSearch, setDebouncedSearch] = useState('');
     const [rows, setRows] = useState<GridRow[]>([]);
@@ -89,11 +98,48 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
         return () => window.clearTimeout(timer);
     }, [search]);
 
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [centersRes, desgRes] = await Promise.all([
+                    axios.get('/admin/settings/centers', { params: { compact: 1 } }),
+                    axios.get('/admin/designations/list', { params: { compact: 1 } }),
+                ]);
+                if (cancelled) return;
+                const centerList = centersRes.data?.data ?? centersRes.data ?? [];
+                const desgList = desgRes.data?.data ?? desgRes.data ?? [];
+                setBranches(
+                    (Array.isArray(centerList) ? centerList : []).map((c: NamedOption) => ({
+                        id: Number(c.id),
+                        name: c.name,
+                    })),
+                );
+                setDesignations(
+                    (Array.isArray(desgList) ? desgList : []).map((d: NamedOption) => ({
+                        id: Number(d.id),
+                        name: d.name,
+                    })),
+                );
+            } catch {
+                /* filters stay empty; grid still works */
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
             const res = await axios.get('/admin/reports/daily-attendance', {
-                params: { date, search: debouncedSearch || undefined },
+                params: {
+                    date,
+                    search: debouncedSearch || undefined,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
+                    designation_id: designationId !== 'all' ? Number(designationId) : undefined,
+                },
             });
             const employees: DailyRow[] = res.data.data?.employees ?? [];
             setRows(
@@ -119,7 +165,7 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
         } finally {
             setLoading(false);
         }
-    }, [date, debouncedSearch]);
+    }, [date, debouncedSearch, branchId, designationId]);
 
     useEffect(() => {
         void load();
@@ -183,7 +229,7 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
                                 placeholder="Search by name, department, or phone"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
-                                className="w-full min-w-[280px] sm:w-[320px] pl-8"
+                                className="w-full min-w-[220px] sm:w-[260px] pl-8"
                             />
                         </div>
                     </div>
@@ -196,6 +242,38 @@ export default function ManualAttendanceGrid({ onSaved }: ManualAttendanceGridPr
                             onChange={(e) => setDate(e.target.value)}
                             className="w-[180px]"
                         />
+                    </div>
+                    <div className="space-y-1">
+                        <Label>Branch</Label>
+                        <Select value={branchId} onValueChange={setBranchId}>
+                            <SelectTrigger className="w-full sm:w-[180px]">
+                                <SelectValue placeholder="All branches" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All branches</SelectItem>
+                                {branches.map((b) => (
+                                    <SelectItem key={b.id} value={String(b.id)}>
+                                        {b.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="space-y-1">
+                        <Label>Designation</Label>
+                        <Select value={designationId} onValueChange={setDesignationId}>
+                            <SelectTrigger className="w-full sm:w-[180px]">
+                                <SelectValue placeholder="All designations" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All designations</SelectItem>
+                                {designations.map((d) => (
+                                    <SelectItem key={d.id} value={String(d.id)}>
+                                        {d.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
                     <Button
                         type="button"

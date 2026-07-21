@@ -12,7 +12,8 @@ export default function AppLogo({ showName = true, className }: AppLogoProps) {
     const { settings } = useAuth();
     const appName = settings?.app_name || 'HR Daddy';
     const logoSrc = useStorageSrc(settings?.app_logo);
-    const appLogo = settings?.app_logo ? logoSrc : staticAssetUrl('images/logo.png');
+    // Fall back while blob URL loads — never pass src="" (triggers full-page refetch warning).
+    const appLogo = logoSrc || staticAssetUrl('images/logo.png');
 
     return (
         <div className={cn('flex min-w-0 items-center gap-2.5', className)}>

@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Spinner } from '@/components/ui/spinner';
 import AuthLayout from '@/layouts/auth-layout';
-import { defaultAdminRoute } from '@/lib/default-route';
+import { defaultAdminRouteForViewport } from '@/lib/default-route';
 
 const REMEMBER_EMAIL_KEY = 'hrm_remember_email';
 
@@ -61,7 +61,7 @@ export default function Login() {
                 return;
             }
             const has = (slug: string) => result.permissions.includes('*') || result.permissions.includes(slug);
-            navigate(defaultAdminRoute(has), { replace: true });
+            navigate(defaultAdminRouteForViewport(has), { replace: true });
         } catch (err: any) {
             const message = err.message || 'Invalid credentials';
             if (message.includes('organization slug')) {
@@ -175,7 +175,7 @@ export default function Login() {
                     className="h-11 w-full rounded-xl bg-gradient-to-r from-[#071428] via-[#0a192f] to-[#1e3a5f] text-[15px] font-semibold text-white shadow-[0_8px_24px_-8px_rgba(10,25,47,0.65)] transition-all hover:from-[#0a192f] hover:via-[#132f4c] hover:to-[#234b73] hover:text-white hover:shadow-[0_10px_28px_-8px_rgba(10,25,47,0.75)]"
                     tabIndex={4}
                     disabled={processing}
-                    data-test="login-button"
+                    data-testid="login-button"
                 >
                     {processing && <Spinner size="sm" />}
                     {processing ? 'Signing in...' : 'Sign in'}

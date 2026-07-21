@@ -3,7 +3,6 @@ import { Plus } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -84,85 +83,77 @@ export function EmployeeAdvancesPanel({ userId }: { userId: number }) {
     };
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle className="text-base">Salary advances</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                    Record advances here; recover them per month from the payroll screen.
-                </p>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                {loading ? (
-                    <p className="text-sm text-muted-foreground">Loading advances…</p>
-                ) : advances.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No advances recorded for this employee.</p>
-                ) : (
-                    <div className="rounded-md border overflow-x-auto">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Description</TableHead>
-                                    <TableHead>Original</TableHead>
-                                    <TableHead>Balance</TableHead>
-                                    <TableHead>Monthly EMI</TableHead>
-                                    <TableHead>Status</TableHead>
+        <div className="space-y-4">
+            {loading ? (
+                <p className="text-sm text-muted-foreground">Loading advances…</p>
+            ) : advances.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No advances recorded for this employee.</p>
+            ) : (
+                <div className="rounded-md border overflow-x-auto">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Description</TableHead>
+                                <TableHead>Original</TableHead>
+                                <TableHead>Balance</TableHead>
+                                <TableHead>Monthly EMI</TableHead>
+                                <TableHead>Status</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {advances.map((a) => (
+                                <TableRow key={a.id}>
+                                    <TableCell>{a.description || '—'}</TableCell>
+                                    <TableCell>{fmt(a.amount)}</TableCell>
+                                    <TableCell>{fmt(a.balance)}</TableCell>
+                                    <TableCell>{fmt(a.monthly_emi)}</TableCell>
+                                    <TableCell>{a.is_active ? 'Active' : 'Closed'}</TableCell>
                                 </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {advances.map((a) => (
-                                    <TableRow key={a.id}>
-                                        <TableCell>{a.description || '—'}</TableCell>
-                                        <TableCell>{fmt(a.amount)}</TableCell>
-                                        <TableCell>{fmt(a.balance)}</TableCell>
-                                        <TableCell>{fmt(a.monthly_emi)}</TableCell>
-                                        <TableCell>{a.is_active ? 'Active' : 'Closed'}</TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
-
-                <div className="grid gap-3 sm:grid-cols-3 border-t pt-4">
-                    <div className="space-y-1">
-                        <Label htmlFor={`advance_amount_${userId}`}>Advance amount</Label>
-                        <Input
-                            id={`advance_amount_${userId}`}
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={amount}
-                            onChange={(e) => setAmount(e.target.value)}
-                            placeholder="10000"
-                        />
-                    </div>
-                    <div className="space-y-1">
-                        <Label htmlFor={`advance_emi_${userId}`}>Monthly EMI</Label>
-                        <Input
-                            id={`advance_emi_${userId}`}
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={monthlyEmi}
-                            onChange={(e) => setMonthlyEmi(e.target.value)}
-                            placeholder="2000"
-                        />
-                    </div>
-                    <div className="space-y-1 sm:col-span-1">
-                        <Label htmlFor={`advance_desc_${userId}`}>Description</Label>
-                        <Input
-                            id={`advance_desc_${userId}`}
-                            value={description}
-                            onChange={(e) => setDescription(e.target.value)}
-                            placeholder="Festival advance"
-                        />
-                    </div>
+                            ))}
+                        </TableBody>
+                    </Table>
                 </div>
-                <Button type="button" onClick={submit} disabled={saving}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    {saving ? 'Saving…' : 'Add advance'}
-                </Button>
-            </CardContent>
-        </Card>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1">
+                    <Label htmlFor={`advance_amount_${userId}`}>Advance amount</Label>
+                    <Input
+                        id={`advance_amount_${userId}`}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        placeholder="10000"
+                    />
+                </div>
+                <div className="space-y-1">
+                    <Label htmlFor={`advance_emi_${userId}`}>Monthly EMI</Label>
+                    <Input
+                        id={`advance_emi_${userId}`}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={monthlyEmi}
+                        onChange={(e) => setMonthlyEmi(e.target.value)}
+                        placeholder="2000"
+                    />
+                </div>
+                <div className="space-y-1 sm:col-span-1">
+                    <Label htmlFor={`advance_desc_${userId}`}>Description</Label>
+                    <Input
+                        id={`advance_desc_${userId}`}
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        placeholder="Festival advance"
+                    />
+                </div>
+            </div>
+            <Button type="button" onClick={submit} disabled={saving}>
+                <Plus className="mr-2 h-4 w-4" />
+                {saving ? 'Saving…' : 'Add advance'}
+            </Button>
+        </div>
     );
 }

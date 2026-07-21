@@ -206,11 +206,11 @@ fn split_top_level_args(inner: &str) -> Vec<String> {
     args
 }
 
-/// `datetime('now', '-15 minutes')` → `(CURRENT_TIMESTAMP - INTERVAL '15 minutes')`,
+/// `datetime('now', '-15 minutes')` → UTC text timestamp (matches TEXT columns / SQLite style),
 /// `datetime(col)` → `(col)` (ISO-8601 text sorts chronologically).
 fn build_datetime_pg(args: &[String]) -> String {
     if args.is_empty() {
-        return "CURRENT_TIMESTAMP".to_string();
+        return "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')".to_string();
     }
     let first = args[0].trim();
     let first_unquoted = first.trim_matches('\'').trim();
@@ -225,7 +225,8 @@ fn build_datetime_pg(args: &[String]) -> String {
             }
             // Unsupported modifiers (e.g. 'localtime', 'start of day') are ignored.
         }
-        expr
+        // Emit UTC text so `TEXT_col >= datetime('now', …)` works on Postgres.
+        format!("to_char(({expr}) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
     } else {
         format!("({first})")
     }
@@ -309,7 +310,8 @@ mod tests {
         let sql = "INSERT INTO t (a, b) VALUES (datetime('now'), datetime('now'))";
         let pg = adapt_postgres(sql);
         assert!(!pg.contains("datetime('now')"));
-        assert_eq!(pg.matches("CURRENT_TIMESTAMP").count(), 2);
+        assert!(pg.contains("to_char"));
+        assert_eq!(pg.matches("YYYY-MM-DD HH24:MI:SS").count(), 2);
     }
 
     #[test]
@@ -317,7 +319,7 @@ mod tests {
         let pg = adapt_postgres("SELECT * FROM p WHERE a >= datetime('now', '-15 minutes')");
         assert_eq!(
             pg,
-            "SELECT * FROM p WHERE a >= (CURRENT_TIMESTAMP - INTERVAL '15 minutes')"
+            "SELECT * FROM p WHERE a >= to_char(((CURRENT_TIMESTAMP - INTERVAL '15 minutes')) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
         );
     }
 

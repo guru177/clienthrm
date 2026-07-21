@@ -1,6 +1,4 @@
 use crate::db::Connection;
-use lettre::message::MultiPart;
-use lettre::Message;
 use uuid::Uuid;
 
 const OTP_TTL_SECS: i64 = 600;
@@ -204,17 +202,14 @@ pub async fn send_otp_email(
     let (plain, html) =
         crate::password_reset_otp_email::render_password_reset_otp_email(otp, to, org_name);
 
-    let email_message = Message::builder()
-        .from(smtp.from_mailbox().map_err(|e| e)?)
-        .to(to.parse().map_err(|_| "Invalid recipient email".to_string())?)
-        .subject(format!("{app_name} — Password reset code"))
-        .multipart(MultiPart::alternative_plain_html(plain, html))
-        .map_err(|e| format!("Email build failed: {e}"))?;
+    let email_message = crate::tenant_email::build_html_email(
+        &smtp,
+        to,
+        &format!("{app_name} — Password reset code"),
+        plain,
+        html,
+    )
+    .map_err(|e| e)?;
 
-    let result = actix_web::web::block(move || smtp.send(&email_message)).await;
-    match result {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(format!("Failed to send email: {e}")),
-        Err(e) => Err(format!("Email task failed: {e}")),
-    }
+    crate::tenant_email::send_built_email(smtp, email_message).await
 }

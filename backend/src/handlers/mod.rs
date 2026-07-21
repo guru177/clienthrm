@@ -47,3 +47,5 @@ pub mod two_factor;
 pub mod openapi;
 pub mod doctor_reports;
 pub mod grocery_benefits;
+pub mod manager;
+pub mod tenant_webhooks;

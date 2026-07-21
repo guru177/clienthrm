@@ -33,7 +33,9 @@ function connect() {
         return;
     }
 
-    const url = wsUrl(`/api/admin/chat/ws?token=${encodeURIComponent(token)}`);
+    const url = wsUrl(`/api/admin/chat/ws?token=${encodeURIComponent(token)}`, {
+        preferBackendInDev: true,
+    });
     const ws = new WebSocket(url);
     sharedWs = ws;
 

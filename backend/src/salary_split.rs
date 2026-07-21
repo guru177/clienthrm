@@ -773,6 +773,8 @@ pub fn load_employee_profile(
     user_id: i64,
     as_of: &str,
 ) -> Option<EmployeeSalaryProfile> {
+    // Prefer profiles effective on/before as_of; fall back to the latest row for this user
+    // so a same-day / timezone-skewed effective_from still loads in the UI.
     conn.query_row(
         "SELECT user_id, yearly_ctc, template_id, pf_applicable, esi_applicable, effective_from
          FROM employee_salary_profiles
@@ -791,7 +793,40 @@ pub fn load_employee_profile(
         },
     )
     .ok()
+    .or_else(|| {
+        conn.query_row(
+            "SELECT user_id, yearly_ctc, template_id, pf_applicable, esi_applicable, effective_from
+             FROM employee_salary_profiles
+             WHERE user_id=?1
+             ORDER BY effective_from DESC LIMIT 1",
+            crate::params![user_id],
+            |row| {
+                Ok(EmployeeSalaryProfile {
+                    user_id: row.get_idx::<i64>(0)?,
+                    yearly_ctc: row.get_idx::<f64>(1)?,
+                    template_id: row.get_idx::<Option<i64>>(2)?,
+                    pf_applicable: row.get_idx::<i64>(3).unwrap_or(1) != 0,
+                    esi_applicable: row.get_idx::<i64>(4).unwrap_or(1) != 0,
+                    effective_from: row.get_idx::<String>(5)?,
+                })
+            },
+        )
+        .ok()
+    })
     .filter(|p| p.yearly_ctc > 0.0)
+}
+
+/// Sum of assigned earning lines on the employee's salary structure (monthly).
+pub fn load_structure_monthly_gross(conn: &Connection, user_id: i64) -> f64 {
+    conn.query_row(
+        "SELECT COALESCE(SUM(ssi.amount), 0)
+         FROM salary_structure_items ssi
+         JOIN salary_components sc ON sc.id = ssi.salary_component_id
+         WHERE ssi.user_id = ?1 AND sc.type = 'earning'",
+        crate::params![user_id],
+        |row| Ok(row.get_idx::<f64>(0).unwrap_or(0.0)),
+    )
+    .unwrap_or(0.0)
 }
 
 pub fn preview_from_inputs(conn: &Connection, org_id: i64, yearly_ctc: f64) -> CtcStatutoryPreview {

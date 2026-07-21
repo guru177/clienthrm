@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     Select,
     SelectContent,
@@ -45,6 +46,7 @@ export default function UsersIndex() {
         password: '',
         password_confirmation: '',
         status: 'active',
+        hr_managed: false,
     });
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [stats, setStats] = useState({
@@ -277,7 +279,7 @@ export default function UsersIndex() {
                     <DialogHeader>
                         <DialogTitle>Create New User</DialogTitle>
                         <DialogDescription>
-                            Add a new user account to the system
+                            Add a new user account. They get the Employee role by default — change it later from Edit User.
                         </DialogDescription>
                     </DialogHeader>
                     <form
@@ -291,28 +293,43 @@ export default function UsersIndex() {
                                     setErrors({ name: ['Name is required'] });
                                     return;
                                 }
-                                if (!createForm.email.trim()) {
-                                    setErrors({ email: ['Email is required'] });
-                                    return;
-                                }
-                                if (createForm.password.length < 8) {
-                                    setErrors({ password: ['Password must be at least 8 characters'] });
-                                    return;
-                                }
-                                if (createForm.password !== createForm.password_confirmation) {
-                                    showToast({ type: 'error', message: 'Password confirmation does not match' });
-                                    return;
+                                if (createForm.hr_managed) {
+                                    if (!createForm.phone.trim() && !createForm.employee_id.trim()) {
+                                        setErrors({
+                                            phone: ['Phone or Employee ID is required for HR-managed staff'],
+                                        });
+                                        return;
+                                    }
+                                } else {
+                                    if (!createForm.email.trim()) {
+                                        setErrors({ email: ['Email is required'] });
+                                        return;
+                                    }
+                                    if (createForm.password.length < 8) {
+                                        setErrors({ password: ['Password must be at least 8 characters'] });
+                                        return;
+                                    }
+                                    if (createForm.password !== createForm.password_confirmation) {
+                                        showToast({
+                                            type: 'error',
+                                            message: 'Password confirmation does not match',
+                                        });
+                                        return;
+                                    }
                                 }
 
-                                const payload = {
+                                const payload: Record<string, unknown> = {
                                     name: createForm.name.trim(),
-                                    email: createForm.email.trim(),
-                                    password: createForm.password,
-                                    password_confirmation: createForm.password_confirmation,
                                     status: createForm.status,
                                     employee_id: createForm.employee_id.trim() || undefined,
                                     phone: createForm.phone.trim() || undefined,
+                                    hr_managed: createForm.hr_managed,
                                 };
+                                if (!createForm.hr_managed) {
+                                    payload.email = createForm.email.trim();
+                                    payload.password = createForm.password;
+                                    payload.password_confirmation = createForm.password_confirmation;
+                                }
                                 const response = await axios.post('/admin/users', payload);
                                 handleApiResponse(response);
                                 if (response.data.success) {
@@ -325,6 +342,7 @@ export default function UsersIndex() {
                                         password: '',
                                         password_confirmation: '',
                                         status: 'active',
+                                        hr_managed: false,
                                     });
                                     setRefreshKey((prev) => prev + 1);
                                 }
@@ -339,6 +357,23 @@ export default function UsersIndex() {
                         }}
                         className="space-y-4"
                     >
+                        <div className="flex items-start space-x-2 rounded-md border p-3">
+                            <Checkbox
+                                id="hr_managed"
+                                checked={createForm.hr_managed}
+                                onCheckedChange={(checked) =>
+                                    setCreateForm({ ...createForm, hr_managed: !!checked })
+                                }
+                            />
+                            <div className="grid gap-1 leading-none">
+                                <Label htmlFor="hr_managed" className="font-medium cursor-pointer">
+                                    This person will not use the app (HR-managed)
+                                </Label>
+                                <p className="text-xs text-muted-foreground">
+                                    No email or password needed. HR marks attendance and leave for them.
+                                </p>
+                            </div>
+                        </div>
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <Label htmlFor="name">
@@ -357,6 +392,7 @@ export default function UsersIndex() {
                                 )}
                             </div>
 
+                            {!createForm.hr_managed && (
                             <div className="space-y-2">
                                 <Label htmlFor="email">
                                     Email <span className="text-destructive">*</span>
@@ -374,9 +410,18 @@ export default function UsersIndex() {
                                     <p className="text-sm text-destructive">{errors.email[0]}</p>
                                 )}
                             </div>
+                            )}
 
                             <div className="space-y-2">
-                                <Label htmlFor="employee_id">Employee ID</Label>
+                                <Label htmlFor="employee_id">
+                                    Employee ID
+                                    {createForm.hr_managed ? (
+                                        <span className="text-muted-foreground font-normal">
+                                            {' '}
+                                            (or phone)
+                                        </span>
+                                    ) : null}
+                                </Label>
                                 <Input
                                     id="employee_id"
                                     value={createForm.employee_id}
@@ -405,6 +450,8 @@ export default function UsersIndex() {
                                 )}
                             </div>
 
+                            {!createForm.hr_managed && (
+                            <>
                             <div className="space-y-2">
                                 <Label htmlFor="password">
                                     Password <span className="text-destructive">*</span>
@@ -420,6 +467,9 @@ export default function UsersIndex() {
                                 {errors.password && (
                                     <p className="text-sm text-destructive">{errors.password[0]}</p>
                                 )}
+                                <p className="text-xs text-muted-foreground">
+                                    This temporary password is emailed to the user. They should change it under Settings → Password after first login.
+                                </p>
                             </div>
 
                             <div className="space-y-2">
@@ -438,6 +488,8 @@ export default function UsersIndex() {
                                     placeholder="••••••••"
                                 />
                             </div>
+                            </>
+                            )}
 
                             <div className="space-y-2">
                                 <Label htmlFor="status">Status</Label>

@@ -12,6 +12,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
+import { cn } from '@/lib/utils';
 
 // Prefer local models in public/face-models; fallback to CDN when missing.
 const FACE_MODEL_PATH_CANDIDATES = [
@@ -22,10 +23,13 @@ const FACE_MODEL_PATH_CANDIDATES = [
 // Euclidean distance threshold for the 128-dim face recognition embedding.
 // Same person (photo vs live): typically < 0.45 | Different person: typically > 0.55
 const FACE_DISTANCE_THRESHOLD = 0.50;
-// Number of consecutive camera frames that must all pass
-const VERIFICATION_FRAMES = 3;
+// One solid frame is enough for speed; escalate only if match is borderline.
+const VERIFICATION_FRAMES = 1;
+const BORDERLINE_RETRY_FRAMES = 2;
 
 let faceApiModule: typeof FaceApi | null = null;
+let locationSessionCache: { at: number; data: LocationPayload } | null = null;
+const LOCATION_CACHE_TTL_MS = 90_000;
 
 async function loadFaceApi(): Promise<typeof FaceApi> {
     if (!faceApiModule) {
@@ -77,6 +81,7 @@ export default function ClockInFaceDialog({
 }: ClockInFaceDialogProps) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
     const modelsLoadedRef = useRef(false);
     const referenceDescriptorRef = useRef<Float32Array | null>(null);
 
@@ -94,15 +99,27 @@ export default function ClockInFaceDialog({
 
     const skipFaceVerification = !userPhotoUrl;
     const isReady = locationData && (skipFaceVerification || (modelsReady && cameraReady));
+    const isInstalledApp =
+        typeof window !== 'undefined' &&
+        (window.matchMedia('(display-mode: standalone)').matches ||
+            window.matchMedia('(display-mode: fullscreen)').matches ||
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            Boolean((navigator as any).standalone));
 
     useEffect(() => {
         if (!open) {
             stopCamera();
             setError(null);
-            setLocationData(null);
             setCameraReady(false);
             setCameraStatus('idle');
-            setLocationStatus('idle');
+            // Keep last GPS in session so reopening is instant.
+            if (locationSessionCache && Date.now() - locationSessionCache.at < LOCATION_CACHE_TTL_MS) {
+                setLocationData(locationSessionCache.data);
+                setLocationStatus('granted');
+            } else {
+                setLocationData(null);
+                setLocationStatus('idle');
+            }
             setPermissionsGranted(false);
             return;
         }
@@ -110,6 +127,10 @@ export default function ClockInFaceDialog({
         setError(null);
         if (modelsLoadedRef.current) {
             setModelsReady(true);
+        }
+        if (locationSessionCache && Date.now() - locationSessionCache.at < LOCATION_CACHE_TTL_MS) {
+            setLocationData(locationSessionCache.data);
+            setLocationStatus('granted');
         }
         // Check existing permission states without prompting
         void checkExistingPermissions();
@@ -123,6 +144,20 @@ export default function ClockInFaceDialog({
             setPermissionsGranted(true);
         }
     }, [cameraStatus, locationStatus, skipFaceVerification]);
+
+    // Video element only mounts after permissionsGranted — attach the already-opened stream.
+    useEffect(() => {
+        if (!permissionsGranted || skipFaceVerification) return;
+        const stream = streamRef.current;
+        const video = videoRef.current;
+        if (!stream || !video) return;
+
+        video.srcObject = stream;
+        void video
+            .play()
+            .then(() => setCameraReady(true))
+            .catch(() => setCameraReady(true)); // still usable for capture even if autoplay is blocked
+    }, [permissionsGranted, skipFaceVerification, cameraStatus]);
 
     const checkExistingPermissions = async () => {
         try {
@@ -160,16 +195,15 @@ export default function ClockInFaceDialog({
 
     const requestAllPermissions = async () => {
         setError(null);
+        // Mobile Chrome / TWA often drop the second prompt if camera + location fire together.
         if (!skipFaceVerification && cameraStatus !== 'granted') {
             setCameraStatus('pending');
+            await startCamera();
         }
         if (locationStatus !== 'granted') {
             setLocationStatus('pending');
+            await loadLocation();
         }
-        await Promise.all([
-            !skipFaceVerification && cameraStatus !== 'granted' ? startCamera() : Promise.resolve(),
-            locationStatus !== 'granted' ? loadLocation() : Promise.resolve(),
-        ]);
     };
 
     const handleClockInWithoutFace = () => {
@@ -182,30 +216,88 @@ export default function ClockInFaceDialog({
     };
 
     const startCamera = async () => {
+        // Soft timeout so mobile never sticks on "Requesting permission..." forever.
+        const timeoutMs = 20_000;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+                () => reject(Object.assign(new Error('Camera request timed out'), { name: 'TimeoutError' })),
+                timeoutMs,
+            );
+        });
+
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user' },
-                audio: false,
-            });
+            // Prefer front camera; fall back to any camera if facingMode is unsupported.
+            const getStream = async () => {
+                try {
+                    return await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } },
+                        audio: false,
+                    });
+                } catch (firstErr) {
+                    const name = firstErr instanceof DOMException ? firstErr.name : '';
+                    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+                        throw firstErr;
+                    }
+                    return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                }
+            };
+
+            const stream = await Promise.race([getStream(), timeoutPromise]);
+            // Stop any previous stream before replacing.
+            streamRef.current?.getTracks().forEach((t) => t.stop());
+            streamRef.current = stream;
+
+            // Mark granted immediately — the <video> may not be mounted until permissionsGranted.
+            setCameraStatus('granted');
+            void loadModels();
+
             if (videoRef.current) {
                 videoRef.current.srcObject = stream;
-                await videoRef.current.play();
+                try {
+                    await videoRef.current.play();
+                } catch {
+                    /* autoplay can fail; still proceed */
+                }
                 setCameraReady(true);
-                setCameraStatus('granted');
-                void loadModels();
             }
-        } catch {
+        } catch (err) {
+            const name = err instanceof DOMException || err instanceof Error ? err.name : '';
+            streamRef.current?.getTracks().forEach((t) => t.stop());
+            streamRef.current = null;
+            setCameraReady(false);
             setCameraStatus('denied');
-            setError('Camera permission was denied. Please allow camera access in your browser settings and try again.');
+            if (name === 'TimeoutError') {
+                setError(
+                    isInstalledApp
+                        ? 'Camera request timed out. Check Settings → Apps → HR Daddy → Permissions → Camera, then tap Retry.'
+                        : 'Camera request timed out. Allow camera access and try again.',
+                );
+            } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+                setError(
+                    isInstalledApp
+                        ? 'Camera was denied. On Android: Settings → Apps → HR Daddy → Permissions → Camera → Allow, then tap Retry.'
+                        : 'Camera permission was denied. Allow camera access in your browser settings and try again.',
+                );
+            } else if (name === 'NotFoundError') {
+                setError('No camera was found on this device.');
+            } else {
+                setError('Unable to open the camera. Check permissions and try again.');
+            }
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
         }
     };
 
     const stopCamera = () => {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
         const stream = videoRef.current?.srcObject as MediaStream | null;
         stream?.getTracks().forEach((track) => track.stop());
         if (videoRef.current) {
             videoRef.current.srcObject = null;
         }
+        setCameraReady(false);
     };
 
     const loadImageElement = async (src: string): Promise<HTMLImageElement> => {
@@ -316,7 +408,7 @@ export default function ClockInFaceDialog({
 
         try {
             const ipResponse = await fetch('https://ipapi.co/json/', {
-                signal: AbortSignal.timeout(10000),
+                signal: AbortSignal.timeout(2500),
                 headers: { Accept: 'application/json' },
             });
             if (!ipResponse.ok) {
@@ -369,14 +461,20 @@ export default function ClockInFaceDialog({
             return;
         }
 
+        if (locationSessionCache && Date.now() - locationSessionCache.at < LOCATION_CACHE_TTL_MS) {
+            setLocationData(locationSessionCache.data);
+            setLocationStatus('granted');
+            return;
+        }
+
         setLocationLoading(true);
         setError(null);
 
-        // Desktop browsers often time out with high-accuracy GPS; retry with relaxed options.
+        // Prefer a fast cached / low-accuracy fix; avoid long high-accuracy waits.
         const attempts: PositionOptions[] = [
-            { enableHighAccuracy: false, timeout: 20000, maximumAge: 120_000 },
-            { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 },
-            { enableHighAccuracy: false, timeout: 30000, maximumAge: 300_000 },
+            { enableHighAccuracy: false, timeout: 4000, maximumAge: 120_000 },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 30_000 },
+            { enableHighAccuracy: false, timeout: 6000, maximumAge: 300_000 },
         ];
 
         let lastError: GeolocationPositionError | Error | null = null;
@@ -390,9 +488,17 @@ export default function ClockInFaceDialog({
                         lng: position.coords.longitude,
                         accuracy: position.coords.accuracy,
                     };
-                    const ipInfo = await fetchIpLocation();
+                    const payload: LocationPayload = { geo, ip: { ip: 'pending' } };
+                    locationSessionCache = { at: Date.now(), data: payload };
                     setLocationStatus('granted');
-                    setLocationData({ geo, ip: ipInfo });
+                    setLocationData(payload);
+                    setLocationLoading(false);
+                    // IP enrichment must never block clock-in readiness.
+                    void fetchIpLocation().then((ipInfo) => {
+                        const next = { geo, ip: ipInfo };
+                        locationSessionCache = { at: Date.now(), data: next };
+                        setLocationData(next);
+                    });
                     return;
                 } catch (err) {
                     lastError = err as GeolocationPositionError | Error;
@@ -406,13 +512,21 @@ export default function ClockInFaceDialog({
             const geoErr = lastError as GeolocationPositionError | undefined;
             if (geoErr && 'code' in geoErr && geoErr.code === 1) {
                 setLocationStatus('denied');
-                setError('Location permission was denied. Please allow location access in your browser settings and try again.');
+                setError(
+                    isInstalledApp
+                        ? 'Location was denied. On Android: Settings → Apps → HR Daddy → Permissions → Location → Allow, then tap Retry.'
+                        : 'Location permission was denied. Please allow location access in your browser settings and try again.',
+                );
             } else if (geoErr && 'code' in geoErr && geoErr.code === 3) {
-                setLocationStatus('granted');
-                setError('Location request timed out. Enable Windows location services or click Retry Location below.');
+                setLocationStatus('denied');
+                setError(
+                    isInstalledApp
+                        ? 'Location timed out. Turn on device Location, then tap Retry.'
+                        : 'Location request timed out. Enable location services or click Retry Location below.',
+                );
             } else {
-                setLocationStatus('granted');
-                setError('Unable to determine your location. Please ensure location services are enabled and try again.');
+                setLocationStatus('denied');
+                setError('Unable to determine your location. Ensure location services are enabled and try again.');
             }
         } finally {
             setLocationLoading(false);
@@ -448,14 +562,9 @@ export default function ClockInFaceDialog({
             return;
         }
 
-        // Capture VERIFICATION_FRAMES frames and average the distances.
-        // This reduces single-frame noise and makes spoofing harder.
+        // Capture one frame fast; only add more if the score is borderline.
         const distances: number[] = [];
-        for (let frame = 0; frame < VERIFICATION_FRAMES; frame++) {
-            if (frame > 0) {
-                await new Promise<void>((r) => setTimeout(r, 150));
-            }
-
+        const captureFrame = async (): Promise<number | null> => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -465,15 +574,31 @@ export default function ClockInFaceDialog({
                 .withFaceLandmarks()
                 .withFaceDescriptor();
 
-            if (!detection) {
-                setError(`No face detected in frame ${frame + 1}. Keep your face centred and well-lit.`);
+            if (!detection) return null;
+            return faceapi.euclideanDistance(referenceDescriptorRef.current!, detection.descriptor);
+        };
+
+        for (let frame = 0; frame < VERIFICATION_FRAMES; frame++) {
+            const distance = await captureFrame();
+            if (distance == null) {
+                setError('No face detected. Keep your face centred and well-lit.');
                 return;
             }
-
-            distances.push(faceapi.euclideanDistance(referenceDescriptorRef.current, detection.descriptor));
+            distances.push(distance);
         }
 
-        const avgDistance = distances.reduce((a, b) => a + b, 0) / distances.length;
+        let avgDistance = distances.reduce((a, b) => a + b, 0) / distances.length;
+        // Borderline match → quick extra frames instead of always doing 3.
+        if (avgDistance > FACE_DISTANCE_THRESHOLD - 0.08 && avgDistance <= FACE_DISTANCE_THRESHOLD + 0.08) {
+            for (let frame = 0; frame < BORDERLINE_RETRY_FRAMES; frame++) {
+                await new Promise<void>((r) => setTimeout(r, 80));
+                const distance = await captureFrame();
+                if (distance == null) continue;
+                distances.push(distance);
+            }
+            avgDistance = distances.reduce((a, b) => a + b, 0) / distances.length;
+        }
+
         // Score reported as 1 - distance (1 = perfect match, 0 = completely different)
         const matchScore = Number(Math.max(0, 1 - avgDistance).toFixed(4));
         const isMatch = avgDistance <= FACE_DISTANCE_THRESHOLD;
@@ -507,10 +632,17 @@ export default function ClockInFaceDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-3xl">
-                <DialogHeader>
-                    <DialogTitle>{skipFaceVerification ? 'Confirm clock in' : 'Verify your face'}</DialogTitle>
-                    <DialogDescription>
+            <DialogContent
+                className={cn(
+                    'flex w-[calc(100%-1rem)] max-w-lg flex-col gap-0 overflow-hidden p-0',
+                    'max-h-[min(92dvh,40rem)] sm:max-w-3xl',
+                )}
+            >
+                <DialogHeader className="shrink-0 space-y-1 border-b px-4 py-3 pr-12 text-left">
+                    <DialogTitle className="text-base sm:text-lg">
+                        {skipFaceVerification ? 'Confirm clock in' : 'Verify your face'}
+                    </DialogTitle>
+                    <DialogDescription className="text-xs sm:text-sm">
                         {skipFaceVerification
                             ? 'Location permission is required to clock in. Face verification is optional when no profile photo is set.'
                             : permissionsGranted
@@ -519,240 +651,263 @@ export default function ClockInFaceDialog({
                     </DialogDescription>
                 </DialogHeader>
 
-                {/* Permission prompt step */}
-                {!permissionsGranted && (
-                    <div className="space-y-4">
-                        <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-                            <div className="flex items-center gap-2 text-sm font-medium">
-                                <ShieldAlert className="h-4 w-4 text-primary" />
-                                Permissions Required
-                            </div>
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3">
+                    {/* Permission prompt step */}
+                    {!permissionsGranted && (
+                        <div className="space-y-3">
+                            <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                    <ShieldAlert className="h-4 w-4 shrink-0 text-primary" />
+                                    Permissions Required
+                                </div>
 
-                            {/* Camera permission */}
-                            <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-                                <div className="flex items-center gap-3">
-                                    <PermissionStatusIcon status={cameraStatus} />
-                                    <div className="flex items-center gap-2">
-                                        <Camera className="h-4 w-4 text-muted-foreground" />
-                                        <div>
+                                <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-background px-3 py-2.5">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <PermissionStatusIcon status={cameraStatus} />
+                                        <Camera className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                        <div className="min-w-0">
                                             <p className="text-sm font-medium">Camera Access</p>
-                                            <p className="text-xs text-muted-foreground">
+                                            <p className="truncate text-xs text-muted-foreground">
                                                 {cameraStatus === 'granted'
                                                     ? 'Permission granted'
                                                     : cameraStatus === 'denied'
-                                                        ? 'Permission denied — check browser settings'
+                                                        ? 'Permission denied — check app settings'
                                                         : cameraStatus === 'pending'
                                                             ? 'Requesting permission...'
                                                             : 'Required for face verification'}
                                             </p>
                                         </div>
                                     </div>
+                                    {(cameraStatus === 'idle' || cameraStatus === 'denied') && (
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="shrink-0"
+                                            onClick={requestCameraPermission}
+                                        >
+                                            {cameraStatus === 'denied' ? (
+                                                <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry</>
+                                            ) : (
+                                                'Allow'
+                                            )}
+                                        </Button>
+                                    )}
                                 </div>
-                                {(cameraStatus === 'idle' || cameraStatus === 'denied') && (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={requestCameraPermission}
-                                    >
-                                        {cameraStatus === 'denied' ? (
-                                            <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry</>
-                                        ) : (
-                                            'Allow'
-                                        )}
-                                    </Button>
-                                )}
-                            </div>
 
-                            {/* Location permission */}
-                            <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-                                <div className="flex items-center gap-3">
-                                    <PermissionStatusIcon status={locationStatus} />
-                                    <div className="flex items-center gap-2">
-                                        <MapPin className="h-4 w-4 text-muted-foreground" />
-                                        <div>
+                                <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-background px-3 py-2.5">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <PermissionStatusIcon status={locationStatus} />
+                                        <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                        <div className="min-w-0">
                                             <p className="text-sm font-medium">Location Access</p>
-                                            <p className="text-xs text-muted-foreground">
+                                            <p className="truncate text-xs text-muted-foreground">
                                                 {locationStatus === 'granted'
                                                     ? 'Permission granted'
                                                     : locationStatus === 'denied'
-                                                        ? 'Permission denied — check browser settings'
+                                                        ? 'Permission denied — check app settings'
                                                         : locationStatus === 'pending'
                                                             ? 'Requesting permission...'
                                                             : 'Required for attendance verification'}
                                             </p>
                                         </div>
                                     </div>
+                                    {(locationStatus === 'idle' || locationStatus === 'denied') && (
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="shrink-0"
+                                            onClick={requestLocationPermission}
+                                        >
+                                            {locationStatus === 'denied' ? (
+                                                <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry</>
+                                            ) : (
+                                                'Allow'
+                                            )}
+                                        </Button>
+                                    )}
                                 </div>
-                                {(locationStatus === 'idle' || locationStatus === 'denied') && (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={requestLocationPermission}
-                                    >
-                                        {locationStatus === 'denied' ? (
-                                            <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry</>
-                                        ) : (
-                                            'Allow'
-                                        )}
-                                    </Button>
-                                )}
                             </div>
+
+                            {(cameraStatus !== 'granted' || locationStatus !== 'granted') && (
+                                <Button
+                                    type="button"
+                                    className="w-full"
+                                    onClick={requestAllPermissions}
+                                    disabled={cameraStatus === 'pending' || locationStatus === 'pending'}
+                                >
+                                    {(cameraStatus === 'pending' || locationStatus === 'pending') ? (
+                                        <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Requesting Permissions...</>
+                                    ) : (
+                                        'Grant Permissions & Continue'
+                                    )}
+                                </Button>
+                            )}
+                            {isInstalledApp && (cameraStatus === 'denied' || locationStatus === 'denied') && (
+                                <p className="text-center text-xs leading-relaxed text-muted-foreground">
+                                    Open <span className="font-medium text-foreground">Settings → Apps → HR Daddy → Permissions</span>
+                                    {' '}and enable Camera / Location, then tap Retry.
+                                </p>
+                            )}
                         </div>
+                    )}
 
-                        {/* Grant All button */}
-                        {(cameraStatus !== 'granted' || locationStatus !== 'granted') && (
-                            <Button
-                                type="button"
-                                className="w-full"
-                                onClick={requestAllPermissions}
-                                disabled={cameraStatus === 'pending' || locationStatus === 'pending'}
-                            >
-                                {(cameraStatus === 'pending' || locationStatus === 'pending') ? (
-                                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Requesting Permissions...</>
-                                ) : (
-                                    'Grant All Permissions & Continue'
-                                )}
-                            </Button>
-                        )}
-                    </div>
-                )}
+                    {/* Verification step */}
+                    {permissionsGranted && !skipFaceVerification && (
+                        <div className="space-y-3">
+                            <div className="grid grid-cols-2 gap-2 sm:gap-4">
+                                <div className="min-w-0 space-y-1.5">
+                                    <p className="text-xs font-medium sm:text-sm">Camera</p>
+                                    <div className="mx-auto aspect-[3/4] max-h-[32vh] w-full overflow-hidden rounded-md border bg-muted sm:aspect-video sm:max-h-none">
+                                        <video
+                                            ref={videoRef}
+                                            className="h-full w-full object-cover"
+                                            muted
+                                            playsInline
+                                            autoPlay
+                                        />
+                                    </div>
+                                </div>
 
-                {/* Verification step — shown after permissions granted */}
-                {permissionsGranted && !skipFaceVerification && (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="space-y-2">
-                            <p className="text-sm font-medium">Camera</p>
-                            <div className="aspect-video w-full overflow-hidden rounded-md border bg-muted">
-                                <video
-                                    ref={videoRef}
-                                    className="h-full w-full object-cover"
-                                    muted
-                                    playsInline
-                                />
+                                <div className="min-w-0 space-y-1.5">
+                                    <p className="text-xs font-medium sm:text-sm">Profile photo</p>
+                                    <div className="mx-auto flex aspect-[3/4] max-h-[32vh] w-full items-center justify-center overflow-hidden rounded-md border bg-muted sm:aspect-video sm:max-h-none">
+                                        {userPhotoUrl ? (
+                                            <img
+                                                src={userPhotoUrl}
+                                                alt="Profile"
+                                                className="h-full w-full object-cover"
+                                            />
+                                        ) : (
+                                            <span className="px-2 text-center text-xs text-muted-foreground">
+                                                No photo uploaded
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
-                            {/* Debug calibration panel — shows real distance scores */}
+
+                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                                {modelsLoading && (
+                                    <div className="flex items-center gap-1.5">
+                                        <Loader2 className="h-3 w-3 animate-spin" /> Loading face models...
+                                    </div>
+                                )}
+                                {locationLoading && (
+                                    <div className="flex items-center gap-1.5">
+                                        <Loader2 className="h-3 w-3 animate-spin" /> Fetching location...
+                                    </div>
+                                )}
+                                {cameraReady && (
+                                    <div className="flex items-center gap-1.5">
+                                        <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Camera ready
+                                    </div>
+                                )}
+                                {locationData && (
+                                    <div className="flex items-center gap-1.5">
+                                        <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Location acquired
+                                    </div>
+                                )}
+                                {modelsReady && (
+                                    <div className="flex items-center gap-1.5">
+                                        <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Face models ready
+                                    </div>
+                                )}
+                            </div>
+
                             {debugInfo && (
-                                <div className={`rounded-md border p-2 text-xs font-mono space-y-1 ${
-                                    debugInfo.passed
-                                        ? 'border-green-500 bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-300'
-                                        : 'border-red-400 bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300'
-                                }`}>
+                                <div
+                                    className={`space-y-1 rounded-md border p-2 font-mono text-xs ${
+                                        debugInfo.passed
+                                            ? 'border-green-500 bg-green-50 text-green-800 dark:bg-green-950/30 dark:text-green-300'
+                                            : 'border-red-400 bg-red-50 text-red-800 dark:bg-red-950/30 dark:text-red-300'
+                                    }`}
+                                >
                                     <div className="font-semibold">
                                         {debugInfo.passed ? '✓ MATCH' : '✗ NO MATCH'} — threshold: {FACE_DISTANCE_THRESHOLD}
                                     </div>
                                     {debugInfo.frames.map((d, i) => (
                                         <div key={i}>
-                                            Frame {i + 1}: {d.toFixed(4)}&nbsp;
+                                            Frame {i + 1}: {d.toFixed(4)}{' '}
                                             <span className={d <= FACE_DISTANCE_THRESHOLD ? 'text-green-600' : 'text-red-500'}>
                                                 ({d <= FACE_DISTANCE_THRESHOLD ? 'pass' : 'fail'})
                                             </span>
                                         </div>
                                     ))}
-                                    <div className="border-t pt-1 font-semibold">
-                                        Avg: {debugInfo.avg.toFixed(4)}
-                                    </div>
+                                    <div className="border-t pt-1 font-semibold">Avg: {debugInfo.avg.toFixed(4)}</div>
                                 </div>
                             )}
                         </div>
+                    )}
 
-                        <div className="space-y-2">
-                            <p className="text-sm font-medium">Profile photo</p>
-                            <div className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-md border bg-muted">
-                                {userPhotoUrl ? (
-                                    <img
-                                        src={userPhotoUrl}
-                                        alt="Profile"
-                                        className="h-full w-full object-cover"
-                                    />
-                                ) : (
-                                    <span className="text-sm text-muted-foreground">
-                                        No photo uploaded
-                                    </span>
-                                )}
+                    {permissionsGranted && locationData && (
+                        <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                            <div className="flex items-center gap-2 text-sm font-medium">
+                                <MapPin className="h-4 w-4 shrink-0 text-primary" />
+                                Location Details
                             </div>
-                            <div className="space-y-1 text-xs text-muted-foreground">
-                                {modelsLoading && <div className="flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> Loading face models...</div>}
-                                {locationLoading && <div className="flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> Fetching location...</div>}
-                                {cameraReady && <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Camera ready</div>}
-                                {locationData && <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Location acquired</div>}
-                                {modelsReady && <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" /> Face models ready</div>}
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Location details display */}
-                {permissionsGranted && locationData && (
-                    <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                        <div className="flex items-center gap-2 text-sm font-medium">
-                            <MapPin className="h-4 w-4 text-primary" />
-                            Location Details
-                        </div>
-                        <div className="grid gap-2 text-xs">
-                            <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                    <span className="text-muted-foreground">GPS Coordinates:</span>
-                                    <p className="font-mono mt-0.5">
+                            <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                                <div className="min-w-0">
+                                    <span className="text-muted-foreground">GPS</span>
+                                    <p className="mt-0.5 break-all font-mono">
                                         {locationData.geo.lat.toFixed(6)}, {locationData.geo.lng.toFixed(6)}
                                     </p>
                                 </div>
-                                {locationData.geo.accuracy && (
-                                    <div>
-                                        <span className="text-muted-foreground">Accuracy:</span>
+                                {locationData.geo.accuracy != null && (
+                                    <div className="min-w-0">
+                                        <span className="text-muted-foreground">Accuracy</span>
                                         <p className="mt-0.5">±{Math.round(locationData.geo.accuracy)}m</p>
                                     </div>
                                 )}
-                            </div>
-                            {locationData.ip.ip && locationData.ip.ip !== 'unknown' && (
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div>
-                                        <span className="text-muted-foreground">IP Address:</span>
-                                        <p className="font-mono mt-0.5">{locationData.ip.ip}</p>
+                                {locationData.ip.ip && locationData.ip.ip !== 'unknown' && (
+                                    <div className="min-w-0">
+                                        <span className="text-muted-foreground">IP</span>
+                                        <p className="mt-0.5 break-all font-mono">{locationData.ip.ip}</p>
                                     </div>
-                                    {(locationData.ip.city || locationData.ip.region || locationData.ip.country) && (
-                                        <div>
-                                            <span className="text-muted-foreground">Location:</span>
-                                            <p className="mt-0.5">
-                                                {[locationData.ip.city, locationData.ip.region, locationData.ip.country]
-                                                    .filter(Boolean)
-                                                    .join(', ')}
-                                            </p>
-                                        </div>
+                                )}
+                                {(locationData.ip.city || locationData.ip.region || locationData.ip.country) && (
+                                    <div className="min-w-0">
+                                        <span className="text-muted-foreground">Location</span>
+                                        <p className="mt-0.5 break-words">
+                                            {[locationData.ip.city, locationData.ip.region, locationData.ip.country]
+                                                .filter(Boolean)
+                                                .join(', ')}
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:flex-row sm:items-center sm:justify-between">
+                            <span className="min-w-0 break-words">{error}</span>
+                            {permissionsGranted && !locationData && (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="shrink-0 border-destructive/40"
+                                    onClick={requestLocationPermission}
+                                    disabled={locationLoading}
+                                >
+                                    {locationLoading ? (
+                                        <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Retrying...</>
+                                    ) : (
+                                        <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry Location</>
                                     )}
-                                </div>
+                                </Button>
                             )}
                         </div>
-                    </div>
-                )}
+                    )}
+                </div>
 
-                {error && (
-                    <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:flex-row sm:items-center sm:justify-between">
-                        <span>{error}</span>
-                        {permissionsGranted && !locationData && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="shrink-0 border-destructive/40"
-                                onClick={requestLocationPermission}
-                                disabled={locationLoading}
-                            >
-                                {locationLoading ? (
-                                    <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Retrying...</>
-                                ) : (
-                                    <><RefreshCw className="mr-1.5 h-3 w-3" /> Retry Location</>
-                                )}
-                            </Button>
-                        )}
-                    </div>
-                )}
-
-                <DialogFooter>
+                <DialogFooter className="shrink-0 gap-2 border-t px-4 py-3 sm:flex-row">
                     <Button
                         type="button"
                         variant="outline"
+                        className="w-full sm:w-auto"
                         onClick={() => onOpenChange(false)}
                         disabled={busy}
                     >
@@ -761,6 +916,7 @@ export default function ClockInFaceDialog({
                     {permissionsGranted && (
                         <Button
                             type="button"
+                            className="w-full sm:w-auto"
                             onClick={skipFaceVerification ? handleClockInWithoutFace : handleVerify}
                             disabled={!isReady || busy || (!skipFaceVerification && (modelsLoading || locationLoading))}
                         >

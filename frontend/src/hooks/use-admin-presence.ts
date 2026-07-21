@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { apiPost } from '@/lib/api';
 
-const PRESENCE_INTERVAL_MS = 60_000;
+const PRESENCE_INTERVAL_MS = 30_000;
 
 interface PresenceCoords {
     latitude?: number;
@@ -38,8 +38,8 @@ async function reverseGeocode(lat: number, lng: number): Promise<Pick<PresenceCo
 }
 
 /**
- * Sends periodic presence heartbeats for company admins (is_super_admin)
- * so the platform console can show live IP / location tracking.
+ * Sends periodic presence heartbeats (with live GPS when available)
+ * so the platform IP Tracking map can monitor movement in near real time.
  */
 export function useAdminPresence(enabled: boolean) {
     const coordsRef = useRef<PresenceCoords>({});
@@ -47,6 +47,10 @@ export function useAdminPresence(enabled: boolean) {
 
     useEffect(() => {
         if (!enabled) return;
+
+        let cancelled = false;
+        let watchId: number | undefined;
+        let interval: number | undefined;
 
         async function ping() {
             const { latitude, longitude, accuracy, city, region } = coordsRef.current;
@@ -82,8 +86,28 @@ export function useAdminPresence(enabled: boolean) {
             await ping();
         }
 
-        let watchId: number | undefined;
-        if (navigator.geolocation) {
+        async function geoAllowed(): Promise<boolean> {
+            if (!('geolocation' in navigator)) return false;
+            try {
+                if (navigator.permissions?.query) {
+                    const status = await navigator.permissions.query({
+                        name: 'geolocation' as PermissionName,
+                    });
+                    // Avoid hammering the API when the browser has auto-denied
+                    // after repeated dismissals (Chrome console warning).
+                    if (status.state === 'denied') return false;
+                }
+            } catch {
+                /* Safari / older browsers may throw */
+            }
+            return true;
+        }
+
+        function startGeoTracking() {
+            if (!navigator.geolocation) {
+                void ping();
+                return;
+            }
             watchId = navigator.geolocation.watchPosition(
                 (pos) => {
                     void applyPosition(pos);
@@ -93,61 +117,68 @@ export function useAdminPresence(enabled: boolean) {
                 },
                 {
                     enableHighAccuracy: true,
-                    maximumAge: 0,
+                    maximumAge: 60_000,
                     timeout: 20_000,
                 },
             );
-        } else {
-            void ping();
+
+            interval = window.setInterval(() => {
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        void applyPosition(pos);
+                    },
+                    () => {
+                        void ping();
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        maximumAge: 60_000,
+                        timeout: 20_000,
+                    },
+                );
+            }, PRESENCE_INTERVAL_MS);
+
+            const onVisible = () => {
+                if (document.visibilityState !== 'visible') return;
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        void applyPosition(pos);
+                    },
+                    () => {
+                        void ping();
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        maximumAge: 60_000,
+                        timeout: 20_000,
+                    },
+                );
+            };
+            document.addEventListener('visibilitychange', onVisible);
+            cleanupVisible = () => document.removeEventListener('visibilitychange', onVisible);
         }
 
-        const interval = window.setInterval(() => {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (pos) => {
-                        void applyPosition(pos);
-                    },
-                    () => {
-                        void ping();
-                    },
-                    {
-                        enableHighAccuracy: true,
-                        maximumAge: 0,
-                        timeout: 20_000,
-                    },
-                );
-            } else {
-                void ping();
-            }
-        }, PRESENCE_INTERVAL_MS);
+        let cleanupVisible: (() => void) | undefined;
 
-        const onVisible = () => {
-            if (document.visibilityState !== 'visible') return;
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (pos) => {
-                        void applyPosition(pos);
-                    },
-                    () => {
-                        void ping();
-                    },
-                    {
-                        enableHighAccuracy: true,
-                        maximumAge: 0,
-                        timeout: 20_000,
-                    },
-                );
+        void (async () => {
+            const allowed = await geoAllowed();
+            if (cancelled) return;
+            if (allowed) {
+                startGeoTracking();
             } else {
                 void ping();
+                interval = window.setInterval(() => {
+                    void ping();
+                }, PRESENCE_INTERVAL_MS);
             }
-        };
-        document.addEventListener('visibilitychange', onVisible);
+        })();
 
         return () => {
+            cancelled = true;
             if (watchId != null) navigator.geolocation.clearWatch(watchId);
             if (geocodeTimerRef.current) window.clearTimeout(geocodeTimerRef.current);
-            window.clearInterval(interval);
-            document.removeEventListener('visibilitychange', onVisible);
+            if (interval != null) window.clearInterval(interval);
+            cleanupVisible?.();
         };
     }, [enabled]);
 }

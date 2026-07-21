@@ -439,16 +439,19 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let stmt = match conn.prepare(
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
         "SELECT p.* FROM payslips p
              INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?1
-             ORDER BY p.year DESC, p.month DESC LIMIT 100",
-    ) {
-        Ok(s) => s,
-        Err(_) => return HttpResponse::Ok().json(ApiResponse::success(Vec::<crate::models::payslip::Payslip>::new())),
-    };
-    let items: Vec<crate::models::payslip::Payslip> = stmt
-        .query_map([org_id], crate::models::payslip::Payslip::from_row);
+             WHERE 1=1",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY p.year DESC, p.month DESC LIMIT 100");
+    let items: Vec<crate::models::payslip::Payslip> = conn
+        .prepare(&sql)
+        .map(|stmt| stmt.query_map(&params, crate::models::payslip::Payslip::from_row))
+        .unwrap_or_default();
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
@@ -470,6 +473,7 @@ pub async fn stats(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now();
     let month = query.month.unwrap_or(now.month() as i32);
@@ -479,43 +483,64 @@ pub async fn stats(
     let start = format!("{}-{:02}-01", year, month);
     let end = format!("{}-{:02}-{}", year, month, cal_days);
 
+    let mut emp_sql = String::from(
+        "SELECT COUNT(*) FROM users u
+         WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND (u.is_external IS NULL OR u.is_external = 0) AND u.organization_id=?1",
+    );
+    let mut emp_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(&mut emp_sql, &mut emp_params, &scope, "u");
     let total_employees: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM users u
-             WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND (u.is_external IS NULL OR u.is_external = 0) AND u.organization_id=?1",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&emp_sql, &emp_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
     let approved_leave_days =
         payroll_logic::approved_leave_business_days_in_month(&conn, org_id, month, year);
-    let present_days_total: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT a.user_id || '-' || a.date) FROM attendance a
+
+    let mut present_sql = String::from(
+        "SELECT COUNT(DISTINCT a.user_id || '-' || a.date) FROM attendance a
              INNER JOIN users u ON u.id = a.user_id AND u.organization_id = ?3
              WHERE a.date >= ?1 AND a.date <= ?2 AND a.deleted_at IS NULL AND a.clock_out IS NOT NULL",
-            crate::params![start, end, org_id],
-            |r| r.get_idx::<i64>(0),
-        )
+    );
+    let mut present_params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(start.clone()),
+        crate::db::into_param_value(end.clone()),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut present_sql, &mut present_params, &scope, "u");
+    let present_days_total: i64 = conn
+        .query_row(&present_sql, &present_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
+
+    let mut slip_sql = String::from(
+        "SELECT COUNT(*) FROM payslips p
+             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
+             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
+    );
+    let mut slip_params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut slip_sql, &mut slip_params, &scope, "u");
+
+    let mut gross_sql = String::from(
+        "SELECT COALESCE(SUM(p.gross_salary),0) FROM payslips p
+             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
+             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
+    );
+    let mut gross_params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut gross_sql, &mut gross_params, &scope, "u");
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "total_employees": total_employees,
         "approved_leaves": approved_leave_days,
         "present_days_total": present_days_total,
         "paid_holidays": paid_holidays,
-        "total": conn.query_row(
-            "SELECT COUNT(*) FROM payslips p
-             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
-             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
-            crate::params![month, year, org_id], |r| r.get_idx::<i64>(0)
-        ).unwrap_or(0),
-        "total_gross": conn.query_row(
-            "SELECT COALESCE(SUM(p.gross_salary),0) FROM payslips p
-             INNER JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
-             WHERE p.month=?1 AND p.year=?2 AND p.status='generated'",
-            crate::params![month, year, org_id], |r| r.get_idx::<f64>(0)
-        ).unwrap_or(0.0),
+        "total": conn.query_row(&slip_sql, &slip_params, |r| r.get_idx::<i64>(0)).unwrap_or(0),
+        "total_gross": conn.query_row(&gross_sql, &gross_params, |r| r.get_idx::<f64>(0)).unwrap_or(0.0),
     })))
 }
 
@@ -533,6 +558,7 @@ pub async fn employees(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now();
     let month = query.month.unwrap_or(now.month() as i32);
@@ -550,11 +576,24 @@ pub async fn employees(
         if !center_in_organization(&conn, center_id, org_id) {
             return HttpResponse::BadRequest().json(ApiError::new("Center not found"));
         }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
         sql.push_str(
-            " AND u.work_location = (SELECT name FROM centers WHERE id=? AND organization_id=? LIMIT 1)",
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = CAST(? AS TEXT)
+                OR u.department_id IN (SELECT d.id FROM departments d WHERE d.center_id = ? AND d.organization_id = ?)
+              )",
         );
         params.push(crate::db::into_param_value(center_id));
+        params.push(crate::db::into_param_value(center_id));
         params.push(crate::db::into_param_value(org_id));
+    }
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(&mut conditions, &mut params, &scope, "u");
+    for c in conditions {
+        sql.push_str(" AND ");
+        sql.push_str(&c);
     }
 
     let stmt = match conn.prepare(&sql) {
@@ -564,8 +603,8 @@ pub async fn employees(
     let user_ids: Vec<i64> = stmt
         .query_map(&params, |row| row.get_idx::<i64>(0));
 
-    prepare_attendance_for_payroll(&conn, org_id, month, year);
-
+    // Do not sync biometric punches on list reads — the biometric worker (or
+    // generate/preview paths) owns that. Sync-on-read made payroll page open slow.
     let month_ctx =
         crate::payroll_month_context::MonthContext::prefetch(&conn, org_id, &user_ids, month, year);
 
@@ -760,6 +799,7 @@ pub async fn preview(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let adj_map = payroll_logic::parse_employee_adjustments(&body.adjustments);
@@ -777,6 +817,9 @@ pub async fn preview(
     );
 
     for user_id in &body.employee_ids {
+        if let Err(_) = crate::branch_scope::require_user_in_scope(&conn, *user_id, org_id, &scope) {
+            continue;
+        }
         let Some(emp) = build_employee_payroll(
             &conn,
             *user_id,
@@ -1010,6 +1053,7 @@ pub async fn generate(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut generated = 0i64;
@@ -1059,6 +1103,12 @@ pub async fn generate(
             results.push(serde_json::json!({"id": payslip_id, "status": "not_found"}));
             continue;
         };
+
+        if let Err(_) = crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope) {
+            skipped += 1;
+            results.push(serde_json::json!({"id": payslip_id, "status": "out_of_branch_scope"}));
+            continue;
+        }
 
         if refresh_draft_payslip(
             &conn,
@@ -1173,6 +1223,18 @@ pub async fn generate(
             generated += 1;
             generated_ids.push(*payslip_id);
             results.push(serde_json::json!({"id": payslip_id, "status": "generated", "net_salary": net}));
+            let payslip_ctx = serde_json::json!({
+                "payslip_id": payslip_id,
+                "user_id": user_id,
+                "month": month,
+                "year": year,
+                "net_salary": net,
+                "gross_salary": gross,
+                "organization_id": org_id,
+                "created_by": claims.sub,
+            });
+            crate::workflow_logic::trigger(&conn, org_id, "payslip_generated", &payslip_ctx);
+            crate::tenant_webhooks::dispatch(&conn, org_id, "payslip.generated", &payslip_ctx);
         } else {
             if advance_deducted {
                 let _ = crate::statutory_logic::restore_advances_for_payslip(
@@ -1248,6 +1310,11 @@ pub async fn unlock_payslip(
     let Some((user_id, advance, month, year, adjustments)) = payslip_row else {
         return HttpResponse::NotFound().json(ApiError::new("Generated payslip not found"));
     };
+
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope) {
+        return resp;
+    }
 
     let updated = conn.execute(
         "UPDATE payslips SET status='draft', generated_at=NULL, updated_at=?1

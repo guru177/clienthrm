@@ -72,9 +72,10 @@ interface Branch {
 interface DepartmentTableProps {
     onEdit: (department: Department) => void;
     onRefresh?: () => void;
+    refreshTrigger?: number;
 }
 
-export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTableProps) {
+export default function DepartmentTable({ onEdit, onRefresh, refreshTrigger = 0 }: DepartmentTableProps) {
     const [departments, setDepartments] = useState<Department[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -103,7 +104,7 @@ export default function DepartmentTable({ onEdit, onRefresh }: DepartmentTablePr
 
     useEffect(() => {
         fetchDepartments();
-    }, [search, statusFilter, branchFilter, currentPage, perPage, sortBy, sortOrder]);
+    }, [search, statusFilter, branchFilter, currentPage, perPage, sortBy, sortOrder, refreshTrigger]);
 
     const fetchDepartments = async () => {
         setLoading(true);

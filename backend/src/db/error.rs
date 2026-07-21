@@ -30,6 +30,15 @@ impl From<rusqlite::Error> for DbError {
 
 impl From<postgres::Error> for DbError {
     fn from(value: postgres::Error) -> Self {
+        // Prefer server SQLSTATE detail over the opaque "db error" Display.
+        if let Some(db) = value.as_db_error() {
+            let mut msg = db.message().to_string();
+            if let Some(detail) = db.detail() {
+                msg.push_str(": ");
+                msg.push_str(detail);
+            }
+            return DbError::Query(msg);
+        }
         DbError::Query(value.to_string())
     }
 }

@@ -195,8 +195,8 @@ export default function Index() {
                                 </p>
                             </div>
                         </div>
-                        <Link to="/admin/workflows/create">
-                            <Button className="shrink-0 bg-gradient-to-r from-[#071b3a] to-[#0d4a8a] hover:from-[#040f22] hover:to-[#0a3272] text-white shadow-md shadow-blue-500/25 dark:shadow-blue-900/40 rounded-xl gap-2 z-10">
+                        <Link to="/admin/workflows/create" className="w-full sm:w-auto">
+                            <Button className="min-h-11 w-full shrink-0 bg-gradient-to-r from-[#071b3a] to-[#0d4a8a] hover:from-[#040f22] hover:to-[#0a3272] text-white shadow-md shadow-blue-500/25 dark:shadow-blue-900/40 rounded-xl gap-2 z-10 sm:w-auto">
                                 <Plus className="h-4 w-4" />
                                 Create Workflow
                             </Button>
@@ -218,7 +218,7 @@ export default function Index() {
                         </div>
                     </div>
                     <Select value={statusFilter} onValueChange={setStatusFilter}>
-                        <SelectTrigger className="w-[150px]">
+                        <SelectTrigger className="w-full md:w-[150px]">
                             <SelectValue placeholder="Status" />
                         </SelectTrigger>
                         <SelectContent>
@@ -228,7 +228,7 @@ export default function Index() {
                         </SelectContent>
                     </Select>
                     <Select value={triggerFilter} onValueChange={setTriggerFilter}>
-                        <SelectTrigger className="w-[180px]">
+                        <SelectTrigger className="w-full md:w-[180px]">
                             <SelectValue placeholder="Trigger" />
                         </SelectTrigger>
                         <SelectContent>
@@ -246,7 +246,7 @@ export default function Index() {
                 </div>
 
                 {/* Table */}
-                <div className="rounded-md border bg-card">
+                <div className="min-w-0 overflow-x-auto rounded-md border bg-card">
                     <Table>
                         <TableHeader>
                             <TableRow>

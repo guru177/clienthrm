@@ -90,6 +90,7 @@ interface User {
     };
     status: string;
     is_external?: boolean;
+    hr_managed?: boolean;
     created_at: string;
     updated_at: string;
 }
@@ -124,7 +125,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
     const fetchUsers = async () => {
         setLoading(true);
         try {
-            const response = await axios.get('/admin/users/list', {
+            const response = await axios.get('/admin/users', {
                 params: {
                     search,
                     status: statusFilter !== 'all' ? statusFilter : undefined,
@@ -206,7 +207,7 @@ export default function UserTable({ onRefresh }: UserTableProps) {
     return (
         <>
             <div
-                className="relative overflow-hidden rounded-2xl bg-white/70 dark:bg-white/5 backdrop-blur-md border border-white/80 dark:border-white/10 shadow-[0_8px_32px_rgba(3,107,211,0.07)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)]"
+                className="relative min-w-0 max-w-full overflow-hidden rounded-2xl bg-white/70 dark:bg-white/5 backdrop-blur-md border border-white/80 dark:border-white/10 shadow-[0_8px_32px_rgba(3,107,211,0.07)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)]"
             >
                 {/* Top shimmer line */}
                 <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-blue-300/50 to-transparent dark:via-blue-500/20" />
@@ -277,8 +278,8 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                         </Button>
                     </div>
                 </div>
-                <div className="px-6 pb-6">
-                    <div className="rounded-xl border border-blue-100/60 dark:border-white/8 overflow-hidden">
+                <div className="min-w-0 px-4 pb-6 sm:px-6">
+                    <div className="overflow-x-auto rounded-xl border border-blue-100/60 dark:border-white/8">
                         <Table>
                             <TableHeader>
                                 <TableRow className="bg-gradient-to-r from-[#f0f7ff] to-[#e8f2fd] dark:from-[#0d1e33] dark:to-[#0a1828] border-b border-blue-100/60 dark:border-white/8 hover:bg-transparent dark:hover:bg-transparent">
@@ -378,7 +379,21 @@ export default function UserTable({ onRefresh }: UserTableProps) {
                                                     </div>
                                                 </div>
                                             </TableCell>
-                                            <TableCell>{user.email}</TableCell>
+                                            <TableCell>
+                                                <div className="flex flex-col gap-1">
+                                                    <span>
+                                                        {user.hr_managed &&
+                                                        user.email?.endsWith('@hr-managed.local')
+                                                            ? '—'
+                                                            : user.email}
+                                                    </span>
+                                                    {user.hr_managed ? (
+                                                        <Badge variant="outline" className="w-fit text-xs">
+                                                            HR-managed
+                                                        </Badge>
+                                                    ) : null}
+                                                </div>
+                                            </TableCell>
                                             <TableCell>{user.phone || '-'}</TableCell>
                                             <TableCell>{user.department?.name || '-'}</TableCell>
                                             <TableCell>{getStatusBadge(user.status)}</TableCell>

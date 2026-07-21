@@ -69,18 +69,30 @@ impl ToSql for PostgresAdaptiveText {
         ty: &Type,
         out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        let trimmed = self.0.trim();
+        // Empty strings → NULL for typed temporal columns (frontend often sends "").
+        if trimmed.is_empty()
+            && matches!(
+                *ty,
+                Type::DATE | Type::TIMESTAMP | Type::TIMESTAMPTZ | Type::TIME | Type::TIMETZ
+            )
+        {
+            return Ok(IsNull::Yes);
+        }
         if matches!(ty, &Type::TIMESTAMP | &Type::TIMESTAMPTZ) {
-            if let Some(dt) = Self::parse_timestamp(&self.0) {
+            if let Some(dt) = Self::parse_timestamp(trimmed) {
                 return dt.to_sql_checked(ty, out);
             }
         }
         if ty == &Type::DATE {
-            if let Some(d) = Self::parse_date(&self.0) {
+            if let Some(d) = Self::parse_date(trimmed) {
                 return d.to_sql_checked(ty, out);
             }
+            // Unparseable non-empty date string → NULL rather than text→date cast failure
+            return Ok(IsNull::Yes);
         }
         if matches!(ty, &Type::TIME | &Type::TIMETZ) {
-            if let Some(t) = Self::parse_time(&self.0) {
+            if let Some(t) = Self::parse_time(trimmed) {
                 return t.to_sql_checked(ty, out);
             }
         }
@@ -219,7 +231,8 @@ impl ParamValue {
             ParamValue::I64(v) => Box::new(PostgresAdaptiveI64(*v)),
             ParamValue::I32(v) => Box::new(PostgresAdaptiveI64(*v as i64)),
             ParamValue::F64(v) => Box::new(PostgresAdaptiveFloat(*v)),
-            ParamValue::Bool(v) => Box::new(if *v { 1i16 } else { 0i16 }),
+            // users.is_external is INTEGER; is_super_admin is SMALLINT — adaptive i64 covers both
+            ParamValue::Bool(v) => Box::new(PostgresAdaptiveI64(if *v { 1 } else { 0 })),
             ParamValue::Text(v) => Box::new(PostgresAdaptiveText(v.clone())),
             ParamValue::Blob(v) => Box::new(v.clone()),
             ParamValue::NaiveDateTime(v) => Box::new(*v),

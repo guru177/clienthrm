@@ -1,7 +1,5 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
-use lettre::{Message};
-use lettre::message::MultiPart;
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
@@ -388,39 +386,35 @@ pub async fn send_email(
         }
     };
 
-    let multipart = if let Some(html) = &body.html_body {
-        MultiPart::alternative_plain_html(body.body.clone(), html.clone())
+    let inner_html = if let Some(html) = &body.html_body {
+        html.clone()
     } else {
-        MultiPart::alternative_plain_html(
-            body.body.clone(),
-            format!("<p>{}</p>", body.body.replace("\n", "<br>")),
+        format!(
+            "<p style=\"margin:0;font-size:15px;line-height:1.6;color:#64748b;\">{}</p>",
+            body.body.replace('\n', "<br />")
         )
     };
+    let html = crate::tenant_email::render_base_template(&body.subject, &inner_html);
 
-    let from = match smtp.from_mailbox() {
-        Ok(f) => f,
+    let email_message = match crate::tenant_email::build_html_email(
+        &smtp,
+        &email,
+        &body.subject,
+        body.body.clone(),
+        html,
+    ) {
+        Ok(m) => m,
         Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
     };
 
-    let email_message = match Message::builder()
-        .from(from)
-        .to(email.parse().unwrap_or_else(|_| "user@example.com".parse().unwrap()))
-        .subject(&body.subject)
-        .multipart(multipart)
-    {
-        Ok(m) => m,
-        Err(_) => return HttpResponse::BadRequest().json(ApiError::new("Failed to construct email")),
-    };
-
-    let result = web::block(move || smtp.send(&email_message)).await;
+    let result = crate::tenant_email::send_built_email(smtp, email_message).await;
 
     match result {
-        Ok(Ok(_)) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        Ok(()) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
             "message": "Email sent successfully"
         }))),
-        Ok(Err(e)) => {
-            HttpResponse::InternalServerError().json(ApiError::new(&format!("SMTP send failed: {}", e)))
+        Err(e) => {
+            HttpResponse::InternalServerError().json(ApiError::new(&format!("SMTP send failed: {e}")))
         }
-        Err(_) => HttpResponse::InternalServerError().json(ApiError::new("Failed to execute SMTP task")),
     }
 }

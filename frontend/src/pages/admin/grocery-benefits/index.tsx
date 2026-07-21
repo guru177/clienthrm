@@ -332,10 +332,10 @@ export default function GroceryBenefitsPage() {
                 {/* Benefits Tab */}
                 <TabsContent value="benefits">
                     <Card>
-                        <CardHeader className="flex flex-row items-center justify-between">
+                        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <CardTitle>Enrolled Employees</CardTitle>
                             <Select value={statusFilter} onValueChange={setStatusFilter}>
-                                <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="w-full sm:w-[140px]"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">All Status</SelectItem>
                                     <SelectItem value="active">Active</SelectItem>
@@ -343,7 +343,8 @@ export default function GroceryBenefitsPage() {
                                 </SelectContent>
                             </Select>
                         </CardHeader>
-                        <CardContent>
+                        <CardContent className="min-w-0">
+                            <div className="overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -384,6 +385,7 @@ export default function GroceryBenefitsPage() {
                                     ))}
                                 </TableBody>
                             </Table>
+                            </div>
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -391,10 +393,10 @@ export default function GroceryBenefitsPage() {
                 {/* Claims Tab */}
                 <TabsContent value="claims">
                     <Card>
-                        <CardHeader className="flex flex-row items-center justify-between">
+                        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <CardTitle>Grocery Claims</CardTitle>
                             <Select value={claimStatusFilter} onValueChange={setClaimStatusFilter}>
-                                <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="w-full sm:w-[140px]"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">All Status</SelectItem>
                                     <SelectItem value="pending">Pending</SelectItem>
@@ -403,7 +405,8 @@ export default function GroceryBenefitsPage() {
                                 </SelectContent>
                             </Select>
                         </CardHeader>
-                        <CardContent>
+                        <CardContent className="min-w-0">
+                            <div className="overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -451,6 +454,7 @@ export default function GroceryBenefitsPage() {
                                     ))}
                                 </TableBody>
                             </Table>
+                            </div>
                         </CardContent>
                     </Card>
                 </TabsContent>

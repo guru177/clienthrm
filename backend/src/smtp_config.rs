@@ -73,6 +73,27 @@ fn parse_encryption(raw: &str) -> Encryption {
     }
 }
 
+/// Split `Name <email@x>` or return bare address.
+fn parse_from_address(raw: &str) -> (String, Option<String>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None);
+    }
+    if let (Some(lt), Some(gt)) = (trimmed.find('<'), trimmed.rfind('>')) {
+        if lt < gt {
+            let email = trimmed[lt + 1..gt].trim().to_string();
+            let name = trimmed[..lt].trim().trim_matches('"').to_string();
+            if !email.is_empty() {
+                return (
+                    email,
+                    if name.is_empty() { None } else { Some(name) },
+                );
+            }
+        }
+    }
+    (trimmed.to_string(), None)
+}
+
 /// Org app settings (mail_* / smtp_*) with fallback to environment variables.
 pub fn resolve(conn: &crate::db::Connection, org_id: i64) -> Option<SmtpConfig> {
     build_config(Some(conn), Some(org_id))
@@ -128,6 +149,8 @@ fn build_config(
         &["mail_from_address", "smtp_from"],
         &["SMTP_FROM"],
     );
+    let (parsed_addr, parsed_name) = parse_from_address(&from_address);
+    from_address = parsed_addr;
     if from_address.is_empty() {
         from_address = user.clone();
     }
@@ -137,14 +160,19 @@ fn build_config(
 
     let from_name = {
         let name = resolve_field(conn, org_id, &["mail_from_name"], &["SMTP_FROM_NAME"]);
-        if name.is_empty() {
-            None
-        } else {
+        if !name.is_empty() {
             Some(name)
+        } else {
+            parsed_name
         }
     };
 
-    let encryption_raw = resolve_field(conn, org_id, &["mail_encryption"], &[]);
+    let encryption_raw = resolve_field(
+        conn,
+        org_id,
+        &["mail_encryption", "smtp_encryption"],
+        &["SMTP_ENCRYPTION", "MAIL_ENCRYPTION"],
+    );
     let encryption = parse_encryption(&encryption_raw);
 
     Some(SmtpConfig {
@@ -172,24 +200,39 @@ impl SmtpConfig {
     }
 
     pub fn send(&self, message: &Message) -> Result<(), String> {
-        let creds = Credentials::new(self.user.clone(), self.pass.clone());
+        let use_auth = !self.user.trim().is_empty() && !self.pass.trim().is_empty();
         let mailer = if matches!(self.encryption, Encryption::Ssl) || self.port == 465 {
-            SmtpTransport::relay(&self.host)
+            let builder = SmtpTransport::relay(&self.host)
                 .map_err(|e| format!("SMTP relay error: {e}"))?
-                .credentials(creds)
-                .port(self.port)
-                .build()
+                .port(self.port);
+            if use_auth {
+                builder
+                    .credentials(Credentials::new(self.user.clone(), self.pass.clone()))
+                    .build()
+            } else {
+                builder.build()
+            }
         } else if matches!(self.encryption, Encryption::None) {
-            SmtpTransport::builder_dangerous(&self.host)
-                .port(self.port)
-                .credentials(creds)
-                .build()
+            // Local catchers (Mailpit/MailHog) — plain SMTP, usually no auth.
+            let builder = SmtpTransport::builder_dangerous(&self.host).port(self.port);
+            if use_auth {
+                builder
+                    .credentials(Credentials::new(self.user.clone(), self.pass.clone()))
+                    .build()
+            } else {
+                builder.build()
+            }
         } else {
-            SmtpTransport::starttls_relay(&self.host)
+            let builder = SmtpTransport::starttls_relay(&self.host)
                 .map_err(|e| format!("SMTP relay error: {e}"))?
-                .credentials(creds)
-                .port(self.port)
-                .build()
+                .port(self.port);
+            if use_auth {
+                builder
+                    .credentials(Credentials::new(self.user.clone(), self.pass.clone()))
+                    .build()
+            } else {
+                builder.build()
+            }
         };
 
         mailer

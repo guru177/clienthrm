@@ -181,15 +181,57 @@ export default function Edit() {
                     </div>
                 );
             case 'send_notification':
+            case 'send_email':
+            case 'whatsapp':
+            case 'notify_manager':
+                return (
+                    <div className="space-y-3">
+                        {action.type === 'send_email' && (
+                            <div>
+                                <Label>Subject</Label>
+                                <Input
+                                    placeholder="Email subject"
+                                    value={String(action.config.subject ?? '')}
+                                    onChange={(e) =>
+                                        updateAction(index, 'config', {
+                                            ...action.config,
+                                            subject: e.target.value,
+                                        })
+                                    }
+                                />
+                            </div>
+                        )}
+                        <div>
+                            <Label>
+                                {action.type === 'send_email'
+                                    ? 'Email Body'
+                                    : action.type === 'whatsapp'
+                                      ? 'WhatsApp Message'
+                                      : 'Message'}
+                            </Label>
+                            <Textarea
+                                value={String(action.config.message ?? '')}
+                                onChange={(e) =>
+                                    updateAction(index, 'config', {
+                                        ...action.config,
+                                        message: e.target.value,
+                                    })
+                                }
+                            />
+                        </div>
+                    </div>
+                );
+            case 'webhook':
                 return (
                     <div>
-                        <Label>Notification Message</Label>
-                        <Textarea
-                            value={String(action.config.message ?? '')}
+                        <Label>Webhook URL</Label>
+                        <Input
+                            placeholder="https://example.com/hooks/hrm"
+                            value={String(action.config.url ?? '')}
                             onChange={(e) =>
                                 updateAction(index, 'config', {
                                     ...action.config,
-                                    message: e.target.value,
+                                    url: e.target.value,
                                 })
                             }
                         />

@@ -1,0 +1,54 @@
+{
+    "packageId":  "com.raintech.hrm",
+    "host":  "pride-murphy-gpl-analyses.trycloudflare.com",
+    "name":  "Raintech HRM",
+    "launcherName":  "HR Daddy",
+    "display":  "standalone",
+    "themeColor":  "#FFFFFF",
+    "themeColorDark":  "#000000",
+    "navigationColor":  "#FFFFFF",
+    "navigationColorDark":  "#000000",
+    "navigationDividerColor":  "#FFFFFF",
+    "navigationDividerColorDark":  "#000000",
+    "backgroundColor":  "#FFFFFF",
+    "enableNotifications":  false,
+    "startUrl":  "/",
+    "iconUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/logo512.png",
+    "maskableIconUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/maskable-icon-512.png",
+    "splashScreenFadeOutDuration":  300,
+    "signingKey":  {
+                       "path":  "./android.keystore",
+                       "alias":  "android"
+                   },
+    "appVersionCode":  1,
+    "appVersionName":  "1.0.0",
+    "shortcuts":  [
+
+                  ],
+    "generatorApp":  "bubblewrap-cli",
+    "webManifestUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/manifest.webmanifest",
+    "fallbackType":  "customtabs",
+    "features":  {
+                     "locationDelegation":  {
+                                                "enabled":  true
+                                            }
+                 },
+    "alphaDependencies":  {
+                              "enabled":  false
+                          },
+    "enableSiteSettingsShortcut":  true,
+    "isChromeOSOnly":  false,
+    "isMetaQuest":  false,
+    "fullScopeUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/",
+    "minSdkVersion":  21,
+    "orientation":  "portrait-primary",
+    "fingerprints":  [
+
+                     ],
+    "additionalTrustedOrigins":  [
+
+                                 ],
+    "retainedBundles":  [
+
+                        ]
+}

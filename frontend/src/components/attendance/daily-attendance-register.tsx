@@ -16,6 +16,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import {
     Table,
     TableBody,
     TableCell,
@@ -24,6 +31,11 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { handleApiError } from '@/lib/toast';
+
+interface NamedOption {
+    id: number;
+    name: string;
+}
 
 interface SessionRow {
     id: number;
@@ -66,7 +78,9 @@ interface DailyPayload {
 
 function formatTime(value?: string | null) {
     if (!value) return '--:--';
-    return new Date(value).toLocaleTimeString('en-US', {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '--:--';
+    return d.toLocaleTimeString('en-US', {
         hour: '2-digit',
         minute: '2-digit',
         hour12: true,
@@ -109,14 +123,56 @@ function SourceBadges({ row }: { row: DailyRow }) {
 
 export default function DailyAttendanceRegister() {
     const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+    const [branchId, setBranchId] = useState('all');
+    const [designationId, setDesignationId] = useState('all');
+    const [branches, setBranches] = useState<NamedOption[]>([]);
+    const [designations, setDesignations] = useState<NamedOption[]>([]);
     const [data, setData] = useState<DailyPayload | null>(null);
     const [loading, setLoading] = useState(true);
     const [expanded, setExpanded] = useState<number | null>(null);
 
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [centersRes, desgRes] = await Promise.all([
+                    axios.get('/admin/settings/centers', { params: { compact: 1 } }),
+                    axios.get('/admin/designations/list', { params: { compact: 1 } }),
+                ]);
+                if (cancelled) return;
+                const centerList = centersRes.data?.data ?? centersRes.data ?? [];
+                const desgList = desgRes.data?.data ?? desgRes.data ?? [];
+                setBranches(
+                    (Array.isArray(centerList) ? centerList : []).map((c: NamedOption) => ({
+                        id: Number(c.id),
+                        name: c.name,
+                    })),
+                );
+                setDesignations(
+                    (Array.isArray(desgList) ? desgList : []).map((d: NamedOption) => ({
+                        id: Number(d.id),
+                        name: d.name,
+                    })),
+                );
+            } catch {
+                /* filters stay empty; register still works */
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await axios.get('/admin/reports/daily-attendance', { params: { date } });
+            const res = await axios.get('/admin/reports/daily-attendance', {
+                params: {
+                    date,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
+                    designation_id: designationId !== 'all' ? Number(designationId) : undefined,
+                },
+            });
             setData(res.data.data ?? null);
         } catch (error) {
             handleApiError(error);
@@ -124,7 +180,7 @@ export default function DailyAttendanceRegister() {
         } finally {
             setLoading(false);
         }
-    }, [date]);
+    }, [date, branchId, designationId]);
 
     useEffect(() => {
         void load();
@@ -151,15 +207,49 @@ export default function DailyAttendanceRegister() {
                             Combined view — biometric device punches and app/system clock-in on one register
                         </p>
                     </div>
-                    <div className="space-y-1">
-                        <Label htmlFor="daily_date">Date</Label>
-                        <Input
-                            id="daily_date"
-                            type="date"
-                            value={date}
-                            onChange={(e) => setDate(e.target.value)}
-                            className="w-[180px]"
-                        />
+                    <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-end">
+                        <div className="space-y-1">
+                            <Label htmlFor="daily_date">Date</Label>
+                            <Input
+                                id="daily_date"
+                                type="date"
+                                value={date}
+                                onChange={(e) => setDate(e.target.value)}
+                                className="w-full sm:w-[180px]"
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Branch</Label>
+                            <Select value={branchId} onValueChange={setBranchId}>
+                                <SelectTrigger className="w-full sm:w-[180px]">
+                                    <SelectValue placeholder="All branches" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All branches</SelectItem>
+                                    {branches.map((b) => (
+                                        <SelectItem key={b.id} value={String(b.id)}>
+                                            {b.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Designation</Label>
+                            <Select value={designationId} onValueChange={setDesignationId}>
+                                <SelectTrigger className="w-full sm:w-[180px]">
+                                    <SelectValue placeholder="All designations" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All designations</SelectItem>
+                                    {designations.map((d) => (
+                                        <SelectItem key={d.id} value={String(d.id)}>
+                                            {d.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </div>
                 </CardHeader>
                 <CardContent>

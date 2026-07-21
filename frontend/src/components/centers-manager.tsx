@@ -34,6 +34,9 @@ interface Center {
     city: string;
     state: string;
     pincode: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    geofence_radius_m?: number | null;
 }
 
 export default function CentersManager() {
@@ -50,6 +53,9 @@ export default function CentersManager() {
         city: '',
         state: '',
         pincode: '',
+        latitude: '',
+        longitude: '',
+        geofence_radius_m: '',
     });
 
     useEffect(() => {
@@ -79,6 +85,10 @@ export default function CentersManager() {
                 city: center.city,
                 state: center.state,
                 pincode: center.pincode,
+                latitude: center.latitude != null ? String(center.latitude) : '',
+                longitude: center.longitude != null ? String(center.longitude) : '',
+                geofence_radius_m:
+                    center.geofence_radius_m != null ? String(center.geofence_radius_m) : '',
             });
         } else {
             setEditingCenter(null);
@@ -90,6 +100,9 @@ export default function CentersManager() {
                 city: '',
                 state: '',
                 pincode: '',
+                latitude: '',
+                longitude: '',
+                geofence_radius_m: '',
             });
         }
         setIsDialogOpen(true);
@@ -106,6 +119,9 @@ export default function CentersManager() {
             city: '',
             state: '',
             pincode: '',
+            latitude: '',
+            longitude: '',
+            geofence_radius_m: '',
         });
     };
 
@@ -125,18 +141,26 @@ export default function CentersManager() {
                     'X-Requested-With': 'XMLHttpRequest',
                 },
             };
+            const payload = {
+                ...formData,
+                latitude: formData.latitude ? Number(formData.latitude) : null,
+                longitude: formData.longitude ? Number(formData.longitude) : null,
+                geofence_radius_m: formData.geofence_radius_m
+                    ? Number(formData.geofence_radius_m)
+                    : null,
+            };
 
             if (editingCenter) {
                 const response = await axios.put(
                     `/admin/settings/centers/${editingCenter.id}`,
-                    formData,
+                    payload,
                     config
                 );
                 handleApiResponse(response);
             } else {
                 const response = await axios.post(
                     '/admin/settings/centers',
-                    formData,
+                    payload,
                     config
                 );
                 handleApiResponse(response);
@@ -324,6 +348,38 @@ export default function CentersManager() {
                                 <div className="space-y-2">
                                     <Label htmlFor="pincode">Pincode *</Label>
                                     <Input id="pincode" name="pincode" value={formData.pincode} onChange={handleFormChange} placeholder="e.g., 682042" required />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="space-y-2">
+                                    <Label htmlFor="latitude">Latitude</Label>
+                                    <Input
+                                        id="latitude"
+                                        name="latitude"
+                                        value={formData.latitude}
+                                        onChange={handleFormChange}
+                                        placeholder="e.g., 9.9816"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="longitude">Longitude</Label>
+                                    <Input
+                                        id="longitude"
+                                        name="longitude"
+                                        value={formData.longitude}
+                                        onChange={handleFormChange}
+                                        placeholder="e.g., 76.2999"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="geofence_radius_m">Geofence (m)</Label>
+                                    <Input
+                                        id="geofence_radius_m"
+                                        name="geofence_radius_m"
+                                        value={formData.geofence_radius_m}
+                                        onChange={handleFormChange}
+                                        placeholder="e.g., 200"
+                                    />
                                 </div>
                             </div>
                         </div>

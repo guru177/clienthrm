@@ -148,7 +148,13 @@ export function CtcSalaryPanel({
                     setEsiApplicable(d.profile.esi_applicable ?? true);
                     setHasSavedCtc(true);
                     onCtcChange?.(true);
+                } else if (d.inferred_yearly_ctc && Number(d.inferred_yearly_ctc) > 0) {
+                    // Structure exists (e.g. Extra allowance) but CTC profile was never saved
+                    setYearlyCtc(String(d.inferred_yearly_ctc));
+                    setHasSavedCtc(false);
+                    onCtcChange?.(false);
                 } else {
+                    setYearlyCtc('');
                     setHasSavedCtc(false);
                     onCtcChange?.(false);
                 }
@@ -196,7 +202,7 @@ export function CtcSalaryPanel({
     };
 
     const handleClearCtc = async () => {
-        if (!(await confirm({ description: 'Remove CTC profile? Payroll will use manual salary structure instead.' }))) return;
+        if (!(await confirm({ description: 'Remove yearly CTC? You can then set monthly pay using Extra for this person.' }))) return;
         setClearing(true);
         try {
             const res = await axios.delete(`/admin/users/${userId}/ctc-profile`);
@@ -225,24 +231,31 @@ export function CtcSalaryPanel({
         <div className="space-y-4">
             <div className="grid gap-3">
                 <div>
-                    <Label>Yearly CTC (₹)</Label>
+                    <Label>Yearly package / CTC (₹)</Label>
                     <Input
                         type="number"
                         min="0"
                         step="1000"
                         value={yearlyCtc}
                         onChange={(e) => setYearlyCtc(e.target.value)}
-                        placeholder="e.g. 300000"
+                        placeholder="e.g. 400000"
                     />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                        {hasSavedCtc
+                            ? 'Yearly package currently saved for this employee.'
+                            : yearlyCtc
+                              ? 'Filled from their current monthly salary (× 12). Click Save CTC Structure to store it.'
+                              : 'Example: ₹4,00,000 per year → about ₹33,333 per month before deductions.'}
+                    </p>
                 </div>
                 <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                    <p className="text-xs font-semibold uppercase text-muted-foreground">Earnings split</p>
+                    <p className="text-xs font-semibold uppercase text-muted-foreground">How it splits</p>
                     <p className="mt-1 text-muted-foreground">{formatComponentSummary(earningsConfig)}</p>
                     <Link
                         to="/admin/salaries/components"
                         className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                     >
-                        Edit in Salary Components
+                        Change split rules
                         <ExternalLink className="h-3 w-3" />
                     </Link>
                 </div>

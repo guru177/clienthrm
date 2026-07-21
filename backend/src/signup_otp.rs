@@ -1,7 +1,5 @@
 use crate::db::Connection;
 use crate::models::organization::SignupRequest;
-use lettre::message::MultiPart;
-use lettre::Message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -213,21 +211,30 @@ pub async fn send_email_otp(to: &str, otp: &str) -> Result<(), String> {
     let (plain_body, html_body) =
         crate::signup_otp_email::render_signup_otp_email(otp, to);
 
-    let email_message = Message::builder()
-        .from(smtp.from_mailbox().map_err(|_| "Invalid SMTP_FROM".to_string())?)
-        .to(to.parse().map_err(|_| "Invalid email address".to_string())?)
-        .subject(format!(
-            "{} — Your verification code",
-            std::env::var("APP_NAME").unwrap_or_else(|_| "RAINTECH HRM".to_string())
-        ))
-        .multipart(MultiPart::alternative_plain_html(plain_body, html_body))
-        .map_err(|_| "Failed to build email".to_string())?;
+    let subject = format!(
+        "{} — Your verification code",
+        std::env::var("APP_NAME").unwrap_or_else(|_| "RAINTECH HRM".to_string())
+    );
+    let email_message = crate::tenant_email::build_html_email(
+        &smtp,
+        to,
+        &subject,
+        plain_body,
+        html_body,
+    )
+    .map_err(|e| e)?;
 
-    let result = actix_web::web::block(move || smtp.send(&email_message)).await;
+    let result = crate::tenant_email::send_built_email(smtp, email_message).await;
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(format!("Email task failed: {e}")),
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Debug/QA builds expose debug_otp — don't block signup when SMTP is flaky.
+            if signup_otp_debug_enabled() {
+                log::warn!("Signup OTP email send failed (debug mode continues): {e}");
+                return Ok(());
+            }
+            Err(e)
+        }
     }
 }
 
@@ -318,14 +325,24 @@ pub async fn send_whatsapp_otp(phone: &str, otp: &str) -> Result<(), String> {
     });
 
     let client = reqwest::Client::new();
-    let resp = client
+    let resp = match client
         .post("https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/")
         .header("authkey", &auth_key)
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("MSG91 request failed: {e}"))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let err = format!("MSG91 request failed: {e}");
+            if signup_otp_debug_enabled() {
+                log::warn!("Signup WhatsApp OTP failed (debug mode continues): {err}");
+                return Ok(());
+            }
+            return Err(err);
+        }
+    };
 
     if resp.status().is_success() {
         log::info!(
@@ -337,10 +354,19 @@ pub async fn send_whatsapp_otp(phone: &str, otp: &str) -> Result<(), String> {
     } else {
         let body = resp.text().await.unwrap_or_default();
         log::error!("MSG91 WhatsApp OTP failed: {body}");
-        Err(format!(
+        let err = format!(
             "MSG91 rejected WhatsApp OTP: {}",
-            if body.is_empty() { "unknown error".to_string() } else { body }
-        ))
+            if body.is_empty() {
+                "unknown error".to_string()
+            } else {
+                body
+            }
+        );
+        if signup_otp_debug_enabled() {
+            log::warn!("Signup WhatsApp OTP failed (debug mode continues): {err}");
+            return Ok(());
+        }
+        Err(err)
     }
 }
 

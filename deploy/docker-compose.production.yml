@@ -1,0 +1,187 @@
+# Production stack: HTTPS (Caddy) + Rust API + PostgreSQL
+
+# Backend image is built in GitHub Actions and pulled on deploy (see BACKEND_IMAGE in deploy/.env).
+
+# Caddy is built on the server from pre-built frontend/dist + platform/dist.
+
+#
+
+# Usage:
+
+#   cp deploy/.env.production.example deploy/.env
+
+#   # Edit deploy/.env with your domains, secrets, and BACKEND_IMAGE
+
+#   bash deploy/remote-deploy.sh
+
+#
+
+# Tenant app:    https://${TENANT_DOMAIN}
+
+# Platform app: https://${PLATFORM_DOMAIN}
+
+# Biometric:     http://<server-ip>:7788  (devices — no TLS)
+
+
+
+services:
+
+  postgres:
+
+    image: postgres:16-alpine
+
+    restart: unless-stopped
+
+    environment:
+
+      POSTGRES_DB: ${POSTGRES_DB:-hrm}
+
+      POSTGRES_USER: ${POSTGRES_USER:-hrm}
+
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}
+
+    volumes:
+
+      - pgdata:/var/lib/postgresql/data
+
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hrm} -d ${POSTGRES_DB:-hrm}"]
+
+      interval: 10s
+
+      timeout: 5s
+
+      retries: 5
+
+    networks:
+
+      - hrm
+
+
+
+  backend:
+
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in deploy/.env}
+
+    pull_policy: if_not_present
+
+    restart: unless-stopped
+
+    env_file:
+
+      - .env
+
+    environment:
+
+      HOST: 0.0.0.0
+
+      PORT: 3001
+
+      BIOMETRIC_PORT: 7788
+
+      BIO_PARK_TCP_PORT: 5010
+
+      DATABASE_URL: postgres://${POSTGRES_USER:-hrm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hrm}
+
+      STORAGE_PATH: /data/storage
+
+      RUST_LOG: info
+
+      CORS_ORIGINS: ${CORS_ORIGINS}
+
+    ports:
+
+      - "5010:5010"
+
+    volumes:
+
+      - hrm_data:/data
+
+    depends_on:
+
+      postgres:
+
+        condition: service_healthy
+
+    networks:
+
+      - hrm
+
+
+
+  caddy:
+
+    build:
+
+      context: ..
+
+      dockerfile: deploy/Dockerfile.caddy
+
+      args:
+
+        VITE_TENANT_APP_URL: ${VITE_TENANT_APP_URL:-https://app.example.com}
+
+        VITE_PLATFORM_APP_URL: ${VITE_PLATFORM_APP_URL:-https://platform.example.com}
+
+    restart: unless-stopped
+
+    ports:
+
+      - "80:80"
+
+      - "443:443"
+
+      - "7788:7788"
+
+    env_file:
+
+      - .env
+
+    environment:
+
+      TENANT_DOMAIN: ${TENANT_DOMAIN}
+
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN}
+
+      API_DOMAIN: ${API_DOMAIN}
+
+      ACME_EMAIL: ${ACME_EMAIL}
+
+    volumes:
+
+      - caddy_data:/data
+
+      - caddy_config:/config
+
+    depends_on:
+
+      - backend
+
+    networks:
+
+      - hrm
+
+
+
+volumes:
+
+  pgdata:
+
+  hrm_data:
+
+  caddy_data:
+
+  caddy_config:
+
+
+
+networks:
+
+  hrm:
+
+    driver: bridge
+
+

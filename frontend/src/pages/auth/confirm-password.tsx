@@ -52,7 +52,7 @@ export default function ConfirmPassword() {
                     type="submit"
                     className="w-full"
                     disabled={processing}
-                    data-test="confirm-password-button"
+                    data-testid="confirm-password-button"
                 >
                     {processing && <Spinner />}
                     Confirm password

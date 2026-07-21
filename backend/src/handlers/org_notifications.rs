@@ -132,21 +132,31 @@ pub async fn inbox(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     };
 
     let aud = audience_sql(claims.sub);
+    // Limit matching rows first, then join lookup tables — otherwise Postgres
+    // nested-loops 78k notifications × every department/designation (~seconds).
     let sql = format!(
         "SELECT n.id, n.title, n.body, n.severity, n.audience, n.target_id, n.image_url,
                 COALESCE(d.name, dg.name) AS target_name,
                 n.created_by, u.name AS created_by_name, n.created_at,
                 r.read_at
-         FROM org_notifications n
-         LEFT JOIN org_notification_reads r ON r.notification_id = n.id AND r.user_id = ?1
+         FROM (
+             SELECT n.id, n.title, n.body, n.severity, n.audience, n.target_id, n.image_url,
+                    n.created_by, n.created_at
+             FROM org_notifications n
+             LEFT JOIN org_notification_reads r
+               ON r.notification_id = n.id AND r.user_id = ?1
+             WHERE n.organization_id = ?2
+               AND {aud}
+               AND (r.dismissed_at IS NULL)
+             ORDER BY n.created_at DESC
+             LIMIT 50
+         ) n
+         LEFT JOIN org_notification_reads r
+           ON r.notification_id = n.id AND r.user_id = ?1
          LEFT JOIN users u ON u.id = n.created_by
          LEFT JOIN departments d ON n.audience = 'department' AND d.id = n.target_id
          LEFT JOIN designations dg ON n.audience = 'designation' AND dg.id = n.target_id
-         WHERE n.organization_id = ?2
-           AND {aud}
-           AND (r.dismissed_at IS NULL)
-         ORDER BY n.created_at DESC
-         LIMIT 50"
+         ORDER BY n.created_at DESC"
     );
 
     let stmt = match conn.prepare(&sql) {
@@ -210,13 +220,17 @@ pub async fn sent_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespon
                 COALESCE(d.name, dg.name) AS target_name,
                 n.created_by, u.name AS created_by_name, n.created_at,
                 NULL AS read_at
-         FROM org_notifications n
+         FROM (
+             SELECT id, title, body, severity, audience, target_id, image_url, created_by, created_at
+             FROM org_notifications
+             WHERE organization_id = ?1
+             ORDER BY created_at DESC
+             LIMIT 100
+         ) n
          LEFT JOIN users u ON u.id = n.created_by
          LEFT JOIN departments d ON n.audience = 'department' AND d.id = n.target_id
          LEFT JOIN designations dg ON n.audience = 'designation' AND dg.id = n.target_id
-         WHERE n.organization_id = ?1
-         ORDER BY n.created_at DESC
-         LIMIT 100",
+         ORDER BY n.created_at DESC",
     ) {
         Ok(s) => s,
         Err(e) => {

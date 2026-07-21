@@ -107,6 +107,34 @@ export default function View() {
         { label: workflow?.name ?? 'Workflow' },
     ];
 
+    const refreshExecutions = async (workflowId: number) => {
+        const executionsRes = await axios.get(`/admin/workflows/${workflowId}/executions`);
+        setExecutions(executionsRes.data.data ?? []);
+    };
+
+    const handleTest = async () => {
+        if (!workflow) return;
+        setLoading(true);
+        try {
+            const response = await axios.post(`/admin/workflows/${workflow.id}/test`, {
+                sample_context: {
+                    user_id: workflow.created_by?.id,
+                    dry_run: true,
+                    test: true,
+                },
+            });
+            handleApiResponse(response);
+            const refreshed = await axios.get(`/admin/workflows/${workflow.id}`);
+            const data = refreshed.data.data;
+            setWorkflow({ ...data, actions: actionsFromApi(data.actions) });
+            await refreshExecutions(workflow.id);
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleToggle = async () => {
         if (!workflow) return;
         setLoading(true);
@@ -206,6 +234,14 @@ export default function View() {
                                 Edit
                             </Button>
                         </Link>
+                        <Button
+                            variant="outline"
+                            onClick={handleTest}
+                            disabled={loading}
+                        >
+                            <PlayCircle className="mr-2 h-4 w-4" />
+                            Test with sample
+                        </Button>
                         <Button variant="outline" onClick={handleToggle} disabled={loading}>
                             {workflow.is_active ? (
                                 <>

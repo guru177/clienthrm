@@ -30,7 +30,8 @@ function AvatarImage({
     setFailed(false)
   }, [props.src])
 
-  if (failed || !props.src) {
+  const src = typeof props.src === "string" ? props.src.trim() : props.src
+  if (failed || !src) {
     return null
   }
   return (
@@ -42,6 +43,7 @@ function AvatarImage({
         onError?.(event)
       }}
       {...props}
+      src={src}
     />
   )
 }

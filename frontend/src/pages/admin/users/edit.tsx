@@ -3,6 +3,8 @@ import axios from '@/lib/axios';
 import { storageUrl } from '@/lib/storage-url';
 import { ArrowLeft, Banknote, Briefcase, Building2, Camera, IdCard, MapPin, Save, Trash2, Upload, Users } from 'lucide-react';
 import { useRef, useState, useEffect, useMemo } from 'react';
+import { useStorageSrc } from '@/hooks/use-storage-src';
+import { invalidateStorageBlobUrl } from '@/lib/storage-url';
 import { useParams } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
@@ -10,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import {
     Select,
@@ -22,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { SalaryTabsPanel } from '@/components/salary-tabs-panel';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useAuth } from '@/contexts/AuthContext';
 
 const EMPLOYMENT_TYPES = [
     { value: 'full_time', label: 'Full-time' },
@@ -99,6 +103,11 @@ interface User {
     esi_number?: string;
     pf_number?: string;
     aadhar_number?: string;
+    emergency_contact?: string;
+    doc_aadhaar?: string;
+    doc_pan?: string;
+    doc_id_proof?: string;
+    doc_other?: string;
 }
 
 interface Center {
@@ -120,13 +129,20 @@ interface EditUserPageProps {
 export default function EditUserPage() {
     const navigate = useNavigate();
     const { id } = useParams();
+    const { canAccessAllCenters, hasPermission, user: currentUser } = useAuth();
     const isSuperAdmin = false; // managed via Settings > Branches
+
+    // Employees editing their own profile can only change personal fields (name, phone, photo, etc.)
+    // Admin-only fields: role, department, designation, branch, salary, status, employment type, employee_id
+    const isEditingSelf = !!currentUser && !!id && String(currentUser.id) === String(id);
+    const canEditAdminFields = hasPermission('edit-users');
 
     const [user, setUser] = useState<User | null>(null);
     const [roles, setRoles] = useState<Role[]>([]);
     const [departments, setDepartments] = useState<Department[]>([]);
     const [designations, setDesignations] = useState<Designation[]>([]);
     const [centers, setCenters] = useState<Center[]>([]);
+    const [managedCenterIds, setManagedCenterIds] = useState<number[]>([]);
     const [loading, setLoading] = useState(true);
 
     const [formData, setFormData] = useState({
@@ -160,17 +176,44 @@ export default function EditUserPage() {
         esi_number: '',
         pf_number: '',
         aadhar_number: '',
+        emergency_contact: '',
         is_external: false,
+        hr_managed: false,
+        enable_login_password: '',
     });
     const [photoFile, setPhotoFile] = useState<File | null>(null);
+    // photoPreview: local blob URL (newly selected/webcam file)
+    // savedPhotoPath: the server-side path — use useStorageSrc for authenticated fetch
     const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+    const [savedPhotoPath, setSavedPhotoPath] = useState<string | null>(null);
+    const savedPhotoSrc = useStorageSrc(savedPhotoPath);
+    // Displayed src: local preview takes priority, then authenticated blob from server
+    const displayedPhotoSrc = photoPreview ?? savedPhotoSrc ?? null;
     const [removePhoto, setRemovePhoto] = useState(false);
+    const [docFiles, setDocFiles] = useState<{
+        doc_aadhaar: File | null;
+        doc_pan: File | null;
+        doc_id_proof: File | null;
+        doc_other: File | null;
+    }>({
+        doc_aadhaar: null,
+        doc_pan: null,
+        doc_id_proof: null,
+        doc_other: null,
+    });
+    const [existingDocs, setExistingDocs] = useState<{
+        doc_aadhaar?: string | null;
+        doc_pan?: string | null;
+        doc_id_proof?: string | null;
+        doc_other?: string | null;
+    }>({});
     const fileInputRef = useRef<HTMLInputElement>(null);
     const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
     const webcamStreamRef = useRef<MediaStream | null>(null);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [initialHrManaged, setInitialHrManaged] = useState(false);
     const [webcamOpen, setWebcamOpen] = useState(false);
     const [webcamStarting, setWebcamStarting] = useState(false);
     const [webcamError, setWebcamError] = useState<string | null>(null);
@@ -183,23 +226,26 @@ export default function EditUserPage() {
     }, [departments, formData.work_location]);
 
     useEffect(() => {
+        if (!id) return;
+        let cancelled = false;
+
         const fetchData = async () => {
+            setLoading(true);
             try {
-                const [userRes, rolesRes, deptsRes, desigsRes, centersRes] = await Promise.all([
-                    axios.get(`/admin/users/${id}`),
+                // User first so the form can paint; lookups in parallel after / with it.
+                const userPromise = axios.get(`/admin/users/${id}`);
+                const lookupsPromise = Promise.all([
                     axios.get('/admin/roles/list'),
-                    axios.get('/admin/departments/list'),
-                    axios.get('/admin/designations/list'),
-                    axios.get('/admin/settings/centers')
+                    axios.get('/admin/departments/list', { params: { compact: 1 } }),
+                    axios.get('/admin/designations/list', { params: { compact: 1 } }),
+                    axios.get('/admin/settings/centers', { params: { compact: 1 } }),
                 ]);
+
+                const userRes = await userPromise;
+                if (cancelled) return;
 
                 const userData = userRes.data.data;
                 setUser(userData);
-                setRoles(rolesRes.data.data);
-                setDepartments(deptsRes.data.data);
-                setDesignations(desigsRes.data.data);
-                setCenters(centersRes.data.data);
-
                 setFormData({
                     name: userData.name,
                     email: userData.email,
@@ -231,22 +277,53 @@ export default function EditUserPage() {
                     esi_number: userData.esi_number || '',
                     pf_number: userData.pf_number || '',
                     aadhar_number: userData.aadhar_number || '',
+                    emergency_contact: userData.emergency_contact || '',
                     is_external: !!userData.is_external,
+                    hr_managed: !!userData.hr_managed,
+                    enable_login_password: '',
                 });
-
+                setInitialHrManaged(!!userData.hr_managed);
                 if (userData.photo) {
-                    setPhotoPreview(storageUrl(userData.photo));
+                    setSavedPhotoPath(userData.photo);
                 }
+                setExistingDocs({
+                    doc_aadhaar: userData.doc_aadhaar || null,
+                    doc_pan: userData.doc_pan || null,
+                    doc_id_proof: userData.doc_id_proof || null,
+                    doc_other: userData.doc_other || null,
+                });
+                setDocFiles({
+                    doc_aadhaar: null,
+                    doc_pan: null,
+                    doc_id_proof: null,
+                    doc_other: null,
+                });
+                setManagedCenterIds(
+                    Array.isArray(userData.managed_center_ids)
+                        ? userData.managed_center_ids.map((n: number) => Number(n)).filter((n: number) => n > 0)
+                        : [],
+                );
+                setLoading(false);
+
+                const [rolesRes, deptsRes, desigsRes, centersRes] = await lookupsPromise;
+                if (cancelled) return;
+                setRoles(rolesRes.data.data);
+                setDepartments(deptsRes.data.data);
+                setDesignations(desigsRes.data.data);
+                setCenters(centersRes.data.data);
             } catch (error) {
+                if (cancelled) return;
                 console.error('Failed to fetch data:', error);
                 handleApiError(error);
                 navigate('/admin/users');
-            } finally {
                 setLoading(false);
             }
         };
 
-        if (id) fetchData();
+        void fetchData();
+        return () => {
+            cancelled = true;
+        };
     }, [id, navigate]);
 
     useEffect(() => {
@@ -274,6 +351,7 @@ export default function EditUserPage() {
     const handleRemovePhoto = () => {
         setPhotoFile(null);
         setPhotoPreview(null);
+        setSavedPhotoPath(null);
         setRemovePhoto(true);
         setWebcamError(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -382,10 +460,14 @@ export default function EditUserPage() {
                 esi_number: formData.esi_number,
                 pf_number: formData.pf_number,
                 aadhar_number: formData.aadhar_number,
-                is_external: formData.is_external ? '1' : '0',
+                emergency_contact: formData.emergency_contact,
+                is_external: formData.is_external,
+                hr_managed: formData.hr_managed,
             };
 
-            if (photoFile || removePhoto) {
+            const hasDocUploads = Object.values(docFiles).some(Boolean);
+
+            if (photoFile || removePhoto || hasDocUploads) {
                 const fd = new FormData();
                 fd.append('name', formData.name);
                 fd.append('email', formData.email);
@@ -401,13 +483,32 @@ export default function EditUserPage() {
                 fd.append('ifsc_code', formData.ifsc_code);
                 fd.append('account_type', formData.account_type);
                 fd.append('roles', JSON.stringify(formData.roles));
-                Object.entries(extendedFields).forEach(([key, value]) => fd.append(key, value || ''));
+                for (const cid of managedCenterIds) {
+                    fd.append('managed_center_ids[]', String(cid));
+                }
+                if (managedCenterIds.length === 0) {
+                    fd.append('managed_center_ids', '');
+                }
+                Object.entries(extendedFields).forEach(([key, value]) => {
+                    if (typeof value === 'boolean') {
+                        fd.append(key, value ? '1' : '0');
+                    } else {
+                        fd.append(key, value != null ? String(value) : '');
+                    }
+                });
                 if (photoFile) fd.append('photo', photoFile);
                 if (removePhoto) fd.append('remove_photo', '1');
+                if (initialHrManaged && !formData.hr_managed && formData.enable_login_password) {
+                    fd.append('password', formData.enable_login_password);
+                }
+                (Object.keys(docFiles) as Array<keyof typeof docFiles>).forEach((key) => {
+                    const file = docFiles[key];
+                    if (file) fd.append(key, file);
+                });
 
                 response = await axios.post(`/admin/users/${user.id}`, fd);
             } else {
-                const payload = {
+                const payload: Record<string, unknown> = {
                     name: formData.name,
                     email: formData.email,
                     employee_id: formData.employee_id,
@@ -422,8 +523,12 @@ export default function EditUserPage() {
                     ifsc_code: formData.ifsc_code,
                     account_type: formData.account_type,
                     roles: formData.roles,
+                    managed_center_ids: managedCenterIds,
                     ...extendedFields,
                 };
+                if (initialHrManaged && !formData.hr_managed) {
+                    payload.password = formData.enable_login_password;
+                }
                 response = await axios.put(`/admin/users/${user.id}`, payload);
             }
 
@@ -431,16 +536,39 @@ export default function EditUserPage() {
 
             if (response.data?.data?.photo) {
                 const photo = response.data.data.photo as string;
-                setPhotoPreview(storageUrl(photo));
+                // Invalidate old blob cache so useStorageSrc re-fetches the new image
+                if (savedPhotoPath) invalidateStorageBlobUrl(savedPhotoPath);
+                setSavedPhotoPath(photo);
+                setPhotoPreview(null);
                 setPhotoFile(null);
                 setRemovePhoto(false);
             } else if (removePhoto) {
+                if (savedPhotoPath) invalidateStorageBlobUrl(savedPhotoPath);
+                setSavedPhotoPath(null);
                 setPhotoPreview(null);
                 setPhotoFile(null);
                 setRemovePhoto(false);
             }
 
+            const savedUser = response.data?.data;
+            if (savedUser) {
+                setExistingDocs({
+                    doc_aadhaar: savedUser.doc_aadhaar || null,
+                    doc_pan: savedUser.doc_pan || null,
+                    doc_id_proof: savedUser.doc_id_proof || null,
+                    doc_other: savedUser.doc_other || null,
+                });
+                setDocFiles({
+                    doc_aadhaar: null,
+                    doc_pan: null,
+                    doc_id_proof: null,
+                    doc_other: null,
+                });
+            }
+
             setSaved(true);
+            setInitialHrManaged(formData.hr_managed);
+            setFormData((prev) => ({ ...prev, enable_login_password: '' }));
             setTimeout(() => setSaved(false), 3000);
         } catch (error: any) {
             if (error.response?.data?.errors) {
@@ -515,6 +643,9 @@ export default function EditUserPage() {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
+                        {formData.hr_managed ? (
+                            <Badge variant="outline">HR-managed</Badge>
+                        ) : null}
                         <Badge variant={formData.status === 'active' ? 'default' : 'secondary'}>
                             {formData.status}
                         </Badge>
@@ -534,9 +665,9 @@ export default function EditUserPage() {
                             <div className="flex items-center gap-6">
                                 <div className="relative group">
                                     <div className="h-24 w-24 rounded-full overflow-hidden border-2 border-muted bg-muted flex items-center justify-center">
-                                        {photoPreview ? (
+                                        {displayedPhotoSrc ? (
                                             <img
-                                                src={photoPreview}
+                                                src={displayedPhotoSrc}
                                                 alt={formData.name}
                                                 className="h-full w-full object-cover"
                                             />
@@ -568,7 +699,7 @@ export default function EditUserPage() {
                                             onClick={() => fileInputRef.current?.click()}
                                         >
                                             <Upload className="mr-2 h-4 w-4" />
-                                            {photoPreview ? 'Change Photo' : 'Upload Photo'}
+                                            {displayedPhotoSrc ? 'Change Photo' : 'Upload Photo'}
                                         </Button>
                                         <Button
                                             type="button"
@@ -580,7 +711,7 @@ export default function EditUserPage() {
                                             <Camera className="mr-2 h-4 w-4" />
                                             {webcamStarting ? 'Opening...' : 'Open Webcam'}
                                         </Button>
-                                        {photoPreview && (
+                                        {displayedPhotoSrc && (
                                             <Button
                                                 type="button"
                                                 variant="outline"
@@ -658,7 +789,10 @@ export default function EditUserPage() {
 
                                 <div className="space-y-2">
                                     <Label htmlFor="email">
-                                        Email <span className="text-destructive">*</span>
+                                        Email
+                                        {!formData.hr_managed ? (
+                                            <span className="text-destructive"> *</span>
+                                        ) : null}
                                     </Label>
                                     <Input
                                         id="email"
@@ -667,8 +801,18 @@ export default function EditUserPage() {
                                         onChange={(e) =>
                                             setFormData({ ...formData, email: e.target.value })
                                         }
-                                        placeholder="user@example.com"
+                                        placeholder={
+                                            formData.hr_managed
+                                                ? 'Internal placeholder — not used for login'
+                                                : 'user@example.com'
+                                        }
+                                        disabled={formData.hr_managed && !!formData.email?.endsWith('@hr-managed.local')}
                                     />
+                                    {formData.hr_managed ? (
+                                        <p className="text-xs text-muted-foreground">
+                                            Uncheck HR-managed below and set a real email + password to enable app login.
+                                        </p>
+                                    ) : null}
                                     {errors.email && (
                                         <p className="text-sm text-destructive">{errors.email[0]}</p>
                                     )}
@@ -683,6 +827,7 @@ export default function EditUserPage() {
                                             setFormData({ ...formData, employee_id: e.target.value })
                                         }
                                         placeholder="EMP001"
+                                        disabled={!canEditAdminFields}
                                     />
                                     {errors.employee_id && (
                                         <p className="text-sm text-destructive">{errors.employee_id[0]}</p>
@@ -711,6 +856,7 @@ export default function EditUserPage() {
                                         onValueChange={(value) =>
                                             setFormData({ ...formData, status: value })
                                         }
+                                        disabled={!canEditAdminFields}
                                     >
                                         <SelectTrigger id="status">
                                             <SelectValue placeholder="Select status" />
@@ -725,6 +871,48 @@ export default function EditUserPage() {
                                         <p className="text-sm text-destructive">
                                             {errors.status[0]}
                                         </p>
+                                    )}
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="work_location">Branch</Label>
+                                    {centers.length === 0 ? (
+                                        <p className="text-sm text-muted-foreground italic py-2">
+                                            No branches configured. Add branches under Branches in the sidebar.
+                                        </p>
+                                    ) : (
+                                        <Select
+                                            value={formData.work_location as string}
+                                            onValueChange={(v) =>
+                                                setFormData((prev) => {
+                                                    const next = { ...prev, work_location: v };
+                                                    const validDept = departments.some(
+                                                        (d) =>
+                                                            d.id === Number(prev.department_id) &&
+                                                            String(d.center_id ?? '') === v,
+                                                    );
+                                                    if (!validDept) {
+                                                        next.department_id = '';
+                                                    }
+                                                    return next;
+                                                })
+                                            }
+                                            disabled={!canEditAdminFields}
+                                        >
+                                            <SelectTrigger id="work_location">
+                                                <SelectValue placeholder="Select branch" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {centers.map((center) => (
+                                                    <SelectItem key={center.id} value={String(center.id)}>
+                                                        {center.name}{center.city ? ` — ${center.city}` : ''}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    )}
+                                    {errors.work_location && (
+                                        <p className="text-sm text-destructive">{errors.work_location[0]}</p>
                                     )}
                                 </div>
 
@@ -747,6 +935,7 @@ export default function EditUserPage() {
                                                     department_id: value ? parseInt(value) : '',
                                                 })
                                             }
+                                            disabled={!canEditAdminFields}
                                         >
                                             <SelectTrigger id="department">
                                                 <SelectValue placeholder="Select department" />
@@ -777,6 +966,7 @@ export default function EditUserPage() {
                                                 designation_id: value ? parseInt(value) : '',
                                             })
                                         }
+                                        disabled={!canEditAdminFields}
                                     >
                                         <SelectTrigger id="designation">
                                             <SelectValue placeholder="Select designation" />
@@ -851,6 +1041,20 @@ export default function EditUserPage() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="space-y-2">
+                                <Label htmlFor="emergency_contact">Emergency Contact No</Label>
+                                <Input
+                                    id="emergency_contact"
+                                    value={formData.emergency_contact}
+                                    onChange={(e) =>
+                                        setFormData({ ...formData, emergency_contact: e.target.value })
+                                    }
+                                    placeholder="Emergency phone number"
+                                />
+                                {errors.emergency_contact && (
+                                    <p className="text-sm text-destructive">{errors.emergency_contact[0]}</p>
+                                )}
+                            </div>
+                            <div className="space-y-2">
                                 <Label htmlFor="address">Address</Label>
                                 <Textarea
                                     id="address"
@@ -897,6 +1101,66 @@ export default function EditUserPage() {
                         </CardContent>
                     </Card>
 
+                    {/* Documents */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                                <IdCard className="h-5 w-5" />
+                                Documents
+                            </CardTitle>
+                            <CardDescription>
+                                Upload identity documents (PDF, JPG, or PNG, max 10MB each)
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                {(
+                                    [
+                                        { key: 'doc_aadhaar', label: 'Aadhaar document' },
+                                        { key: 'doc_pan', label: 'PAN document' },
+                                        { key: 'doc_id_proof', label: 'ID proof' },
+                                        { key: 'doc_other', label: 'Other document' },
+                                    ] as const
+                                ).map(({ key, label }) => {
+                                    const existing = existingDocs[key];
+                                    const selected = docFiles[key];
+                                    return (
+                                        <div key={key} className="space-y-2 rounded-lg border p-3">
+                                            <Label htmlFor={key}>{label}</Label>
+                                            {existing && !selected && (
+                                                <p className="text-xs text-muted-foreground">
+                                                    Current:{' '}
+                                                    <a
+                                                        href={storageUrl(existing)}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="text-primary underline-offset-4 hover:underline"
+                                                    >
+                                                        View uploaded file
+                                                    </a>
+                                                </p>
+                                            )}
+                                            {selected && (
+                                                <p className="text-xs text-muted-foreground">
+                                                    Selected: {selected.name}
+                                                </p>
+                                            )}
+                                            <Input
+                                                id={key}
+                                                type="file"
+                                                accept=".pdf,image/png,image/jpeg,image/jpg,.png,.jpg,.jpeg"
+                                                onChange={(e) => {
+                                                    const file = e.target.files?.[0] ?? null;
+                                                    setDocFiles((prev) => ({ ...prev, [key]: file }));
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </CardContent>
+                    </Card>
+
                     {/* Employment Details */}
                     <Card>
                         <CardHeader>
@@ -915,6 +1179,7 @@ export default function EditUserPage() {
                                         onValueChange={(v) =>
                                             setFormData({ ...formData, employment_type: v === 'none' ? '' : v })
                                         }
+                                        disabled={!canEditAdminFields}
                                     >
                                         <SelectTrigger id="employment_type">
                                             <SelectValue placeholder="Select type" />
@@ -943,47 +1208,40 @@ export default function EditUserPage() {
                                     )}
                                 </div>
 
-                                {/* Branch Dropdown */}
-                                <div className="space-y-2">
-                                    <Label htmlFor="work_location">Branch</Label>
-                                    {centers.length === 0 ? (
-                                        <p className="text-sm text-muted-foreground italic py-2">
-                                            No branches configured. Add branches under Branches in the sidebar.
+                                {/* Branch lives under Basic Information; managed branches stay here */}
+                                {canAccessAllCenters() && centers.length > 0 && (
+                                    <div className="space-y-2 md:col-span-2">
+                                        <Label>Managed branches (branch RBAC)</Label>
+                                        <p className="text-xs text-muted-foreground">
+                                            Branches this user may administer. Leave empty to use their work branch only.
+                                            Org admins with Access All Centers ignore this list.
                                         </p>
-                                    ) : (
-                                        <Select
-                                            value={formData.work_location as string}
-                                            onValueChange={(v) =>
-                                                setFormData((prev) => {
-                                                    const next = { ...prev, work_location: v };
-                                                    const validDept = departments.some(
-                                                        (d) =>
-                                                            d.id === Number(prev.department_id) &&
-                                                            String(d.center_id ?? '') === v,
-                                                    );
-                                                    if (!validDept) {
-                                                        next.department_id = '';
-                                                    }
-                                                    return next;
-                                                })
-                                            }
-                                        >
-                                            <SelectTrigger id="work_location">
-                                                <SelectValue placeholder="Select branch" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {centers.map((center) => (
-                                                    <SelectItem key={center.id} value={String(center.id)}>
-                                                        {center.name}{center.city ? ` — ${center.city}` : ''}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    )}
-                                    {errors.work_location && (
-                                        <p className="text-sm text-destructive">{errors.work_location[0]}</p>
-                                    )}
-                                </div>
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                            {centers.map((center) => {
+                                                const checked = managedCenterIds.includes(Number(center.id));
+                                                return (
+                                                    <label
+                                                        key={center.id}
+                                                        className="flex items-center gap-2 text-sm"
+                                                    >
+                                                        <Checkbox
+                                                            checked={checked}
+                                                            onCheckedChange={(v) => {
+                                                                const id = Number(center.id);
+                                                                setManagedCenterIds((prev) =>
+                                                                    v
+                                                                        ? [...prev, id]
+                                                                        : prev.filter((x) => x !== id),
+                                                                );
+                                                            }}
+                                                        />
+                                                        {center.name}
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="space-y-2">
                                     <Label htmlFor="work_state">Work State (PT)</Label>
@@ -1159,8 +1417,8 @@ export default function EditUserPage() {
                         </CardContent>
                     </Card>
 
-                    {/* Roles Assignment */}
-                    <Card>
+                    {/* Roles Assignment — admin only */}
+                    {canEditAdminFields && <Card>
                         <CardHeader>
                             <div className="flex items-center justify-between">
                                 <div>
@@ -1218,6 +1476,49 @@ export default function EditUserPage() {
                                     </p>
                                 </div>
                             </div>
+                            <div className="flex items-start space-x-2 pt-4 border-t">
+                                <Checkbox
+                                    id="hr_managed"
+                                    checked={formData.hr_managed}
+                                    onCheckedChange={(checked) =>
+                                        setFormData({
+                                            ...formData,
+                                            hr_managed: !!checked,
+                                            enable_login_password: '',
+                                        })
+                                    }
+                                />
+                                <div className="grid gap-1.5 leading-none flex-1">
+                                    <Label htmlFor="hr_managed" className="font-medium">
+                                        HR-managed (will not use the app)
+                                    </Label>
+                                    <p className="text-sm text-muted-foreground">
+                                        Attendance and leave are handled by HR. No employee login.
+                                    </p>
+                                    {initialHrManaged && !formData.hr_managed ? (
+                                        <div className="mt-3 space-y-2 rounded-md border bg-muted/40 p-3">
+                                            <p className="text-sm font-medium">Enable app login</p>
+                                            <p className="text-xs text-muted-foreground">
+                                                Set a real work email above and a temporary password.
+                                            </p>
+                                            <div className="space-y-1">
+                                                <Label htmlFor="enable_login_password">New password</Label>
+                                                <PasswordInput
+                                                    id="enable_login_password"
+                                                    value={formData.enable_login_password}
+                                                    onChange={(e) =>
+                                                        setFormData({
+                                                            ...formData,
+                                                            enable_login_password: e.target.value,
+                                                        })
+                                                    }
+                                                    placeholder="Min 8 characters"
+                                                />
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
                             {errors.roles && (
                                 <p className="text-sm text-destructive">{errors.roles[0]}</p>
                             )}
@@ -1227,21 +1528,23 @@ export default function EditUserPage() {
                                 </p>
                             )}
                         </CardContent>
-                    </Card>
+                    </Card>}
 
-                    {/* Salary Structure */}
-                    <Card>
+                    {/* Pay setup — admin only */}
+                    {canEditAdminFields && <Card>
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                                 <Banknote className="h-5 w-5" />
-                                Salary Structure
+                                Pay setup
                             </CardTitle>
-                            <CardDescription>Monthly compensation from CTC split or manual components</CardDescription>
+                            <CardDescription>
+                                Monthly salary, extras for this person, and one-time bonus
+                            </CardDescription>
                         </CardHeader>
                         <CardContent>
                             <SalaryTabsPanel userId={user.id} />
                         </CardContent>
-                    </Card>
+                    </Card>}
 
                     {/* Actions */}
                     <div className="flex items-center justify-between gap-3">

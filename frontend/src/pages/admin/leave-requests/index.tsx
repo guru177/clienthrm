@@ -69,31 +69,33 @@ export default function LeaveRequestsPage() {
         <AppLayout breadcrumbs={breadcrumbs}>
             
 
-            <div className="space-y-6">
+            <div className="min-w-0 max-w-full space-y-6">
                 {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                            <FileText className="h-8 w-8 text-primary" />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                        <h1 className="flex items-center gap-2 break-words text-2xl font-bold tracking-tight sm:text-3xl">
+                            <FileText className="h-7 w-7 shrink-0 text-primary sm:h-8 sm:w-8" />
                             Leave Requests
                         </h1>
-                        <p className="text-muted-foreground mt-1">
-                            Submit and manage your leave requests
+                        <p className="text-muted-foreground mt-1 break-words">
+                            Submit and manage leave requests. For staff who don’t log in, HR can create and
+                            approve leave here.
                         </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                         {(hasPermission('manage-leave-requests')
                             || hasPermission('approve-leave-requests')
                             || hasPermission('reject-leave-requests')) && (
                             <Button
                                 variant="outline"
+                                className="min-h-11 w-full sm:w-auto"
                                 onClick={() => navigate('/admin/leave-requests/manage')}
                             >
                                 Manage Requests
                             </Button>
                         )}
                         {hasPermission('create-leave-requests') && (
-                        <Button onClick={() => setShowForm(true)}>
+                        <Button className="min-h-11 w-full sm:w-auto" onClick={() => setShowForm(true)}>
                             <Plus className="h-4 w-4" />
                             New Leave Request
                         </Button>

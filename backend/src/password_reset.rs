@@ -2,9 +2,6 @@
 #![allow(dead_code)]
 
 use crate::db::Connection;
-use lettre::message::MultiPart;
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, SmtpTransport, Transport};
 use uuid::Uuid;
 
 const TOKEN_TTL_SECS: i64 = 3600;
@@ -113,60 +110,33 @@ pub async fn send_reset_email(
     reset_url: &str,
     org_name: &str,
 ) -> Result<(), String> {
-    let smtp_host = std::env::var("SMTP_HOST").unwrap_or_default();
-    if smtp_host.is_empty() {
-        if password_reset_debug_enabled() {
-            log::info!(
-                "Password reset link for {} ({}): {}",
-                to,
-                org_name,
-                reset_url
-            );
-            return Ok(());
+    let smtp = match crate::smtp_config::resolve_from_env() {
+        Some(c) => c,
+        None => {
+            if password_reset_debug_enabled() {
+                log::info!(
+                    "Password reset link for {} ({}): {}",
+                    to,
+                    org_name,
+                    reset_url
+                );
+                return Ok(());
+            }
+            return Err("Email is not configured on this server".into());
         }
-        return Err("Email is not configured on this server".into());
-    }
-
-    let smtp_user = std::env::var("SMTP_USER").unwrap_or_default();
-    let smtp_pass = std::env::var("SMTP_PASSWORD")
-        .or_else(|_| std::env::var("SMTP_PASS"))
-        .unwrap_or_default();
-    let smtp_port = std::env::var("SMTP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(587);
-    let smtp_from = std::env::var("SMTP_FROM")
-        .unwrap_or_else(|_| smtp_user.clone())
-        .trim()
-        .to_string();
-    let from_addr = if smtp_from.is_empty() {
-        "no-reply@hrm.local".to_string()
-    } else {
-        smtp_from
     };
 
     let app_name = std::env::var("APP_NAME").unwrap_or_else(|_| "RAINTECH HRM".to_string());
     let (plain, html) =
         crate::password_reset_email::render_password_reset_email(reset_url, to, org_name);
 
-    let email_message = Message::builder()
-        .from(from_addr.parse().map_err(|_| "Invalid SMTP_FROM".to_string())?)
-        .to(to.parse().map_err(|_| "Invalid recipient email".to_string())?)
-        .subject(format!("{app_name} — Reset your password"))
-        .multipart(MultiPart::alternative_plain_html(plain, html))
-        .map_err(|e| format!("Email build failed: {e}"))?;
+    let email_message = crate::tenant_email::build_html_email(
+        &smtp,
+        to,
+        &format!("{app_name} — Reset your password"),
+        plain,
+        html,
+    )?;
 
-    let creds = Credentials::new(smtp_user, smtp_pass);
-    let mailer = SmtpTransport::starttls_relay(&smtp_host)
-        .map_err(|e| format!("SMTP relay failed: {e}"))?
-        .credentials(creds)
-        .port(smtp_port)
-        .build();
-
-    let result = actix_web::web::block(move || mailer.send(&email_message)).await;
-    match result {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(format!("Failed to send email: {e}")),
-        Err(e) => Err(format!("Email task failed: {e}")),
-    }
+    crate::tenant_email::send_built_email(smtp, email_message).await
 }

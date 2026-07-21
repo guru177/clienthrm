@@ -471,7 +471,7 @@ export default function Index() {
                     </div>
                     {currentView === 'list' && (
                         <Select value={statusFilter} onValueChange={setStatusFilter}>
-                            <SelectTrigger className="w-[150px]">
+                            <SelectTrigger className="w-full md:w-[150px]">
                                 <SelectValue placeholder="Status" />
                             </SelectTrigger>
                             <SelectContent>
@@ -483,7 +483,7 @@ export default function Index() {
                         </Select>
                     )}
                     <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-                        <SelectTrigger className="w-[150px]">
+                        <SelectTrigger className="w-full md:w-[150px]">
                             <SelectValue placeholder="Priority" />
                         </SelectTrigger>
                         <SelectContent>

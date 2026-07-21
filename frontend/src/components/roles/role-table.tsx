@@ -199,19 +199,6 @@ export default function RoleTable({
                     <TableHeader>
                         <TableRow>
                             <TableHead
-                                className="hover:bg-muted/50 cursor-pointer select-none w-[80px]"
-                                onClick={() => handleSort('id')}
-                            >
-                                <div className="flex items-center gap-1">
-                                    ID
-                                    {sortBy === 'id' && (
-                                        <span className="text-xs">
-                                            {sortOrder === 'asc' ? '↑' : '↓'}
-                                        </span>
-                                    )}
-                                </div>
-                            </TableHead>
-                            <TableHead
                                 className="hover:bg-muted/50 cursor-pointer select-none"
                                 onClick={() => handleSort('name')}
                             >
@@ -236,7 +223,7 @@ export default function RoleTable({
                         {tableLoading || rolesLoading ? (
                             <TableRow>
                                 <TableCell
-                                    colSpan={6}
+                                    colSpan={5}
                                     className="text-center py-8 text-muted-foreground"
                                 >
                                     <div className="flex items-center justify-center gap-2">
@@ -248,7 +235,7 @@ export default function RoleTable({
                         ) : paginatedRoles.length === 0 ? (
                             <TableRow>
                                 <TableCell
-                                    colSpan={6}
+                                    colSpan={5}
                                     className="text-center py-8 text-muted-foreground"
                                 >
                                     No roles found
@@ -257,9 +244,6 @@ export default function RoleTable({
                         ) : (
                             paginatedRoles.map((role) => (
                                 <TableRow key={role.id}>
-                                    <TableCell className="font-medium">
-                                        {role.id}
-                                    </TableCell>
                                     <TableCell>
                                         <div className="flex items-center gap-2">
                                             <Shield className="h-4 w-4 text-muted-foreground" />

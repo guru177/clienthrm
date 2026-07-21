@@ -339,7 +339,8 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
 
-/// GET /api/platform/ip-tracking — live company admins with app open (last 15 min)
+/// GET /api/platform/ip-tracking — live + last-known user locations for monitoring
+/// Active = heartbeat in last 15 minutes; inactive = last known within 30 days.
 pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let _claims = match get_platform_claims_from_request(&req) {
         Ok(c) => c,
@@ -354,15 +355,15 @@ pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> Htt
     let stmt = match conn.prepare(
         "SELECT u.id, u.name, u.email, o.name AS organization_name, o.slug AS organization_slug,
                 p.ip_address, p.latitude, p.longitude, p.city, p.region, p.country,
-                p.accuracy_meters, p.last_active_at
+                p.accuracy_meters, p.last_active_at,
+                CASE WHEN p.last_active_at >= datetime('now', '-15 minutes') THEN 1 ELSE 0 END AS is_active
          FROM user_presence p
          JOIN users u ON u.id = p.user_id
          JOIN organizations o ON o.id = p.organization_id
-         WHERE u.is_super_admin = 1
-           AND u.deleted_at IS NULL
+         WHERE u.deleted_at IS NULL
            AND o.status != 'deleted'
-           AND p.last_active_at >= datetime('now', '-15 minutes')
-         ORDER BY p.last_active_at DESC",
+           AND p.last_active_at >= datetime('now', '-30 days')
+         ORDER BY is_active DESC, p.last_active_at DESC",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -375,6 +376,7 @@ pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> Htt
             let latitude: Option<f64> = row.get_idx::<Option<f64>>(6)?;
             let longitude: Option<f64> = row.get_idx::<Option<f64>>(7)?;
             let has_location = latitude.is_some() && longitude.is_some();
+            let is_active = row.get_idx::<i64>(13)? != 0;
             Ok(serde_json::json!({
                 "id": row.get_idx::<i64>(0)?,
                 "name": row.get_idx::<String>(1)?,
@@ -390,10 +392,15 @@ pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> Htt
                 "accuracy_meters": row.get_idx::<Option<f64>>(11)?,
                 "last_active_at": row.get_idx::<String>(12)?,
                 "has_location": has_location,
+                "is_active": is_active,
             }))
         });
 
-    let active_count = users.len() as i64;
+    let active_count = users
+        .iter()
+        .filter(|u| u.get("is_active").and_then(|v| v.as_bool()) == Some(true))
+        .count() as i64;
+    let inactive_count = (users.len() as i64) - active_count;
     let without_location = users
         .iter()
         .filter(|u| u.get("has_location").and_then(|v| v.as_bool()) == Some(false))
@@ -403,6 +410,7 @@ pub async fn ip_tracking_index(pool: web::Data<DbPool>, req: HttpRequest) -> Htt
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "users": users,
         "active_count": active_count,
+        "inactive_count": inactive_count,
         "without_location_count": without_location,
         "updated_at": updated_at,
     })))

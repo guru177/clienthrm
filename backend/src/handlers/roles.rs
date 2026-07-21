@@ -10,18 +10,28 @@ fn role_list_json(
     conn: &crate::db::Connection,
     org_id: i64,
 ) -> crate::db::Result<Vec<serde_json::Value>> {
+    // Aggregate counts once — correlated subqueries over permission_role were
+    // sequential-scanning a bloated table for every role (~seconds).
     let stmt = conn.prepare(
         "SELECT r.id, r.name, r.slug, r.description, r.created_at,
-                (SELECT COUNT(*)
-                 FROM role_user ru
-                 INNER JOIN users u ON u.id = ru.user_id
-                 WHERE ru.role_id = r.id
-                   AND u.deleted_at IS NULL
-                   AND u.organization_id = r.organization_id) AS users_count,
-                (SELECT COUNT(*) FROM permission_role pr WHERE pr.role_id = r.id) AS permissions_count
+                COALESCE(uc.users_count, 0) AS users_count,
+                COALESCE(pc.permissions_count, 0) AS permissions_count
          FROM roles r
+         LEFT JOIN (
+             SELECT ru.role_id, COUNT(*) AS users_count
+             FROM role_user ru
+             INNER JOIN users u ON u.id = ru.user_id AND u.deleted_at IS NULL
+             INNER JOIN roles rr ON rr.id = ru.role_id AND u.organization_id = rr.organization_id
+             GROUP BY ru.role_id
+         ) uc ON uc.role_id = r.id
+         LEFT JOIN (
+             SELECT pr.role_id, COUNT(DISTINCT p.slug) AS permissions_count
+             FROM permission_role pr
+             INNER JOIN permissions p ON p.id = pr.permission_id
+             GROUP BY pr.role_id
+         ) pc ON pc.role_id = r.id
          WHERE r.organization_id = ?1
-         ORDER BY r.name",
+         ORDER BY r.created_at DESC NULLS LAST, r.id DESC",
     )?;
     let rows = stmt
         .query_map([org_id], |row| {
@@ -36,6 +46,27 @@ fn role_list_json(
             }))
         });
     Ok(rows)
+}
+
+/// Lightweight role picker for forms (edit user, etc.) — no count subqueries.
+fn role_options_json(
+    conn: &crate::db::Connection,
+    org_id: i64,
+) -> crate::db::Result<Vec<serde_json::Value>> {
+    let stmt = conn.prepare(
+        "SELECT r.id, r.name, r.slug, r.description
+         FROM roles r
+         WHERE r.organization_id = ?1
+         ORDER BY r.id DESC",
+    )?;
+    Ok(stmt.query_map([org_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get_idx::<i64>(0)?,
+            "name": row.get_idx::<String>(1)?,
+            "slug": row.get_idx::<String>(2)?,
+            "description": row.get_idx::<Option<String>>(3)?,
+        }))
+    }))
 }
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
@@ -96,13 +127,23 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
             |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
+    let permissions_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT p.slug)
+             FROM permission_role pr
+             INNER JOIN permissions p ON p.id = pr.permission_id
+             WHERE pr.role_id = ?1",
+            [role_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "id": role.id,
         "name": role.name,
         "slug": role.slug,
         "description": role.description,
         "users_count": users_count,
-        "permissions_count": permissions.len(),
+        "permissions_count": permissions_count,
         "permissions": permissions,
         "created_at": role.created_at,
     })))
@@ -199,12 +240,32 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let role_id = path.into_inner();
+    let slug: String = conn
+        .query_row(
+            "SELECT COALESCE(slug, '') FROM roles WHERE id=?1 AND organization_id=?2",
+            crate::params![role_id, org_id],
+            |r| r.get_idx::<String>(0),
+        )
+        .unwrap_or_default();
+    if slug.is_empty() {
+        return HttpResponse::NotFound().json(ApiError::new("Not found"));
+    }
+    if crate::role_defaults::is_system_role_slug(&slug) {
+        return HttpResponse::BadRequest().json(ApiError::new(
+            "System roles (Admin, Manager, Branch Admin, HR, Doctor, Employee) cannot be deleted",
+        ));
+    }
     match conn.execute(
         "DELETE FROM roles WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![role_id, org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
-        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
+        Ok(_) => {
+            let _ = conn.execute("DELETE FROM permission_role WHERE role_id=?1", [role_id]);
+            let _ = conn.execute("DELETE FROM role_user WHERE role_id=?1", [role_id]);
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
@@ -242,7 +303,7 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    match role_list_json(&conn, org_id) {
+    match role_options_json(&conn, org_id) {
         Ok(items) => HttpResponse::Ok().json(ApiResponse::success(items)),
         Err(e) => HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     }

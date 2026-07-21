@@ -72,7 +72,7 @@ export default function DeleteUser() {
                     <DialogTrigger asChild>
                         <Button
                             variant="destructive"
-                            data-test="delete-user-button"
+                            data-testid="delete-user-button"
                         >
                             Delete account
                         </Button>
@@ -123,7 +123,7 @@ export default function DeleteUser() {
                                     type="submit"
                                     variant="destructive"
                                     disabled={processing}
-                                    data-test="confirm-delete-user-button"
+                                    data-testid="confirm-delete-user-button"
                                 >
                                     Delete account
                                 </Button>

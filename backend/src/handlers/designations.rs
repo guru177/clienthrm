@@ -11,7 +11,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c) => c, Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
-    let stmt = conn.prepare("SELECT * FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
+    let stmt = conn.prepare("SELECT * FROM designations WHERE organization_id = ?1 ORDER BY COALESCE(created_at, '') DESC, id DESC").unwrap();
     let items: Vec<Designation> = stmt.query_map([org_id], Designation::from_row);
     HttpResponse::Ok().json(ApiResponse::success(items))
 }
@@ -95,6 +95,9 @@ pub struct DesignationListQuery {
     pub sort_order: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    /// Dropdowns only need id/name — skip COUNT(*) and fat columns.
+    #[serde(default)]
+    pub compact: Option<u8>,
 }
 
 fn designation_json(row: &crate::db::Row) -> crate::db::Result<serde_json::Value> {
@@ -151,6 +154,25 @@ pub async fn list(
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get_for_tenant(org_id) { Ok(c) => c, Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")) };
 
+    if query.compact.unwrap_or(0) != 0 {
+        let items: Vec<serde_json::Value> = conn
+            .prepare(
+                "SELECT id, name FROM designations
+                 WHERE organization_id = ?1 AND COALESCE(is_active, 1) != 0
+                 ORDER BY id DESC",
+            )
+            .map(|stmt| {
+                stmt.query_map([org_id], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get_idx::<i64>(0)?,
+                        "name": row.get_idx::<String>(1)?,
+                    }))
+                })
+            })
+            .unwrap_or_default();
+        return HttpResponse::Ok().json(ApiResponse::success(items));
+    }
+
     let mut sql = String::from(
         "SELECT d.*,
                 (SELECT COUNT(*) FROM users u WHERE u.designation_id = d.id AND u.organization_id = d.organization_id) AS users_count
@@ -180,9 +202,10 @@ pub async fn list(
     let sort_col = match query.sort_by.as_deref() {
         Some("id") => "d.id",
         Some("name") => "d.name",
+        Some("level") => "d.level",
         Some("is_active") => "d.is_active",
         Some("created_at") => "d.created_at",
-        _ => "d.name",
+        _ => "d.created_at",
     };
     let sort_dir = if query.sort_order.as_deref() == Some("asc") {
         "ASC"

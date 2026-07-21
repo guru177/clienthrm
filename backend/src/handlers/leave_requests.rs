@@ -165,6 +165,7 @@ fn fetch_leave_list(
     query: &LeaveListQuery,
     org_id: i64,
     user_id: Option<i64>,
+    branch_scope: Option<&crate::branch_scope::BranchScope>,
 ) -> serde_json::Value {
     let per_page = query.per_page.unwrap_or(15).clamp(1, 100);
     let page = query.page.unwrap_or(1).max(1);
@@ -176,6 +177,13 @@ fn fetch_leave_list(
     if let Some(uid) = user_id {
         conditions.push("lr.user_id = ?".to_string());
         params.push(crate::db::into_param_value(uid));
+    } else if let Some(scope) = branch_scope {
+        crate::branch_scope::push_users_branch_condition_qmark(
+            &mut conditions,
+            &mut params,
+            scope,
+            "u",
+        );
     }
 
     if let Some(ref status) = query.status {
@@ -325,7 +333,7 @@ pub async fn index(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let data = fetch_leave_list(&conn, &query, org_id, Some(claims.sub));
+    let data = fetch_leave_list(&conn, &query, org_id, Some(claims.sub), None);
     HttpResponse::Ok().json(ApiResponse::success(data))
 }
 
@@ -442,6 +450,30 @@ pub async fn store(
                     "organization_id": org_id,
                 }),
             );
+            let employee_name = crate::tenant_email::user_name(&conn, claims.sub)
+                .unwrap_or_else(|| "Employee".to_string());
+            let admin_emails = crate::tenant_email::emails_with_any_permission(
+                &conn,
+                org_id,
+                &["manage-leave-requests", "approve-leave-requests"],
+            );
+            if !admin_emails.is_empty() {
+                let (text, html) = crate::leave_email::render_submitted_email(
+                    &employee_name,
+                    &leave_type,
+                    &start_date,
+                    &end_date,
+                    days,
+                );
+                crate::tenant_email::send_tenant_email_bulk(
+                    &conn,
+                    org_id,
+                    &admin_emails,
+                    &format!("Leave Request: {employee_name}"),
+                    text,
+                    html,
+                );
+            }
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
                 "id": leave_id,
             })))
@@ -689,7 +721,16 @@ pub async fn manage(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let data = fetch_leave_list(&conn, &query, org_id, None);
+    let is_sa = crate::tenant::user_is_super_admin(&conn, _c.sub, org_id);
+    let (permissions, _) = crate::plan_limits::resolve_effective_permissions(
+        &conn,
+        org_id,
+        crate::middleware::rbac::load_user_permissions(&conn, _c.sub, is_sa),
+    );
+    let scope = crate::branch_scope::resolve_branch_scope(
+        &conn, _c.sub, org_id, &permissions, is_sa,
+    );
+    let data = fetch_leave_list(&conn, &query, org_id, None, Some(&scope));
     HttpResponse::Ok().json(ApiResponse::success(data))
 }
 
@@ -868,22 +909,43 @@ pub async fn approve(
 
     sync_user_on_leave_status(&conn, user_id, true);
 
+    let leave_approved_ctx = serde_json::json!({
+        "leave_id": leave_id,
+        "user_id": user_id,
+        "leave_type": leave_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days_count": days_count,
+        "reason": reason,
+        "approved_by": claims.sub,
+        "organization_id": org_id,
+    });
     crate::workflow_logic::trigger(
         &conn,
         org_id,
         "leave_request_approved",
-        &serde_json::json!({
-            "leave_id": leave_id,
-            "user_id": user_id,
-            "leave_type": leave_type,
-            "start_date": start_date,
-            "end_date": end_date,
-            "days_count": days_count,
-            "reason": reason,
-            "approved_by": claims.sub,
-            "organization_id": org_id,
-        }),
+        &leave_approved_ctx,
     );
+    crate::tenant_webhooks::dispatch(&conn, org_id, "leave.approved", &leave_approved_ctx);
+
+    if let Some(email) = crate::tenant_email::user_email(&conn, user_id) {
+        let notes = remarks.as_deref();
+        let (text, html) = crate::leave_email::render_decision_email(
+            &leave_type,
+            &start_date,
+            &end_date,
+            "approved",
+            notes,
+        );
+        crate::tenant_email::send_tenant_email(
+            &conn,
+            org_id,
+            &email,
+            "Leave Request Approved",
+            text,
+            html,
+        );
+    }
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Approved"})))
 }
@@ -963,6 +1025,29 @@ pub async fn reject(
             "organization_id": org_id,
         }),
     );
+
+    if let Some(email) = crate::tenant_email::user_email(&conn, user_id) {
+        let notes = if reason.trim().is_empty() {
+            None
+        } else {
+            Some(reason.as_str())
+        };
+        let (text, html) = crate::leave_email::render_decision_email(
+            &leave_type,
+            &start_date,
+            &end_date,
+            "rejected",
+            notes,
+        );
+        crate::tenant_email::send_tenant_email(
+            &conn,
+            org_id,
+            &email,
+            "Leave Request Rejected",
+            text,
+            html,
+        );
+    }
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Rejected"})))
 }

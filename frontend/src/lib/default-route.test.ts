@@ -17,4 +17,19 @@ describe('defaultAdminRoute', () => {
     it('wildcard permission resolves to dashboard first', () => {
         expect(defaultAdminRoute(() => true)).toBe('/admin/dashboard');
     });
+
+    it('mobile preference sends attendance before dashboard', () => {
+        expect(
+            defaultAdminRoute(() => true, { preferMobileHome: true }),
+        ).toBe('/admin/attendance');
+    });
+
+    it('mobile preference skips attendance without permission', () => {
+        expect(
+            defaultAdminRoute(
+                (p) => p === 'view-leave-requests' || p === 'view-dashboard',
+                { preferMobileHome: true },
+            ),
+        ).toBe('/admin/leave-requests');
+    });
 });

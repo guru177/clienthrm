@@ -891,10 +891,28 @@ pub async fn user_ctc_profile_show(
     let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let profile = crate::salary_split::load_employee_profile(&conn, user_id, &as_of);
     let comp = crate::salary_split::load_component_split_config(&conn, org_id);
+    let structure_gross = crate::salary_split::load_structure_monthly_gross(&conn, user_id);
+    let inferred_yearly = if profile.is_none() && structure_gross > 0.0 {
+        Some((structure_gross * 12.0).round())
+    } else {
+        None
+    };
 
-    let split_preview = profile.as_ref().map(|p| {
-        crate::salary_split::preview_for_profile(&conn, org_id, p)
-    });
+    let split_preview = profile
+        .as_ref()
+        .map(|p| crate::salary_split::preview_for_profile(&conn, org_id, p))
+        .or_else(|| {
+            inferred_yearly.map(|y| {
+                let cfg = crate::statutory_logic::load_statutory_config(&conn, org_id);
+                crate::salary_split::split_with_statutory_from_components(
+                    &comp,
+                    y,
+                    &cfg,
+                    comp.has_pf,
+                    comp.has_esi,
+                )
+            })
+        });
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "profile": profile.map(|p| serde_json::json!({
@@ -903,6 +921,8 @@ pub async fn user_ctc_profile_show(
             "pf_applicable": p.pf_applicable,
             "esi_applicable": p.esi_applicable,
         })),
+        "inferred_yearly_ctc": inferred_yearly,
+        "structure_monthly_gross": if structure_gross > 0.0 { Some(structure_gross) } else { None::<f64> },
         "split_preview": split_preview.as_ref().map(statutory_preview_json),
         "salary_components": {
             "has_pf": comp.has_pf,

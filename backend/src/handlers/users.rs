@@ -1,5 +1,9 @@
 use actix_multipart::Multipart;
 use actix_web::{web, HttpRequest, HttpResponse};
+use crate::branch_scope::{
+    self, append_users_branch_filter, ensure_center_allowed, replace_user_centers,
+    resolve_branch_scope, user_in_branch_scope, BranchScope,
+};
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::{ApiError, ApiResponse};
@@ -11,6 +15,24 @@ use crate::tenant::{
 };
 use futures_util::StreamExt;
 use std::collections::HashMap;
+
+fn actor_branch_scope(
+    conn: &crate::db::Connection,
+    claims: &crate::models::user::JwtClaims,
+) -> BranchScope {
+    let org_id = org_id_from_claims(claims);
+    let is_sa = crate::tenant::user_is_super_admin(conn, claims.sub, org_id);
+    let (permissions, _) = crate::plan_limits::resolve_effective_permissions(
+        conn,
+        org_id,
+        crate::middleware::rbac::load_user_permissions(conn, claims.sub, is_sa),
+    );
+    resolve_branch_scope(conn, claims.sub, org_id, &permissions, is_sa)
+}
+
+fn work_location_center_id(work_location: Option<&str>) -> Option<i64> {
+    branch_scope::parse_center_id(work_location)
+}
 
 fn departments_map(
     conn: &crate::db::Connection,
@@ -156,6 +178,37 @@ fn employee_id_taken(
     }
 }
 
+/// Active users in an org cannot share the same email (case-insensitive).
+fn email_taken(
+    conn: &crate::db::Connection,
+    email: &str,
+    org_id: i64,
+    exclude_user_id: Option<i64>,
+) -> bool {
+    let email = email.trim().to_lowercase();
+    if email.is_empty() {
+        return false;
+    }
+    match exclude_user_id {
+        Some(uid) => conn
+            .query_row(
+                "SELECT 1 FROM users
+                 WHERE lower(email) = ?1 AND organization_id = ?2 AND deleted_at IS NULL AND id != ?3",
+                crate::params![email, org_id, uid],
+                |_| Ok(()),
+            )
+            .is_ok(),
+        None => conn
+            .query_row(
+                "SELECT 1 FROM users
+                 WHERE lower(email) = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+                crate::params![email, org_id],
+                |_| Ok(()),
+            )
+            .is_ok(),
+    }
+}
+
 /// GET /api/admin/users
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
@@ -168,6 +221,8 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
+
+    let scope = actor_branch_scope(&conn, &claims);
 
     let query_string = req.query_string();
     let params: Vec<(String, String)> = serde_urlencoded::from_str(query_string).unwrap_or_default();
@@ -184,32 +239,33 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         .unwrap_or(15);
     let offset = (page - 1) * per_page;
 
-    let (where_clause, search_param) = if let Some(ref s) = search {
-        ("WHERE u.deleted_at IS NULL AND u.organization_id = ?1 AND (u.name LIKE ?2 OR u.email LIKE ?2)".to_string(), format!("%{}%", s))
-    } else {
-        ("WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string(), String::new())
-    };
+    let mut where_sql =
+        "WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string();
+    let mut bind: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if let Some(ref s) = search {
+        let idx = bind.len() + 1;
+        where_sql.push_str(&format!(
+            " AND (u.name LIKE ?{idx} OR u.email LIKE ?{idx})"
+        ));
+        bind.push(crate::db::into_param_value(format!("%{s}%")));
+    }
+    append_users_branch_filter(&mut where_sql, &mut bind, &scope, "u");
 
-    let total: i64 = if search.is_some() {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM users u {}", where_clause),
-            crate::params![org_id, &search_param],
+    let total: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql}"),
+            &bind,
             |row| row.get_idx::<i64>(0),
-        ).unwrap_or(0)
-    } else {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM users u {}", where_clause),
-            [org_id],
-            |row| row.get_idx::<i64>(0),
-        ).unwrap_or(0)
-    };
+        )
+        .unwrap_or(0);
 
+    let limit_idx = bind.len() + 1;
+    let offset_idx = bind.len() + 2;
     let sql = format!(
-        "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?{} OFFSET ?{}",
-        where_clause,
-        if search.is_some() { 3 } else { 2 },
-        if search.is_some() { 4 } else { 3 },
+        "SELECT u.* FROM users u {where_sql} ORDER BY u.created_at DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
     );
+    bind.push(crate::db::into_param_value(per_page));
+    bind.push(crate::db::into_param_value(offset));
 
     let depts = departments_map(&conn, org_id);
     let desgs = designations_map(&conn, org_id);
@@ -225,26 +281,15 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)
     };
 
-    let users: Vec<serde_json::Value> = if search.is_some() {
-        let stmt = conn.prepare(&sql).unwrap();
-        stmt.query_map(crate::params![org_id, &search_param, per_page, offset], |row| {
-            User::from_row(row)
+    let users: Vec<serde_json::Value> = conn
+        .prepare(&sql)
+        .map(|stmt| {
+            stmt.query_map(&bind, |row| User::from_row(row))
+                .into_iter()
+                .map(enrich_user)
+                .collect()
         })
-        .into_iter()
-        .map(enrich_user)
-        .collect()
-    } else {
-        let stmt = conn
-            .prepare(&format!(
-                "SELECT u.* FROM users u {} ORDER BY u.created_at DESC LIMIT ?2 OFFSET ?3",
-                where_clause
-            ))
-            .unwrap();
-        stmt.query_map(crate::params![org_id, per_page, offset], |row| User::from_row(row))
-            .into_iter()
-            .map(enrich_user)
-            .collect()
-    };
+        .unwrap_or_default();
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -270,8 +315,21 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
     };
 
     let user_id = path.into_inner();
+    let scope = actor_branch_scope(&conn, &claims);
+    if !user_in_branch_scope(&conn, user_id, org_id, &scope) {
+        return branch_scope::forbidden_outside_branch();
+    }
     match load_user_summary(&conn, user_id, org_id) {
-        Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
+        Some(summary) => {
+            let mut value = serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "managed_center_ids".into(),
+                    serde_json::json!(branch_scope::load_user_center_ids(&conn, user_id, org_id)),
+                );
+            }
+            HttpResponse::Ok().json(ApiResponse::success(value))
+        }
         None => HttpResponse::NotFound().json(ApiError::new("User not found")),
     }
 }
@@ -289,30 +347,74 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let name = body.name.trim();
-    let email = body.email.trim().to_lowercase();
-    if name.is_empty() {
-        return HttpResponse::BadRequest().json(ApiError::new("Name is required"));
+    let scope = actor_branch_scope(&conn, &claims);
+    if let Err(resp) = ensure_center_allowed(&scope, work_location_center_id(body.work_location.as_deref())) {
+        return resp;
     }
-    if email.is_empty() || !email.contains('@') {
-        return HttpResponse::BadRequest().json(ApiError::new("A valid email is required"));
-    }
-    if body.password.len() < 8 {
-        return HttpResponse::BadRequest().json(ApiError::new("Password must be at least 8 characters"));
-    }
-    if let Some(ref confirm) = body.password_confirmation {
-        if !confirm.is_empty() && confirm != &body.password {
-            return HttpResponse::BadRequest().json(ApiError::new("Password confirmation does not match"));
+    if let Some(ref ids) = body.managed_center_ids {
+        for &cid in ids {
+            if let Err(resp) = ensure_center_allowed(&scope, Some(cid)) {
+                return resp;
+            }
         }
     }
 
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM users WHERE email = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
-            crate::params![email, org_id],
-            |row| row.get_idx::<i64>(0).map(|n| n > 0),
-        )
-        .unwrap_or(false);
+    let name = body.name.trim();
+    let hr_managed = body.hr_managed;
+    let employee_id = normalize_optional_string(body.employee_id.clone());
+    let phone = normalize_optional_string(body.phone.clone());
+
+    if name.is_empty() {
+        return HttpResponse::BadRequest().json(ApiError::new("Name is required"));
+    }
+
+    let (email, password_plain, skip_welcome_email) = if hr_managed {
+        if phone.as_ref().map(|p| p.is_empty()).unwrap_or(true)
+            && employee_id.as_ref().map(|e| e.is_empty()).unwrap_or(true)
+        {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "HR-managed employees need a phone number or employee ID",
+            ));
+        }
+        let slug = employee_id
+            .as_deref()
+            .map(|s| {
+                s.chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect::<String>()
+                    .to_lowercase()
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "t{}",
+                    uuid::Uuid::new_v4().simple().to_string().chars().take(12).collect::<String>()
+                )
+            });
+        let email = format!("emp{slug}@hr-managed.local");
+        let password_plain = format!(
+            "hrm-{}-{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        (email, password_plain, true)
+    } else {
+        let email = body.email.trim().to_lowercase();
+        if email.is_empty() || !email.contains('@') {
+            return HttpResponse::BadRequest().json(ApiError::new("A valid email is required"));
+        }
+        if body.password.len() < 8 {
+            return HttpResponse::BadRequest().json(ApiError::new("Password must be at least 8 characters"));
+        }
+        if let Some(ref confirm) = body.password_confirmation {
+            if !confirm.is_empty() && confirm != &body.password {
+                return HttpResponse::BadRequest().json(ApiError::new("Password confirmation does not match"));
+            }
+        }
+        (email, body.password.clone(), false)
+    };
+
+    let exists = email_taken(&conn, &email, org_id, None);
     if exists {
         return HttpResponse::BadRequest().json(ApiError::new("A user with this email already exists"));
     }
@@ -355,7 +457,7 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         }
     }
 
-    let hashed = match bcrypt::hash(&body.password, 12) {
+    let hashed = match bcrypt::hash(&password_plain, 12) {
         Ok(h) => h,
         Err(_) => {
             return HttpResponse::InternalServerError()
@@ -363,7 +465,6 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         }
     };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let employee_id = normalize_optional_string(body.employee_id.clone());
     if let Some(ref eid) = employee_id {
         if employee_id_taken(&conn, eid, org_id, None) {
             return HttpResponse::BadRequest()
@@ -371,7 +472,6 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         }
     }
 
-    let phone = normalize_optional_string(body.phone.clone());
     let status = body
         .status
         .as_deref()
@@ -379,13 +479,14 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         .unwrap_or("active");
 
     let result = conn.execute(
-        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, is_external, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        "INSERT INTO users (name, email, password, phone, department_id, designation_id, employment_type, is_external, hr_managed, employee_id, date_of_joining, work_location, status, organization_id, manager_id, reporting_manager_id, email_verified_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         crate::params![
             name, email, hashed, phone,
             body.department_id, body.designation_id,
             body.employment_type.as_deref().unwrap_or("full-time"),
             body.is_external as i64,
+            hr_managed as i64,
             employee_id, body.date_of_joining, body.work_location,
             status,
             org_id,
@@ -397,14 +498,53 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
         Ok(_) => {
             let user_id = conn.last_insert_rowid();
 
-            // Assign roles if provided
-            if let Some(ref role_ids) = body.role_ids {
-                for role_id in role_ids {
+            // Prefer stable emp{id}@ placeholder when no employee_id was provided
+            let final_email = if hr_managed && email.contains("@hr-managed.local") && employee_id.is_none() {
+                let stable = format!("emp{user_id}@hr-managed.local");
+                let taken: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM users WHERE email = ?1 AND organization_id = ?2 AND id != ?3 AND deleted_at IS NULL",
+                        crate::params![stable, org_id, user_id],
+                        |row| row.get_idx::<i64>(0).map(|n| n > 0),
+                    )
+                    .unwrap_or(false);
+                if !taken {
                     let _ = conn.execute(
-                        "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                        crate::params![user_id, role_id, &now, &now],
+                        "UPDATE users SET email = ?1 WHERE id = ?2",
+                        crate::params![stable, user_id],
                     );
+                    stable
+                } else {
+                    email.clone()
                 }
+            } else {
+                email.clone()
+            };
+
+            // Assign roles if provided; otherwise default to Employee.
+            let role_ids: Vec<i64> = match &body.role_ids {
+                Some(ids) if !ids.is_empty() => ids.clone(),
+                _ => crate::role_defaults::default_employee_role_id(&conn, org_id)
+                    .into_iter()
+                    .collect(),
+            };
+            for role_id in role_ids {
+                if !role_in_organization(&conn, role_id, org_id) {
+                    continue;
+                }
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                    crate::params![user_id, role_id, &now, &now],
+                );
+            }
+            crate::role_defaults::ensure_default_employee_role(&conn, org_id, user_id);
+
+            if let Some(ref ids) = body.managed_center_ids {
+                if let Err(e) = replace_user_centers(&conn, user_id, org_id, ids) {
+                    return HttpResponse::BadRequest().json(ApiError::new(&e));
+                }
+            } else if let Some(cid) = work_location_center_id(body.work_location.as_deref()) {
+                let _ = replace_user_centers(&conn, user_id, org_id, &[cid]);
             }
 
             let shift_from = body
@@ -416,9 +556,57 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
             let _ = crate::shift_logic::assign_general_shift_to_user(&conn, user_id, &shift_from);
             crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
 
+            if !skip_welcome_email {
+                let org_name: Option<String> = conn
+                    .query_row(
+                        "SELECT name FROM organizations WHERE id = ?1",
+                        crate::params![org_id],
+                        |row| row.get_idx::<String>(0),
+                    )
+                    .ok();
+                let (text, html) = crate::user_lifecycle_email::render_welcome_email(
+                    &body.name,
+                    &final_email,
+                    &password_plain,
+                    org_name.as_deref(),
+                );
+                crate::tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &final_email,
+                    "Welcome — Your HRM login credentials",
+                    text,
+                    html,
+                );
+            }
+
+            crate::workflow_logic::trigger(
+                &conn,
+                org_id,
+                "user_created",
+                &serde_json::json!({
+                    "user_id": user_id,
+                    "email": final_email,
+                    "name": body.name,
+                    "department_id": body.department_id,
+                    "designation_id": body.designation_id,
+                    "manager_id": body.manager_id,
+                    "reporting_manager_id": body.reporting_manager_id,
+                    "status": status,
+                    "hr_managed": hr_managed,
+                    "organization_id": org_id,
+                    "created_by": claims.sub,
+                }),
+            );
+
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
                 "id": user_id,
-                "message": "User created successfully"
+                "hr_managed": hr_managed,
+                "message": if hr_managed {
+                    "HR-managed employee created. They will not log in - use Manual Attendance and Leave Requests."
+                } else {
+                    "User created successfully"
+                }
             })))
         }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("Failed to create user: {}", e))),
@@ -444,6 +632,32 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
 
+    let scope = actor_branch_scope(&conn, &claims);
+    if !user_in_branch_scope(&conn, user_id, org_id, &scope) {
+        return branch_scope::forbidden_outside_branch();
+    }
+    if let Err(resp) =
+        ensure_center_allowed(&scope, work_location_center_id(body.work_location.as_deref()))
+    {
+        return resp;
+    }
+    if let Some(ref ids) = body.managed_center_ids {
+        for &cid in ids {
+            if let Err(resp) = ensure_center_allowed(&scope, Some(cid)) {
+                return resp;
+            }
+        }
+    }
+
+    let previous_status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM users WHERE id = ?1 AND organization_id = ?2",
+            crate::params![user_id, org_id],
+            |row| row.get_idx::<Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+
     if let Some(ref val) = body.name {
         if let Err(msg) = crate::validation::require_non_empty(val, "Name") {
             return HttpResponse::BadRequest().json(ApiError::new(&msg));
@@ -452,6 +666,61 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     if let Some(ref val) = body.email {
         if let Err(msg) = crate::validation::validate_email(val) {
             return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
+        let email = val.trim().to_lowercase();
+        if email_taken(&conn, &email, org_id, Some(user_id)) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("A user with this email already exists"));
+        }
+    }
+
+    let currently_hr_managed: bool = conn
+        .query_row(
+            "SELECT COALESCE(hr_managed, 0) FROM users WHERE id = ?1",
+            [user_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
+    // Enable app login: hr_managed false requires real email + new password
+    if body.hr_managed == Some(false) && currently_hr_managed {
+        let new_email = body.email.as_deref().map(str::trim).unwrap_or("");
+        if new_email.is_empty() || new_email.ends_with("@hr-managed.local") {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Provide a real email to enable app login",
+            ));
+        }
+        if let Err(msg) = crate::validation::validate_email(new_email) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
+        let pwd = body.password.as_deref().unwrap_or("");
+        if pwd.len() < 8 {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Provide a password (min 8 characters) to enable app login",
+            ));
+        }
+    }
+
+    // Switch to HR-managed: need phone or employee_id on the user
+    if body.hr_managed == Some(true) && !currently_hr_managed {
+        let (phone, emp_id): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT phone, employee_id FROM users WHERE id = ?1",
+                [user_id],
+                |r| Ok((r.get_idx::<Option<String>>(0)?, r.get_idx::<Option<String>>(1)?)),
+            )
+            .unwrap_or((None, None));
+        let phone = body.phone.clone().or(phone).filter(|s| !s.trim().is_empty());
+        let emp_id = body
+            .employee_id
+            .clone()
+            .or(emp_id)
+            .filter(|s| !s.trim().is_empty());
+        if phone.is_none() && emp_id.is_none() {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Set a phone number or employee ID before marking as HR-managed",
+            ));
         }
     }
 
@@ -473,7 +742,12 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     }
 
     maybe_set!(name, "name");
-    maybe_set!(email, "email");
+    if let Some(ref val) = body.email {
+        let email = val.trim().to_lowercase();
+        sets.push(format!("email = ?{}", idx));
+        params.push(crate::db::into_param_value(email));
+        idx += 1;
+    }
     maybe_set!(phone, "phone");
     maybe_set!(avatar, "avatar");
     maybe_set!(photo, "photo");
@@ -493,6 +767,43 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     maybe_set!(tax_regime, "tax_regime");
     maybe_set!(date_of_joining, "date_of_joining");
     maybe_set!(date_of_exit, "date_of_exit");
+
+    if let Some(hm) = body.hr_managed {
+        sets.push(format!("hr_managed = ?{}", idx));
+        params.push(crate::db::into_param_value(if hm { 1_i64 } else { 0_i64 }));
+        idx += 1;
+        if hm {
+            // Rotate password so any old credentials stop working
+            let random_pwd = format!(
+                "hrm-{}-{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+            if let Ok(hashed) = bcrypt::hash(&random_pwd, 12) {
+                sets.push(format!("password = ?{}", idx));
+                params.push(crate::db::into_param_value(hashed));
+                idx += 1;
+            }
+        }
+    }
+
+    if body.hr_managed == Some(false) && currently_hr_managed {
+        if let Some(ref pwd) = body.password {
+            if pwd.len() >= 8 {
+                match bcrypt::hash(pwd, 12) {
+                    Ok(hashed) => {
+                        sets.push(format!("password = ?{}", idx));
+                        params.push(crate::db::into_param_value(hashed));
+                        idx += 1;
+                    }
+                    Err(_) => {
+                        return HttpResponse::InternalServerError()
+                            .json(ApiError::new("Failed to hash password"));
+                    }
+                }
+            }
+        }
+    }
     if body.employee_id.is_some() {
         let employee_id = normalize_optional_string(body.employee_id.clone());
         if let Some(ref eid) = employee_id {
@@ -512,6 +823,7 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     maybe_set!(esi_number, "esi_number");
     maybe_set!(pf_number, "pf_number");
     maybe_set!(aadhar_number, "aadhar_number");
+    maybe_set!(emergency_contact, "emergency_contact");
 
     if let Some(ref val) = body.account_type {
         sets.push(format!("account_type = ?{}", idx));
@@ -602,6 +914,9 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
             crate::params![user_id, org_id],
         );
         for role_id in roles {
+            if !role_in_organization(&conn, *role_id, org_id) {
+                continue;
+            }
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
                 crate::params![user_id, role_id, &now_for_roles, &now_for_roles],
@@ -609,7 +924,32 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         }
     }
 
+    if let Some(ref ids) = body.managed_center_ids {
+        if let Err(e) = replace_user_centers(&conn, user_id, org_id, ids) {
+            return HttpResponse::BadRequest().json(ApiError::new(&e));
+        }
+    }
+
     crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
+
+    if let Some(ref new_status) = body.status {
+        if previous_status.as_deref() != Some(new_status.as_str()) {
+            if let Some(email) = crate::tenant_email::user_email(&conn, user_id) {
+                let name = crate::tenant_email::user_name(&conn, user_id)
+                    .unwrap_or_else(|| "Employee".to_string());
+                let (text, html) =
+                    crate::user_lifecycle_email::render_status_changed_email(&name, new_status);
+                crate::tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &email,
+                    "Account Status Updated",
+                    text,
+                    html,
+                );
+            }
+        }
+    }
 
     match load_user_summary(&conn, user_id, org_id) {
         Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
@@ -641,11 +981,18 @@ pub async fn update_form(
     if load_user_summary(&conn, user_id, org_id).is_none() {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
+    let scope = actor_branch_scope(&conn, &claims);
+    if !user_in_branch_scope(&conn, user_id, org_id, &scope) {
+        return branch_scope::forbidden_outside_branch();
+    }
 
     let mut fields: HashMap<String, String> = HashMap::new();
+    let mut managed_center_ids: Vec<i64> = Vec::new();
+    let mut managed_centers_provided = false;
     let mut roles: Vec<i64> = Vec::new();
     let mut photo_data: Option<(Option<String>, Option<String>, Vec<u8>)> = None;
     let mut remove_photo = false;
+    let mut doc_uploads: HashMap<String, (Option<String>, Option<String>, Vec<u8>)> = HashMap::new();
 
     while let Some(field) = payload.next().await {
         let mut field = match field {
@@ -672,6 +1019,10 @@ pub async fn update_form(
             if !bytes.is_empty() {
                 photo_data = Some((content_type, filename, bytes));
             }
+        } else if matches!(name.as_str(), "doc_aadhaar" | "doc_pan" | "doc_id_proof" | "doc_other") {
+            if !bytes.is_empty() {
+                doc_uploads.insert(name, (content_type, filename, bytes));
+            }
         } else if name == "remove_photo" {
             if let Ok(s) = String::from_utf8(bytes) {
                 remove_photo = s.trim() == "1" || s.eq_ignore_ascii_case("true");
@@ -686,6 +1037,16 @@ pub async fn update_form(
             if let Ok(s) = String::from_utf8(bytes) {
                 if let Some(parsed) = parse_roles(&s) {
                     roles.extend(parsed);
+                }
+            }
+        } else if name == "managed_center_ids[]" || name == "managed_center_ids" {
+            managed_centers_provided = true;
+            if let Ok(s) = String::from_utf8(bytes) {
+                let trimmed = s.trim();
+                if let Ok(id) = trimmed.parse::<i64>() {
+                    managed_center_ids.push(id);
+                } else if let Some(parsed) = parse_roles(trimmed) {
+                    managed_center_ids.extend(parsed);
                 }
             }
         } else if let Ok(text) = String::from_utf8(bytes) {
@@ -717,7 +1078,19 @@ pub async fn update_form(
     }
 
     set_field!("name", "name");
-    set_field!("email", "email");
+    if let Some(val) = fields.get("email") {
+        let email = val.trim().to_lowercase();
+        if let Err(msg) = crate::validation::validate_email(&email) {
+            return HttpResponse::BadRequest().json(ApiError::new(&msg));
+        }
+        if email_taken(&conn, &email, org_id, Some(user_id)) {
+            return HttpResponse::BadRequest()
+                .json(ApiError::new("A user with this email already exists"));
+        }
+        sets.push(format!("email = ?{}", idx));
+        params.push(crate::db::into_param_value(email));
+        idx += 1;
+    }
     set_field!("phone", "phone");
     set_field!("date_of_birth", "date_of_birth");
     set_field!("gender", "gender");
@@ -754,6 +1127,7 @@ pub async fn update_form(
     set_field!("pf_number", "pf_number");
     set_field!("aadhar_number", "aadhar_number");
     set_field!("date_of_exit", "date_of_exit");
+    set_field!("emergency_contact", "emergency_contact");
 
     if let Some(v) = fields.get("department_id").and_then(|s| opt_i64(s)) {
         sets.push(format!("department_id = ?{}", idx));
@@ -780,6 +1154,30 @@ pub async fn update_form(
         sets.push(format!("is_external = ?{}", idx));
         params.push(crate::db::into_param_value(if is_ext { 1 } else { 0 }));
         idx += 1;
+    }
+    if let Some(v) = fields.get("hr_managed") {
+        let hm = v == "true" || v == "1";
+        sets.push(format!("hr_managed = ?{}", idx));
+        params.push(crate::db::into_param_value(if hm { 1 } else { 0 }));
+        idx += 1;
+        if hm {
+            let random_pwd = format!(
+                "hrm-{}-{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+            if let Ok(hashed) = bcrypt::hash(&random_pwd, 12) {
+                sets.push(format!("password = ?{}", idx));
+                params.push(crate::db::into_param_value(hashed));
+                idx += 1;
+            }
+        } else if let Some(pwd) = fields.get("password").filter(|p| p.len() >= 8) {
+            if let Ok(hashed) = bcrypt::hash(pwd, 12) {
+                sets.push(format!("password = ?{}", idx));
+                params.push(crate::db::into_param_value(hashed));
+                idx += 1;
+            }
+        }
     }
 
     if remove_photo {
@@ -815,6 +1213,26 @@ pub async fn update_form(
         }
     }
 
+    for (col, (mime, fname, data)) in doc_uploads {
+        match storage::save_user_document(&data, mime.as_deref(), fname.as_deref()) {
+            Ok(path) => {
+                if let Ok(old) = conn.query_row(
+                    &format!("SELECT {col} FROM users WHERE id=?1"),
+                    [user_id],
+                    |r| r.get_idx::<Option<String>>(0),
+                ) {
+                    if let Some(ref p) = old {
+                        storage::delete_photo_path(p);
+                    }
+                }
+                sets.push(format!("{col} = ?{}", idx));
+                params.push(crate::db::into_param_value(path));
+                idx += 1;
+            }
+            Err(e) => return HttpResponse::BadRequest().json(ApiError::new(&e)),
+        }
+    }
+
     if sets.is_empty() && roles.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new("No fields to update"));
     }
@@ -835,6 +1253,19 @@ pub async fn update_form(
         if !role_in_organization(&conn, *role_id, org_id) {
             return HttpResponse::BadRequest()
                 .json(ApiError::new("Role does not belong to this organization"));
+        }
+    }
+    if let Err(resp) = ensure_center_allowed(
+        &scope,
+        work_location_center_id(fields.get("work_location").map(|s| s.as_str())),
+    ) {
+        return resp;
+    }
+    if managed_centers_provided {
+        for &cid in &managed_center_ids {
+            if let Err(resp) = ensure_center_allowed(&scope, Some(cid)) {
+                return resp;
+            }
         }
     }
     if let Some(raw) = fields.get("manager_id").and_then(|s| opt_i64(s)) {
@@ -893,6 +1324,12 @@ pub async fn update_form(
         }
     }
 
+    if managed_centers_provided {
+        if let Err(e) = replace_user_centers(&conn, user_id, org_id, &managed_center_ids) {
+            return HttpResponse::BadRequest().json(ApiError::new(&e));
+        }
+    }
+
     match load_user_summary(&conn, user_id, org_id) {
         Some(summary) => HttpResponse::Ok().json(ApiResponse::success(summary)),
         None => HttpResponse::NotFound().json(ApiError::new("User not found")),
@@ -913,6 +1350,10 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
     };
 
     let user_id = path.into_inner();
+    let scope = actor_branch_scope(&conn, &claims);
+    if !user_in_branch_scope(&conn, user_id, org_id, &scope) {
+        return branch_scope::forbidden_outside_branch();
+    }
     let now = chrono::Utc::now().naive_utc();
 
     match conn.execute(
@@ -943,9 +1384,32 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
-    let active: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1 AND status = 'active'", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
-    let on_leave: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND organization_id = ?1 AND status = 'on-leave'", [org_id], |r| r.get_idx::<i64>(0)).unwrap_or(0);
+    let scope = actor_branch_scope(&conn, &claims);
+    let mut where_sql = "WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string();
+    let mut bind: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    append_users_branch_filter(&mut where_sql, &mut bind, &scope, "u");
+
+    let total: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql}"),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    let active: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql} AND u.status = 'active'"),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    let on_leave: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql} AND u.status = 'on-leave'"),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "total": total,
@@ -968,18 +1432,26 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
-    let stmt = conn.prepare(
-        "SELECT id, name, email, employee_id FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name"
-    ).unwrap();
+    let scope = actor_branch_scope(&conn, &claims);
+    let mut sql =
+        "SELECT u.id, u.name, u.email, u.employee_id FROM users u WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string();
+    let mut bind: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    append_users_branch_filter(&mut sql, &mut bind, &scope, "u");
+    sql.push_str(" ORDER BY COALESCE(u.created_at, '') DESC, u.id DESC");
 
-    let users: Vec<serde_json::Value> = stmt.query_map([org_id], |row| {
-        Ok(serde_json::json!({
-            "id": row.get_idx::<i64>(0)?,
-            "name": row.get_idx::<String>(1)?,
-            "email": row.get_idx::<String>(2)?,
-            "employee_id": row.get_idx::<Option<String>>(3)?,
-        }))
-    });
+    let users: Vec<serde_json::Value> = conn
+        .prepare(&sql)
+        .map(|stmt| {
+            stmt.query_map(&bind, |row| {
+                Ok(serde_json::json!({
+                    "id": row.get_idx::<i64>(0)?,
+                    "name": row.get_idx::<String>(1)?,
+                    "email": row.get_idx::<String>(2)?,
+                    "employee_id": row.get_idx::<Option<String>>(3)?,
+                }))
+            })
+        })
+        .unwrap_or_default();
 
     HttpResponse::Ok().json(ApiResponse::success(users))
 }

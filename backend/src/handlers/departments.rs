@@ -1,11 +1,23 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
 
+use crate::branch_scope::{append_center_id_filter, resolve_branch_scope, BranchScope};
 use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::department::{CreateDepartmentRequest, Department};
 use crate::models::{ApiError, ApiResponse};
 use crate::tenant::{center_in_organization, org_id_from_claims};
+
+fn actor_scope(conn: &crate::db::Connection, claims: &crate::models::user::JwtClaims) -> BranchScope {
+    let org_id = org_id_from_claims(claims);
+    let is_sa = crate::tenant::user_is_super_admin(conn, claims.sub, org_id);
+    let (permissions, _) = crate::plan_limits::resolve_effective_permissions(
+        conn,
+        org_id,
+        crate::middleware::rbac::load_user_permissions(conn, claims.sub, is_sa),
+    );
+    resolve_branch_scope(conn, claims.sub, org_id, &permissions, is_sa)
+}
 
 const DEPT_SELECT: &str = "SELECT d.*,
                 c.name AS center_name,
@@ -22,6 +34,9 @@ pub struct DepartmentListQuery {
     pub sort_order: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    /// Dropdowns only need id/name/center_id — skip COUNT(*) and fat columns.
+    #[serde(default)]
+    pub compact: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,7 +129,7 @@ pub async fn index(
     let mut sql = format!("{DEPT_SELECT} WHERE d.organization_id = ?1");
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
     append_center_filter(&mut sql, &mut params, query.center_id);
-    sql.push_str(" ORDER BY d.name");
+    sql.push_str(" ORDER BY COALESCE(d.created_at, '') DESC, d.id DESC");
 
     let depts: Vec<serde_json::Value> = conn.query_map(&sql, &params, department_json);
     HttpResponse::Ok().json(ApiResponse::success(depts))
@@ -159,6 +174,9 @@ pub async fn store(
 
     if body.center_id <= 0 || !center_in_organization(&conn, body.center_id, org_id) {
         return HttpResponse::BadRequest().json(ApiError::new("Invalid branch"));
+    }
+    if let Err(resp) = crate::branch_scope::ensure_center_allowed(&actor_scope(&conn, &claims), Some(body.center_id)) {
+        return resp;
     }
 
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
@@ -205,6 +223,9 @@ pub async fn update(
 
     if body.center_id <= 0 || !center_in_organization(&conn, body.center_id, org_id) {
         return HttpResponse::BadRequest().json(ApiError::new("Invalid branch"));
+    }
+    if let Err(resp) = crate::branch_scope::ensure_center_allowed(&actor_scope(&conn, &claims), Some(body.center_id)) {
+        return resp;
     }
 
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
@@ -328,6 +349,26 @@ pub async fn list(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
+    if query.compact.unwrap_or(0) != 0 {
+        let scope = actor_scope(&conn, &claims);
+        let mut sql = String::from(
+            "SELECT id, name, center_id FROM departments
+             WHERE organization_id = ?1 AND COALESCE(is_active, 1) != 0",
+        );
+        let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+        append_center_id_filter(&mut sql, &mut params, &scope, "center_id");
+        sql.push_str(" ORDER BY id DESC");
+        let items: Vec<serde_json::Value> = conn
+            .query_map(&sql, &params, |row| {
+                Ok(serde_json::json!({
+                    "id": row.get_idx::<i64>(0)?,
+                    "name": row.get_idx::<String>(1)?,
+                    "center_id": row.get_idx::<Option<i64>>(2)?,
+                }))
+            });
+        return HttpResponse::Ok().json(ApiResponse::success(items));
+    }
+
     let mut sql = format!("{DEPT_SELECT} WHERE d.organization_id = ?1");
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
 
@@ -354,6 +395,9 @@ pub async fn list(
     }
 
     append_center_filter(&mut sql, &mut params, query.center_id);
+
+    let scope = actor_scope(&conn, &claims);
+    append_center_id_filter(&mut sql, &mut params, &scope, "d.center_id");
 
     let sort_col = match query.sort_by.as_deref() {
         Some("id") => "d.id",

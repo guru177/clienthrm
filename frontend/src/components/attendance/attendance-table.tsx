@@ -8,6 +8,7 @@ import {
     Plus,
     Search,
     Trash2,
+    MapPin,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
@@ -69,6 +70,8 @@ interface AttendanceRecord {
     status: string;
     source?: string;
     shift?: ShiftInfo | null;
+    clock_in_location?: string;
+    clock_out_location?: string;
 }
 
 const STATUS_OPTIONS = ['present', 'absent', 'half_day', 'leave', 'sick_leave', 'holiday'];
@@ -221,6 +224,24 @@ export default function AttendanceTable() {
         return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
     };
 
+    const renderLocation = (locationJson?: string) => {
+        if (!locationJson) return null;
+        try {
+            const parsed = JSON.parse(locationJson);
+            if (parsed.geo && parsed.geo.lat && parsed.geo.lng) {
+                const url = `https://maps.google.com/?q=${parsed.geo.lat},${parsed.geo.lng}`;
+                return (
+                    <a href={url} target="_blank" rel="noreferrer" className="inline-flex ml-1 text-blue-500 hover:text-blue-700" title="View location on map">
+                        <MapPin className="h-3 w-3" />
+                    </a>
+                );
+            }
+        } catch (e) {
+            // Ignore parse errors
+        }
+        return null;
+    };
+
     const colSpan = canManage ? 9 : 8;
 
     return (
@@ -272,7 +293,7 @@ export default function AttendanceTable() {
                                 setDateFrom(e.target.value);
                                 setCurrentPage(1);
                             }}
-                            className="w-[150px]"
+                            className="w-full sm:w-[150px]"
                             title="From date"
                         />
                         <Input
@@ -282,7 +303,7 @@ export default function AttendanceTable() {
                                 setDateTo(e.target.value);
                                 setCurrentPage(1);
                             }}
-                            className="w-[150px]"
+                            className="w-full sm:w-[150px]"
                             title="To date"
                         />
 
@@ -330,7 +351,67 @@ export default function AttendanceTable() {
             </CardHeader>
 
             <CardContent>
-                <div className="rounded-md border">
+                <div className="space-y-3 md:hidden" data-testid="attendance-mobile-cards">
+                    {loading ? (
+                        <div className="flex justify-center py-8">
+                            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                        </div>
+                    ) : records.length === 0 ? (
+                        <p className="py-8 text-center text-muted-foreground">No records found</p>
+                    ) : (
+                        records.map((record) => (
+                            <div key={record.id} className="rounded-xl border p-4 space-y-2">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                        <p className="font-medium">
+                                            {new Date(record.date).toLocaleDateString()}
+                                        </p>
+                                        <p className="text-sm text-muted-foreground">
+                                            {record.user?.name || `User #${record.user_id}`}
+                                        </p>
+                                    </div>
+                                    {getStatusBadge(record.status)}
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span>In {formatTime(record.clock_in)}</span>
+                                    <span>
+                                        Out{' '}
+                                        {record.clock_out ? formatTime(record.clock_out) : 'Open'}
+                                    </span>
+                                </div>
+                                <p className="text-sm text-muted-foreground">
+                                    {record.duration_minutes
+                                        ? `${Math.floor(record.duration_minutes / 60)}h ${record.duration_minutes % 60}m`
+                                        : '--'}
+                                    {record.is_late ? ' · Late' : ''}
+                                    {record.is_early_exit ? ' · Early exit' : ''}
+                                </p>
+                                {canManage && (
+                                    <div className="flex gap-2 pt-1">
+                                        <Button
+                                            variant="outline"
+                                            className="min-h-11 flex-1"
+                                            onClick={() => openEdit(record)}
+                                        >
+                                            <Pencil className="mr-2 h-4 w-4" />
+                                            Edit
+                                        </Button>
+                                        <Button
+                                            variant="outline"
+                                            className="min-h-11 flex-1"
+                                            onClick={() => deleteRecord(record)}
+                                        >
+                                            <Trash2 className="mr-2 h-4 w-4 text-red-600" />
+                                            Delete
+                                        </Button>
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    )}
+                </div>
+
+                <div className="hidden rounded-md border md:block">
                     <Table>
                         <TableHeader>
                             <TableRow>
@@ -380,25 +461,31 @@ export default function AttendanceTable() {
                                             </div>
                                         </TableCell>
                                         <TableCell>
-                                            <div>
-                                                <p>{formatTime(record.clock_in)}</p>
-                                                {record.is_late && (
-                                                    <p className="text-xs text-red-600">Late</p>
-                                                )}
+                                            <div className="flex items-center gap-1">
+                                                <div>
+                                                    <p>{formatTime(record.clock_in)}</p>
+                                                    {record.is_late && (
+                                                        <p className="text-xs text-red-600">Late</p>
+                                                    )}
+                                                </div>
+                                                {renderLocation(record.clock_in_location)}
                                             </div>
                                         </TableCell>
                                         <TableCell>
-                                            <div>
-                                                <p>
-                                                    {record.clock_out ? (
-                                                        formatTime(record.clock_out)
-                                                    ) : (
-                                                        <span className="text-amber-600">Open</span>
+                                            <div className="flex items-center gap-1">
+                                                <div>
+                                                    <p>
+                                                        {record.clock_out ? (
+                                                            formatTime(record.clock_out)
+                                                        ) : (
+                                                            <span className="text-amber-600">Open</span>
+                                                        )}
+                                                    </p>
+                                                    {record.is_early_exit && (
+                                                        <p className="text-xs text-orange-600">Early</p>
                                                     )}
-                                                </p>
-                                                {record.is_early_exit && (
-                                                    <p className="text-xs text-orange-600">Early</p>
-                                                )}
+                                                </div>
+                                                {renderLocation(record.clock_out_location)}
                                             </div>
                                         </TableCell>
                                         <TableCell>
@@ -464,11 +551,11 @@ export default function AttendanceTable() {
 
                 {/* Pagination */}
                 {!loading && records.length > 0 && (
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mt-4">
+                    <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                         <div className="text-sm text-muted-foreground">
                             Showing {from} to {to} of {total} results
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                             <Button
                                 variant="outline"
                                 size="sm"

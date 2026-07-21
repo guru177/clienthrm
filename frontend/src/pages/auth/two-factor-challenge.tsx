@@ -13,7 +13,7 @@ import {
 import { useAuth } from '@/contexts/AuthContext';
 import { OTP_MAX_LENGTH } from '@/hooks/use-two-factor-auth';
 import AuthLayout from '@/layouts/auth-layout';
-import { defaultAdminRoute } from '@/lib/default-route';
+import { defaultAdminRouteForViewport } from '@/lib/default-route';
 
 type ChallengeState = {
     preAuthToken?: string;
@@ -75,7 +75,7 @@ export default function TwoFactorChallenge() {
             if (showRecoveryInput) {
                 const perms = await completeTwoFactorLogin(state.preAuthToken, undefined, recoveryCode);
                 const has = (slug: string) => perms.includes('*') || perms.includes(slug);
-                navigate(defaultAdminRoute(has), { replace: true });
+                navigate(defaultAdminRouteForViewport(has), { replace: true });
                 return;
             }
             if (code.length < OTP_MAX_LENGTH) {
@@ -83,7 +83,7 @@ export default function TwoFactorChallenge() {
             }
             const perms = await completeTwoFactorLogin(state.preAuthToken, code);
             const has = (slug: string) => perms.includes('*') || perms.includes(slug);
-            navigate(defaultAdminRoute(has), { replace: true });
+            navigate(defaultAdminRouteForViewport(has), { replace: true });
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'Verification failed');
         } finally {

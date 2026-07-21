@@ -18,6 +18,7 @@ import { useEffect, useState } from 'react';
 import axios from '@/lib/axios';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -67,11 +68,11 @@ function SalaryStructureDialog({
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto sm:max-w-2xl">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
                         <Banknote className="h-5 w-5" />
-                        Salary Structure &mdash; {userName}
+                        Pay setup — {userName}
                     </DialogTitle>
                 </DialogHeader>
                 {open && <SalaryTabsPanel userId={userId} />}
@@ -113,11 +114,22 @@ const formatCtc = (salary: string | null): string => {
 
 const getInitials = (name: string) =>
     name
-        .split(' ')
+        .split(/\s+/)
+        .filter((n) => n && /[A-Za-z0-9]/.test(n[0]))
         .slice(0, 2)
         .map((n) => n[0])
         .join('')
         .toUpperCase();
+
+function EmployeeAvatar({ photo, avatar, name }: { photo?: string | null; avatar?: string | null; name: string }) {
+    const src = useStorageSrc(photo || avatar);
+    return (
+        <Avatar className="h-9 w-9 shrink-0">
+            <AvatarImage src={src || undefined} alt={name} />
+            <AvatarFallback className="text-xs bg-muted">{getInitials(name)}</AvatarFallback>
+        </Avatar>
+    );
+}
 
 export default function EmployeesPage() {
     const navigate = useNavigate();
@@ -366,12 +378,7 @@ export default function EmployeesPage() {
                                             </TableCell>
                                             <TableCell>
                                                 <div className="flex items-center gap-3">
-                                                    <Avatar className="h-9 w-9 shrink-0">
-                                                        <AvatarImage src={emp.photo ?? emp.avatar ?? undefined} />
-                                                        <AvatarFallback className="text-xs bg-muted">
-                                                            {getInitials(emp.name)}
-                                                        </AvatarFallback>
-                                                    </Avatar>
+                                                    <EmployeeAvatar photo={emp.photo} avatar={emp.avatar} name={emp.name} />
                                                     <div>
                                                         <button
                                                             type="button"
@@ -410,7 +417,7 @@ export default function EmployeesPage() {
                                                     <DropdownMenuContent align="end">
                                                         <DropdownMenuItem onSelect={() => setSalaryDialogEmployee({ id: emp.id, name: emp.name })}>
                                                             <Banknote className="h-4 w-4 mr-2" />
-                                                            Salary Structure
+                                                            Pay setup
                                                         </DropdownMenuItem>
                                                         <DropdownMenuSeparator />
                                                         <DropdownMenuItem onSelect={() => navigate(`/admin/salaries/employees/${emp.id}/payslips`)}>

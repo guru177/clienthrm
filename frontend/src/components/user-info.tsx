@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useInitials } from '@/hooks/use-initials';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import type { OrgPlanInfo } from '@/lib/plan-modules';
 import { type User } from '@/types';
 
@@ -40,12 +41,13 @@ export function UserInfo({
     plan?: OrgPlanInfo | null;
 }) {
     const getInitials = useInitials();
+    const photoSrc = useStorageSrc(user.photo || user.avatar);
     const subscription = plan ? planSubtitle(plan) : null;
 
     return (
         <>
             <Avatar className="h-8 w-8 overflow-hidden rounded-full">
-                <AvatarImage src={user.avatar} alt={user.name} />
+                <AvatarImage src={photoSrc || undefined} alt={user.name} />
                 <AvatarFallback className="rounded-lg bg-neutral-200 text-black dark:bg-neutral-700 dark:text-white">
                     {getInitials(user.name)}
                 </AvatarFallback>

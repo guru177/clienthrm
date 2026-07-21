@@ -19,6 +19,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useStorageSrc } from '@/hooks/use-storage-src';
 import type { OrgPlanInfo } from '@/lib/plan-modules';
 import { handleApiResponse, handleApiError } from '@/lib/toast';
 
@@ -128,6 +129,9 @@ export default function AppSettings() {
     const [formData, setFormData] = useState<Record<string, any>>({});
     const [logoFile, setLogoFile] = useState<File | null>(null);
     const [logoPreview, setLogoPreview] = useState<string | null>(null);
+    const logoSettingForSrc = settings.find((s) => s.key === 'app_logo');
+    const storedLogoSrc = useStorageSrc(logoSettingForSrc?.value);
+    const logoDisplaySrc = logoPreview || storedLogoSrc;
 
     // Fetch settings from API on mount
     useEffect(() => {
@@ -399,7 +403,7 @@ export default function AppSettings() {
         ['app_name', 'app_tagline', 'company_name', 'app_icon', 'copyright_text'].includes(s.key),
     );
 
-    const logoSetting = settings.find((s) => s.key === 'app_logo');
+    const logoSetting = logoSettingForSrc;
 
     const contactSettings = settings.filter((s) =>
         ['contact_person', 'company_email', 'company_phone', 'whatsapp_number', 'company_address', 'support_email'].includes(s.key),
@@ -561,16 +565,16 @@ export default function AppSettings() {
                                     <div className="space-y-3 pb-6 border-b border-border">
                                         <Label>Application Logo</Label>
                                         <div className="flex gap-4 items-start">
-                                            {(logoPreview || logoSetting.value) && (
+                                            {logoDisplaySrc ? (
                                                 <div className="rounded-lg border border-border bg-muted p-4">
                                                     <img
-                                                        src={logoPreview || logoSetting.value || ''}
+                                                        src={logoDisplaySrc}
                                                         alt="App Logo"
                                                         className="h-20 w-20 object-contain"
                                                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                                                     />
                                                 </div>
-                                            )}
+                                            ) : null}
                                             <div className="flex-1 space-y-3">
                                                 <div>
                                                     <Input

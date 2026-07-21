@@ -241,24 +241,32 @@ fn build_attachments_json(conn: &crate::db::Connection, message_id: i64) -> Stri
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
 }
 
-fn batch_reactions_for_space(
+fn batch_reactions_for_messages(
     conn: &crate::db::Connection,
-    space_id: i64,
-    org_id: i64,
+    message_ids: &[i64],
     viewer_id: i64,
 ) -> std::collections::HashMap<i64, Vec<ChatReaction>> {
     use std::collections::HashMap;
-    let sql = "SELECT r.message_id, r.emoji, GROUP_CONCAT(r.user_id)
-               FROM chat_message_reactions r
-               INNER JOIN chat_messages m ON m.id = r.message_id
-               WHERE m.space_id = ?1 AND m.organization_id = ?2
-               GROUP BY r.message_id, r.emoji";
-    let stmt = match conn.prepare(sql) {
+    if message_ids.is_empty() {
+        return HashMap::new();
+    }
+    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT r.message_id, r.emoji, GROUP_CONCAT(r.user_id)
+         FROM chat_message_reactions r
+         WHERE r.message_id IN ({placeholders})
+         GROUP BY r.message_id, r.emoji"
+    );
+    let params: Vec<crate::db::ParamValue> = message_ids
+        .iter()
+        .map(|id| crate::db::into_param_value(*id))
+        .collect();
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
     };
     let mut by_message: HashMap<i64, HashMap<String, Vec<i64>>> = HashMap::new();
-    let rows = stmt.query_map(crate::params![space_id, org_id], |row| {
+    let rows = stmt.query_map(crate::db::Params::from_values(params), |row| {
         Ok((
             row.get_idx::<i64>(0)?,
             row.get_idx::<String>(1)?,
@@ -298,22 +306,30 @@ fn batch_reactions_for_space(
         .collect()
 }
 
-fn batch_attachments_for_space(
+fn batch_attachments_for_messages(
     conn: &crate::db::Connection,
-    space_id: i64,
-    org_id: i64,
+    message_ids: &[i64],
 ) -> std::collections::HashMap<i64, Vec<crate::models::chat::ChatAttachment>> {
     use std::collections::HashMap;
-    let sql = "SELECT a.message_id, a.id, a.file_name, a.file_url, a.file_size, a.mime_type
-               FROM chat_message_attachments a
-               INNER JOIN chat_messages m ON m.id = a.message_id
-               WHERE m.space_id = ?1 AND m.organization_id = ?2";
-    let stmt = match conn.prepare(sql) {
+    if message_ids.is_empty() {
+        return HashMap::new();
+    }
+    let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT a.message_id, a.id, a.file_name, a.file_url, a.file_size, a.mime_type
+         FROM chat_message_attachments a
+         WHERE a.message_id IN ({placeholders})"
+    );
+    let params: Vec<crate::db::ParamValue> = message_ids
+        .iter()
+        .map(|id| crate::db::into_param_value(*id))
+        .collect();
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
     };
     let mut by_message: HashMap<i64, Vec<crate::models::chat::ChatAttachment>> = HashMap::new();
-    let rows = stmt.query_map(crate::params![space_id, org_id], |row| {
+    let rows = stmt.query_map(crate::db::Params::from_values(params), |row| {
         Ok((
             row.get_idx::<i64>(0)?,
             crate::models::chat::ChatAttachment {
@@ -389,20 +405,12 @@ fn fetch_message(
 
 fn auto_join_public_channels(conn: &crate::db::Connection, org_id: i64, user_id: i64) {
     let now = now_ts();
-    let stmt = match conn.prepare(
-        "SELECT id FROM chat_spaces WHERE organization_id = ?1 AND kind = 'channel' AND is_private = 0",
-    ) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let ids: Vec<i64> = stmt
-        .query_map([org_id], |r| r.get_idx::<i64>(0));
-    for space_id in ids {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO chat_space_members (space_id, user_id, role, joined_at) VALUES (?1, ?2, 'member', ?3)",
-            crate::params![space_id, user_id, &now],
-        );
-    }
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO chat_space_members (space_id, user_id, role, joined_at)
+         SELECT id, ?2, 'member', ?3 FROM chat_spaces
+         WHERE organization_id = ?1 AND kind = 'channel' AND is_private = 0",
+        crate::params![org_id, user_id, &now],
+    );
 }
 
 /// GET /api/admin/chat/spaces
@@ -418,48 +426,75 @@ pub async fn spaces_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
+    // Keep this path read-cheap. Full department sync belongs on dept/user mutations.
     let _ = ensure_general_channel(&conn, org_id, user_id);
-    crate::chat_department_channels::sync_all_department_channels(&conn, org_id, user_id);
-    crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
+    crate::chat_department_channels::ensure_viewer_department_membership(&conn, org_id, user_id);
     auto_join_public_channels(&conn, org_id, user_id);
 
-    let stmt = match conn.prepare(
-        "SELECT s.id FROM chat_spaces s
-         JOIN chat_space_members m ON m.space_id = s.id AND m.user_id = ?2
+    let mut spaces: Vec<ChatSpace> = match conn.query_map_result(
+        "SELECT s.id, s.organization_id, s.kind, s.name, s.slug, s.description, s.topic, s.is_private,
+                s.department_id, s.created_by, s.created_at, s.updated_at,
+                (SELECT COUNT(*) FROM chat_space_members m WHERE m.space_id = s.id) AS member_count,
+                (SELECT COUNT(*) FROM chat_messages msg
+                 WHERE msg.space_id = s.id AND msg.is_deleted = 0
+                   AND msg.created_at > COALESCE(mem.last_read_at, '1970-01-01')
+                   AND msg.user_id != ?2) AS unread_count,
+                (SELECT created_at FROM chat_messages WHERE space_id = s.id AND parent_id IS NULL AND is_deleted = 0 ORDER BY id DESC LIMIT 1) AS last_message_at,
+                (SELECT substr(content, 1, 80) FROM chat_messages WHERE space_id = s.id AND parent_id IS NULL AND is_deleted = 0 ORDER BY id DESC LIMIT 1) AS last_message_preview
+         FROM chat_spaces s
+         JOIN chat_space_members mem ON mem.space_id = s.id AND mem.user_id = ?2
          WHERE s.organization_id = ?1
          ORDER BY s.kind ASC,
                   COALESCE((SELECT MAX(created_at) FROM chat_messages WHERE space_id = s.id), s.updated_at) DESC",
+        crate::params![org_id, user_id],
+        |row| {
+            Ok(ChatSpace {
+                id: row.get("id")?,
+                organization_id: row.get("organization_id")?,
+                kind: row.get("kind")?,
+                name: row.get("name")?,
+                slug: row.get("slug")?,
+                description: row.get("description")?,
+                topic: row.get("topic")?,
+                is_private: row.get_boolish("is_private")?,
+                department_id: row.get("department_id")?,
+                created_by: row.get("created_by")?,
+                created_at: row.get_string_flex("created_at")?,
+                updated_at: row.get_string_flex("updated_at")?,
+                member_count: row.get("member_count")?,
+                unread_count: row.get("unread_count")?,
+                last_message_at: row.get("last_message_at")?,
+                last_message_preview: row.get("last_message_preview")?,
+                dm_members: None,
+            })
+        },
     ) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("chat spaces list failed for org {org_id}: {e}");
+            return HttpResponse::InternalServerError().json(ApiError::new("Failed to load spaces"));
+        }
     };
 
-    let space_ids: Vec<i64> = stmt
-        .query_map(crate::params![org_id, user_id], |r| r.get_idx::<i64>(0));
-
-    let spaces: Vec<ChatSpace> = space_ids
-        .into_iter()
-        .filter_map(|id| {
-            let mut space = load_space_row(&conn, id, org_id, user_id)?;
-            if space.kind == "dm" {
-                space.dm_members = Some(load_dm_members(&conn, id, user_id));
-                if let Some(members) = &space.dm_members {
-                    if members.len() == 1 {
-                        space.name = Some(members[0].name.clone());
-                    } else if members.len() > 1 {
-                        space.name = Some(
-                            members
-                                .iter()
-                                .map(|m| m.name.split_whitespace().next().unwrap_or(&m.name))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        );
-                    }
-                }
+    for space in &mut spaces {
+        if space.kind != "dm" {
+            continue;
+        }
+        space.dm_members = Some(load_dm_members(&conn, space.id, user_id));
+        if let Some(members) = &space.dm_members {
+            if members.len() == 1 {
+                space.name = Some(members[0].name.clone());
+            } else if members.len() > 1 {
+                space.name = Some(
+                    members
+                        .iter()
+                        .map(|m| m.name.split_whitespace().next().unwrap_or(&m.name))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
             }
-            Some(space)
-        })
-        .collect();
+        }
+    }
 
     HttpResponse::Ok().json(ApiResponse::success(spaces))
 }
@@ -879,8 +914,9 @@ pub async fn messages_index(
         }
     };
 
-    let reactions_map = batch_reactions_for_space(&conn, space_id, org_id, user_id);
-    let attachments_map = batch_attachments_for_space(&conn, space_id, org_id);
+    let message_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    let reactions_map = batch_reactions_for_messages(&conn, &message_ids, user_id);
+    let attachments_map = batch_attachments_for_messages(&conn, &message_ids);
 
     for msg in &mut messages {
         msg.reactions = reactions_map
@@ -1433,21 +1469,24 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
     };
     let cutoff = chrono::Utc::now() - chrono::Duration::minutes(15);
     let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
-    let stmt = match conn.prepare(
+    let mut sql = String::from(
         "SELECT u.id, u.name, u.email, u.photo,
                 CASE WHEN p.last_active_at >= ?2 THEN 1 ELSE 0 END AS is_online
          FROM users u
          LEFT JOIN user_presence p ON p.user_id = u.id
-         WHERE u.organization_id = ?1 AND u.deleted_at IS NULL
-         ORDER BY u.name",
-    ) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
+         WHERE u.organization_id = ?1 AND u.deleted_at IS NULL",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(cutoff_str),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY u.name");
 
-    let users: Vec<ChatMember> = stmt
-        .query_map(crate::params![org_id, cutoff_str], |row| {
+    let users: Vec<ChatMember> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
             Ok(ChatMember {
                 user_id: row.get_idx::<i64>(0)?,
                 name: row.get_idx::<String>(1)?,
@@ -1455,7 +1494,9 @@ pub async fn users_index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
                 photo: row.get_idx::<Option<String>>(3)?,
                 is_online: row.get_idx::<i64>(4)? != 0,
             })
-        });
+        }),
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    };
 
     HttpResponse::Ok().json(ApiResponse::success(users))
 }

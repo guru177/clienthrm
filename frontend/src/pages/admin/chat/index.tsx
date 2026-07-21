@@ -761,7 +761,28 @@ export default function TeamChatPage() {
             } else if (evtSpaceId === activeSpaceId) {
                 setMessages((prev) => upsertById(prev, msg));
             }
-            if (type === 'message.new') void loadSpaces();
+            if (type === 'message.new') {
+                setSpaces((prev) => {
+                    const exists = prev.some((s) => s.id === evtSpaceId);
+                    if (!exists) {
+                        void loadSpaces();
+                        return prev;
+                    }
+                    return prev.map((s) => {
+                        if (s.id !== evtSpaceId) return s;
+                        const viewing = evtSpaceId === activeSpaceId;
+                        return {
+                            ...s,
+                            last_message_at: msg.created_at,
+                            last_message_preview: (msg.content || '').slice(0, 80),
+                            unread_count:
+                                viewing || msg.user_id === currentUserId
+                                    ? s.unread_count
+                                    : s.unread_count + 1,
+                        };
+                    });
+                });
+            }
         }
 
         if (type === 'message.deleted' && evtSpaceId === activeSpaceId) {
@@ -775,7 +796,7 @@ export default function TeamChatPage() {
             setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
             setThreadMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
         }
-    }, [activeSpaceId, loadSpaces]);
+    }, [activeSpaceId, currentUserId, loadSpaces]);
 
     const { sendTyping } = useChatWs(handleWsEvent);
 
@@ -783,19 +804,21 @@ export default function TeamChatPage() {
         void (async () => {
             setLoading(true);
             setSpacesReady(false);
-            await Promise.all([loadSpaces(), loadUsers()]);
+            await loadSpaces();
             setSpacesReady(true);
             setLoading(false);
+            // People/mentions list — don't block first paint
+            void loadUsers();
         })();
     }, [loadSpaces, loadUsers]);
 
     useEffect(() => {
         if (!spacesReady || !activeSpaceId) return;
         void loadMessages(activeSpaceId);
-        void loadPins(activeSpaceId);
         setShowPinsPanel(false);
+        setPinnedMessages([]);
         setPreviewAttachment(null);
-    }, [spacesReady, activeSpaceId, loadMessages, loadPins]);
+    }, [spacesReady, activeSpaceId, loadMessages]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -844,7 +867,17 @@ export default function TeamChatPage() {
             }
             clearFn?.();
             setPendingAttachments([]);
-            void loadSpaces();
+            setSpaces((prev) =>
+                prev.map((s) =>
+                    s.id === activeSpaceId
+                        ? {
+                              ...s,
+                              last_message_at: res.data.created_at,
+                              last_message_preview: (res.data.content || '').slice(0, 80),
+                          }
+                        : s,
+                ),
+            );
         } catch (e) {
             handleApiError(e);
         } finally {
@@ -1120,9 +1153,7 @@ export default function TeamChatPage() {
                                             )}
                                         />
                                         <Avatar className="h-6 w-6 shrink-0">
-                                            {person.photo && (
-                                                <AvatarImage src={storageUrl(person.photo)} />
-                                            )}
+                                            {person.photo ? <UserAvatarPhoto path={person.photo} /> : null}
                                             <AvatarFallback className="bg-[#071b3a]/10 text-[10px] text-[#071b3a]">
                                                 {initials(person.name)}
                                             </AvatarFallback>
@@ -1173,8 +1204,11 @@ export default function TeamChatPage() {
                                             showPinsPanel && 'bg-[#071b3a]/10',
                                         )}
                                         onClick={() => {
-                                            setShowPinsPanel((v) => !v);
-                                            if (activeSpaceId) void loadPins(activeSpaceId);
+                                            setShowPinsPanel((v) => {
+                                                const next = !v;
+                                                if (next && activeSpaceId) void loadPins(activeSpaceId);
+                                                return next;
+                                            });
                                         }}
                                     >
                                         <Pin className="mr-1 h-4 w-4" />
@@ -1491,7 +1525,7 @@ export default function TeamChatPage() {
                                     }}
                                 />
                                 <Avatar className="h-8 w-8">
-                                    {u.photo && <AvatarImage src={storageUrl(u.photo)} />}
+                                    {u.photo ? <UserAvatarPhoto path={u.photo} /> : null}
                                     <AvatarFallback className="text-xs">{initials(u.name)}</AvatarFallback>
                                 </Avatar>
                                 <div>

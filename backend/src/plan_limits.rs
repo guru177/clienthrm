@@ -40,6 +40,10 @@ pub const MODULE_CATALOG: &[(&str, &str)] = &[
     ("my_payslips", "My Payslips"),
     ("doctor_reports", "Doctor Reports"),
     ("my_doctor_reports", "My Doctor Reports"),
+    ("grocery_benefits", "Grocery Benefits"),
+    ("my_grocery_benefits", "My Grocery Benefits"),
+    ("assets", "Assets & Maintenance"),
+    ("my_assets", "My Assets"),
     ("workflows", "Workflows"),
     ("tasks", "Tasks & Activities"),
     ("projects", "Projects"),
@@ -155,6 +159,10 @@ pub fn permissions_for_module(module: &str) -> Vec<&'static str> {
             "delete-doctor-reports",
         ],
         "my_doctor_reports" => vec!["view-my-doctor-reports"],
+        "grocery_benefits" => vec!["view-grocery-benefits", "manage-grocery-benefits"],
+        "my_grocery_benefits" => vec!["view-my-grocery-benefits"],
+        "assets" => vec!["view-assets", "manage-assets"],
+        "my_assets" => vec!["view-my-assets"],
         "workflows" => vec![
             "view-workflows",
             "create-workflows",
@@ -264,6 +272,14 @@ pub fn seed_all_permissions(conn: &Connection) {
             );
         }
     }
+    // Org-wide branch RBAC bypass (not tied to a plan module; granted to admins only).
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO permissions (name, slug, description, \"group\", created_at, updated_at)
+         VALUES ('Access All Centers', 'access-all-centers',
+                 'Bypass branch RBAC and manage all branches in the organization',
+                 'Users', datetime('now'), datetime('now'))",
+        [],
+    );
 }
 
 pub fn plan_slug_exists(conn: &Connection, slug: &str) -> bool {

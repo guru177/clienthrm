@@ -487,6 +487,29 @@ fn run_saas_migrations(conn: &rusqlite::Connection) {
     migrate_org_subscription_period(conn);
     migrate_subscription_plans(conn);
 
+    if !column_exists(conn, "attendance", "clock_out_location") {
+        let _ = conn.execute("ALTER TABLE attendance ADD COLUMN clock_out_location TEXT", []);
+        log::info!("Added clock_out_location to attendance table");
+    }
+
+    if !column_exists(conn, "centers", "latitude") {
+        let _ = conn.execute("ALTER TABLE centers ADD COLUMN latitude REAL", []);
+        let _ = conn.execute("ALTER TABLE centers ADD COLUMN longitude REAL", []);
+        let _ = conn.execute("ALTER TABLE centers ADD COLUMN geofence_radius_m REAL", []);
+        log::info!("Added geofence columns to centers");
+    }
+    if !column_exists(conn, "attendance", "out_of_zone") {
+        let _ = conn.execute(
+            "ALTER TABLE attendance ADD COLUMN out_of_zone INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE attendance ADD COLUMN geofence_distance_m REAL",
+            [],
+        );
+        log::info!("Added out_of_zone columns to attendance");
+    }
+
     log::info!("SaaS tenant migrations applied");
 
     seed_platform_admin(conn);
@@ -1652,5 +1675,186 @@ pub fn migrate_assets(conn: &crate::db::Connection) {
         log::warn!("assets migration: {e}");
     } else {
         log::info!("assets tables ready");
+    }
+}
+
+/// Branch-scoped RBAC: which centers a user may administer.
+pub fn migrate_user_centers(conn: &crate::db::Connection) {
+    let ddl = r#"
+        CREATE TABLE IF NOT EXISTS user_centers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            center_id INTEGER NOT NULL REFERENCES centers(id) ON DELETE CASCADE,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, center_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_centers_user ON user_centers(user_id);
+        CREATE INDEX IF NOT EXISTS idx_user_centers_org ON user_centers(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_user_centers_center ON user_centers(center_id);
+    "#;
+    let sql = crate::db::dialect::adapt_sql(ddl, conn.backend());
+    if let Err(e) = conn.execute_batch(&sql) {
+        log::warn!("user_centers migration: {e}");
+    } else {
+        log::info!("user_centers table ready");
+    }
+
+    // Seed access-all-centers permission (org-wide branch bypass).
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = conn.execute(
+        "INSERT INTO permissions (name, slug, description, \"group\", created_at, updated_at)
+         SELECT 'Access All Centers', 'access-all-centers',
+                'Bypass branch RBAC and manage all branches in the organization',
+                'Users', ?1, ?1
+         WHERE NOT EXISTS (SELECT 1 FROM permissions WHERE slug = 'access-all-centers')",
+        crate::params![&now],
+    );
+
+    // Grant to org admins only.
+    let _ = conn.execute(
+        "INSERT INTO permission_role (permission_id, role_id, created_at, updated_at)
+         SELECT p.id, r.id, ?1, ?1
+         FROM permissions p
+         CROSS JOIN roles r
+         WHERE p.slug = 'access-all-centers'
+           AND lower(r.slug) IN ('admin', 'administrator')
+           AND NOT EXISTS (
+             SELECT 1 FROM permission_role pr2
+             WHERE pr2.permission_id = p.id AND pr2.role_id = r.id
+           )",
+        crate::params![&now],
+    );
+
+    // Ensure non-admin roles never keep org-wide branch bypass.
+    let _ = conn.execute(
+        "DELETE FROM permission_role
+         WHERE permission_id = (SELECT id FROM permissions WHERE slug = 'access-all-centers')
+           AND role_id NOT IN (
+             SELECT id FROM roles WHERE lower(slug) IN ('admin', 'administrator')
+           )",
+        [],
+    );
+
+    // Backfill managed centers from numeric work_location (Postgres).
+    if conn.backend() == crate::db::dialect::Backend::Postgres {
+        let _ = conn.execute(
+            "INSERT INTO user_centers (user_id, center_id, organization_id, created_at, updated_at)
+             SELECT u.id, c.id, u.organization_id, datetime('now'), datetime('now')
+             FROM users u
+             INNER JOIN centers c ON c.organization_id = u.organization_id
+               AND TRIM(COALESCE(u.work_location, '')) = CAST(c.id AS TEXT)
+             WHERE u.deleted_at IS NULL
+               AND TRIM(COALESCE(u.work_location, '')) ~ '^[0-9]+$'
+             ON CONFLICT (user_id, center_id) DO NOTHING",
+            [],
+        );
+    }
+}
+
+/// Emergency contact + identity document file paths on users.
+pub fn migrate_user_profile_docs(conn: &crate::db::Connection) {
+    for (col, ddl) in [
+        ("emergency_contact", "ALTER TABLE users ADD COLUMN emergency_contact TEXT"),
+        ("doc_aadhaar", "ALTER TABLE users ADD COLUMN doc_aadhaar TEXT"),
+        ("doc_pan", "ALTER TABLE users ADD COLUMN doc_pan TEXT"),
+        ("doc_id_proof", "ALTER TABLE users ADD COLUMN doc_id_proof TEXT"),
+        ("doc_other", "ALTER TABLE users ADD COLUMN doc_other TEXT"),
+    ] {
+        if let Err(e) = conn.execute(ddl, []) {
+            let msg = e.to_string().to_lowercase();
+            if !msg.contains("duplicate") && !msg.contains("already exists") {
+                log::warn!("user profile docs column {col}: {e}");
+            }
+        }
+    }
+    log::info!("user profile docs columns ready");
+}
+
+/// Flag for employees who never log in — HR operates the app for them.
+pub fn migrate_user_hr_managed(conn: &crate::db::Connection) {
+    if let Err(e) = conn.execute(
+        "ALTER TABLE users ADD COLUMN hr_managed INTEGER NOT NULL DEFAULT 0",
+        [],
+    ) {
+        let msg = e.to_string().to_lowercase();
+        if !msg.contains("duplicate") && !msg.contains("already exists") {
+            log::warn!("users.hr_managed column: {e}");
+        }
+    }
+    log::info!("users.hr_managed column ready");
+}
+
+/// Prevent duplicate active emails within an organization (case-insensitive).
+pub fn migrate_users_unique_org_email(conn: &crate::db::Connection) {
+    // Soft-fail when historical duplicates exist — app-layer still enforces new writes.
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_org_lower_email_active
+         ON users (organization_id, lower(email))
+         WHERE deleted_at IS NULL"
+    } else {
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_org_lower_email_active
+         ON users (organization_id, email COLLATE NOCASE)
+         WHERE deleted_at IS NULL"
+    };
+    match conn.execute_batch(ddl) {
+        Ok(()) => log::info!("users unique org email index ready"),
+        Err(e) => log::warn!(
+            "users unique org email index skipped (resolve duplicate emails first): {e}"
+        ),
+    }
+}
+
+/// API keys for generic biometric punch ingest (any brand via HTTP bridge).
+pub fn migrate_biometric_ingest_keys(conn: &crate::db::Connection) {
+    let exists = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        conn.query_row(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'biometric_ingest_keys' LIMIT 1",
+            crate::params![],
+            |_| Ok(()),
+        )
+        .is_ok()
+    } else {
+        table_exists(conn.sqlite_conn(), "biometric_ingest_keys")
+    };
+    if exists {
+        return;
+    }
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        r#"
+        CREATE TABLE IF NOT EXISTS biometric_ingest_keys (
+            id SERIAL PRIMARY KEY,
+            organization_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Push API key',
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_org ON biometric_ingest_keys(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_prefix ON biometric_ingest_keys(key_prefix);
+        "#
+    } else {
+        r#"
+        CREATE TABLE IF NOT EXISTS biometric_ingest_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Push API key',
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_org ON biometric_ingest_keys(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_bio_ingest_keys_prefix ON biometric_ingest_keys(key_prefix);
+        "#
+    };
+    if let Err(e) = conn.execute_batch(ddl) {
+        log::warn!("biometric_ingest_keys migration: {e}");
+    } else {
+        log::info!("biometric_ingest_keys table ready");
     }
 }

@@ -80,8 +80,8 @@ export default function DesignationTable({ onEdit, onRefresh, refreshTrigger = 0
     const [total, setTotal] = useState(0);
     const [from, setFrom] = useState(0);
     const [to, setTo] = useState(0);
-    const [sortBy, setSortBy] = useState('level');
-    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+    const [sortBy, setSortBy] = useState('created_at');
+    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [deleteId, setDeleteId] = useState<number | null>(null);
     const [deleting, setDeleting] = useState(false);
 

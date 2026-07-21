@@ -63,6 +63,16 @@ pub fn save_desktop_installer(
     let installer_path = desktop_updates_dir().join(&installer_name);
     fs::write(&installer_path, data).map_err(|e| format!("Could not save installer: {e}"))?;
 
+    let relative = format!("desktop-updates/{installer_name}");
+    if let Err(e) = crate::object_storage::put_object(
+        &relative,
+        data,
+        "application/octet-stream",
+    ) {
+        let _ = fs::remove_file(&installer_path);
+        return Err(e);
+    }
+
     Ok(installer_name)
 }
 

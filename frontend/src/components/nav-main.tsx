@@ -9,6 +9,7 @@ import {
     SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem,
 } from '@/components/ui/sidebar';
 import { type NavGroup, type NavItem } from '@/types';
+import { cn } from '@/lib/utils';
 
 function isNavGroup(item: NavItem | NavGroup): item is NavGroup {
     return 'items' in item;
@@ -54,7 +55,7 @@ export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
         isNavHrefActive(location.pathname, href, navHrefs);
 
     return (
-        <SidebarGroup className="px-2 py-0">
+        <SidebarGroup className="px-2.5 py-1">
             <SidebarMenu>
                 {items.map((item) =>
                     isNavGroup(item) ? (
@@ -65,10 +66,23 @@ export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
                         >
                             <SidebarMenuItem>
                                 <CollapsibleTrigger asChild>
-                                    <SidebarMenuButton tooltip={{ children: item.title }}>
-                                        {item.icon && <item.icon />}
+                                    <SidebarMenuButton
+                                        tooltip={{ children: item.title }}
+                                        className={cn(
+                                            'group/nav-group',
+                                            item.items.some((sub) => urlIsActive(sub.href)) &&
+                                                'bg-white/45 font-semibold text-sidebar-foreground shadow-[inset_0_0_0_1px_rgba(7,27,58,0.06)]',
+                                        )}
+                                    >
+                                        {item.icon && <item.icon aria-hidden />}
                                         <span>{item.title}</span>
-                                        <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]:rotate-90" />
+                                        <ChevronRight
+                                            aria-hidden
+                                            className={cn(
+                                                'ml-auto size-3.5 shrink-0 opacity-40 transition-all duration-200',
+                                                'group-data-[state=open]/nav-group:rotate-90 group-data-[state=open]/nav-group:opacity-65',
+                                            )}
+                                        />
                                     </SidebarMenuButton>
                                 </CollapsibleTrigger>
                                 <CollapsibleContent>
@@ -77,7 +91,7 @@ export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
                                             <SidebarMenuSubItem key={subItem.title}>
                                                 <SidebarMenuSubButton asChild isActive={urlIsActive(subItem.href)}>
                                                     <Link to={subItem.href}>
-                                                        {subItem.icon && <subItem.icon />}
+                                                        {subItem.icon && <subItem.icon aria-hidden />}
                                                         <span>{subItem.title}</span>
                                                     </Link>
                                                 </SidebarMenuSubButton>
@@ -91,7 +105,7 @@ export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
                         <SidebarMenuItem key={item.title}>
                             <SidebarMenuButton asChild isActive={urlIsActive(item.href)} tooltip={{ children: item.title }}>
                                 <Link to={item.href}>
-                                    {item.icon && <item.icon />}
+                                    {item.icon && <item.icon aria-hidden />}
                                     <span>{item.title}</span>
                                 </Link>
                             </SidebarMenuButton>

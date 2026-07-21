@@ -20,8 +20,16 @@ import AppLayout from '@/layouts/app-layout';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import { usePermissions } from '@/hooks/use-permissions';
 import { useAttendanceStats } from '@/hooks/use-attendance-stats';
+import { useLocationTracking } from '@/hooks/use-location-tracking';
+import {
+    enqueueOfflinePunch,
+    getOfflinePunchQueue,
+    isNetworkError,
+    removeOfflinePunch,
+} from '@/lib/offline-punch-queue';
 import { isModuleAllowed } from '@/lib/plan-modules';
 import { type SharedData } from '@/types';
+import toast from 'react-hot-toast';
 
 export default function AttendancePage() {
     const { user, planModules } = useAuth();
@@ -64,12 +72,16 @@ export default function AttendancePage() {
         return () => clearInterval(interval);
     }, [activeClockIn?.clock_in, activeClockIn?.clock_out]);
 
+    const { requestLocation, locationData } = useLocationTracking();
+
     const loadData = async () => {
         setLoading(true);
         try {
-            const todayRes = await axios.get('/admin/attendance/today');
+            const [todayRes] = await Promise.all([
+                axios.get('/admin/attendance/today'),
+                reloadStats().catch(() => null),
+            ]);
             setTodayData(todayRes.data.data);
-            await reloadStats();
         } catch (error) {
             handleApiError(error);
         } finally {
@@ -77,16 +89,66 @@ export default function AttendancePage() {
         }
     };
 
+    const flushOfflinePunches = async () => {
+        if (!canClockIn || !navigator.onLine) return;
+        const queue = getOfflinePunchQueue();
+        if (queue.length === 0) return;
+
+        let synced = 0;
+        for (const item of queue) {
+            try {
+                if (item.type === 'clock-in') {
+                    await axios.post('/admin/attendance/clock-in', item.payload);
+                } else {
+                    await axios.post('/admin/attendance/clock-out', item.payload);
+                }
+                removeOfflinePunch(item.id);
+                synced += 1;
+            } catch (error) {
+                if (isNetworkError(error)) break;
+                removeOfflinePunch(item.id);
+                handleApiError(error);
+            }
+        }
+        if (synced > 0) {
+            toast.success('Offline punches synced');
+            await loadData();
+        }
+    };
+
+    useEffect(() => {
+        if (!canClockIn) return;
+        const onOnline = () => {
+            void flushOfflinePunches();
+        };
+        window.addEventListener('online', onOnline);
+        void flushOfflinePunches();
+        return () => window.removeEventListener('online', onOnline);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- flush on mount / permission only
+    }, [canClockIn]);
+
     const handleClockIn = async (payload: ClockInVerificationPayload) => {
         setClockingIn(true);
         try {
+            if (!navigator.onLine) {
+                enqueueOfflinePunch('clock-in', payload as unknown as Record<string, unknown>);
+                toast.success('Clock-in saved offline — will sync when online');
+                setClockInOpen(false);
+                return;
+            }
             const response = await axios.post('/admin/attendance/clock-in', payload);
             handleApiResponse(response);
-            // Reload attendance data to get updated list
-            await loadData();
             setClockInOpen(false);
+            // Refresh UI in background — don't block the success path.
+            void loadData();
         } catch (error) {
-            handleApiError(error);
+            if (canClockIn && isNetworkError(error)) {
+                enqueueOfflinePunch('clock-in', payload as unknown as Record<string, unknown>);
+                toast.success('Clock-in saved offline — will sync when online');
+                setClockInOpen(false);
+            } else {
+                handleApiError(error);
+            }
         } finally {
             setClockingIn(false);
         }
@@ -95,12 +157,30 @@ export default function AttendancePage() {
     const handleClockOut = async () => {
         setClockingOut(true);
         try {
-            const response = await axios.post('/admin/attendance/clock-out');
+            // Use cached GPS when available; otherwise soft-timeout so the button feels instant.
+            const location =
+                locationData ??
+                (await Promise.race([
+                    requestLocation({ softTimeoutMs: 2500 }),
+                    new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 2800)),
+                ]));
+            const payload = location ? { location } : {};
+            if (!navigator.onLine) {
+                enqueueOfflinePunch('clock-out', payload);
+                toast.success('Clock-out saved offline — will sync when online');
+                return;
+            }
+            const response = await axios.post('/admin/attendance/clock-out', payload);
             handleApiResponse(response);
-            // Reload attendance data to get updated list
-            await loadData();
+            void loadData();
         } catch (error) {
-            handleApiError(error);
+            if (canClockIn && isNetworkError(error)) {
+                const location = locationData ?? (await requestLocation({ softTimeoutMs: 1500 }).catch(() => null));
+                enqueueOfflinePunch('clock-out', location ? { location } : {});
+                toast.success('Clock-out saved offline — will sync when online');
+            } else {
+                handleApiError(error);
+            }
         } finally {
             setClockingOut(false);
         }
@@ -163,26 +243,26 @@ export default function AttendancePage() {
         <AppLayout breadcrumbs={breadcrumbs}>
             
 
-            <div className="space-y-6">
+            <div className="min-w-0 max-w-full space-y-6">
                 {/* Header */}
-                <div className="flex items-start justify-between gap-4">
-                    <div>
-                        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                            <Calendar className="h-8 w-8 text-primary" />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                        <h1 className="flex items-center gap-2 break-words text-2xl font-bold tracking-tight sm:text-3xl">
+                            <Calendar className="h-7 w-7 shrink-0 text-primary sm:h-8 sm:w-8" />
                             Attendance
                         </h1>
-                        <p className="text-muted-foreground mt-1">
+                        <p className="text-muted-foreground mt-1 break-words">
                             Track your daily clock-in and clock-out times
                         </p>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                         {hasPermission('view-leave-requests') && (
-                            <Button variant="outline" onClick={() => navigate('/admin/leave-requests')}>
+                            <Button variant="outline" className="min-h-11 w-full sm:w-auto" onClick={() => navigate('/admin/leave-requests')}>
                                 Leave Requests
                             </Button>
                         )}
                         {canMarkManual && (
-                            <Button variant="outline" asChild>
+                            <Button variant="outline" className="min-h-11 w-full sm:w-auto" asChild>
                                 <Link to="/admin/manual-attendance">
                                     <UserCheck className="mr-2 h-4 w-4" />
                                     Mark attendance
@@ -195,9 +275,9 @@ export default function AttendancePage() {
                 {/* Today's Attendance Card */}
                 <Card>
                     <CardHeader>
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <CardTitle>Today's Attendance</CardTitle>
+                        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                                <CardTitle className="break-words">Today's Attendance</CardTitle>
                                 {todayData?.total_sessions > 0 && (
                                     <p className="text-sm text-muted-foreground mt-1">
                                         {todayData.total_sessions} session{todayData.total_sessions > 1 ? 's' : ''} today
@@ -242,7 +322,7 @@ export default function AttendancePage() {
                                             </span>
                                         )}
                                     </div>
-                                    <p className="text-5xl font-bold text-green-600 dark:text-green-400 font-mono">
+                                    <p className="text-3xl font-bold text-green-600 dark:text-green-400 font-mono sm:text-5xl break-all">
                                         {formatElapsedTime(totalDurationSeconds)}
                                     </p>
                                     {todayData?.total_sessions > 1 && (
@@ -340,11 +420,11 @@ export default function AttendancePage() {
 
                             {/* Action Buttons */}
                             {canClockIn && (
-                            <div className="flex gap-3">
+                            <div className="sticky z-10 -mx-1 flex gap-3 bg-background/95 py-2 backdrop-blur bottom-[calc(4.5rem+env(safe-area-inset-bottom))] md:static md:bottom-auto md:bg-transparent md:py-0 md:backdrop-blur-none">
                                 <Button
                                     onClick={() => setClockInOpen(true)}
                                     disabled={clockingIn}
-                                    className="flex-1"
+                                    className="min-h-11 flex-1"
                                     size="lg"
                                     variant={activeClockIn ? 'outline' : 'default'}
                                 >
@@ -357,7 +437,7 @@ export default function AttendancePage() {
                                         !activeClockIn ||
                                         clockingOut
                                     }
-                                    className="flex-1"
+                                    className="min-h-11 flex-1"
                                     size="lg"
                                     variant={!activeClockIn ? 'outline' : 'default'}
                                 >

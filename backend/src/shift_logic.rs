@@ -216,7 +216,7 @@ pub fn user_is_scheduled_working_day(conn: &Connection, user_id: i64, date: &str
             return true;
         }
     }
-    let mask = resolve_shift_for_user(conn, user_id, date).working_days_mask;
+    let mask = resolve_shift_for_user_readonly(conn, user_id, date).working_days_mask;
     is_working_day(mask, d)
 }
 
@@ -412,6 +412,24 @@ pub fn resolve_shift_for_user(
     user_id: i64,
     date: &str,
 ) -> ShiftConfig {
+    resolve_shift_for_user_inner(conn, user_id, date, true)
+}
+
+/// Resolve shift without writing missing assignments (safe for list/stats reads).
+pub fn resolve_shift_for_user_readonly(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    date: &str,
+) -> ShiftConfig {
+    resolve_shift_for_user_inner(conn, user_id, date, false)
+}
+
+fn resolve_shift_for_user_inner(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    date: &str,
+    assign_if_missing: bool,
+) -> ShiftConfig {
     if let Some((is_off, daily)) = query_daily_roster(conn, user_id, date) {
         if let Some(shift) = daily {
             return shift;
@@ -429,9 +447,12 @@ pub fn resolve_shift_for_user(
         return shift;
     }
 
-    let _ = assign_general_shift_to_user(conn, user_id, date);
+    if assign_if_missing {
+        let _ = assign_general_shift_to_user(conn, user_id, date);
+        return query_shift_for_user(conn, user_id, date).unwrap_or_else(default_shift_config);
+    }
 
-    query_shift_for_user(conn, user_id, date).unwrap_or_else(default_shift_config)
+    default_shift_config()
 }
 
 fn default_shift_config() -> ShiftConfig {

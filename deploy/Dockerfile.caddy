@@ -1,0 +1,6 @@
+# Serves pre-built tenant + platform static apps via Caddy (HTTPS)
+# Build frontends locally before deploy: see scripts/deploy-production.ps1
+FROM caddy:2-alpine
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
+COPY frontend/dist /srv/tenant
+COPY platform/dist /srv/platform

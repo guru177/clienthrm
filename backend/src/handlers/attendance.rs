@@ -162,12 +162,26 @@ pub async fn clock_in(
         .as_ref()
         .and_then(|loc| serde_json::to_string(loc).ok());
 
+    let punch_lat = body.location.as_ref().map(|l| l.geo.lat);
+    let punch_lng = body.location.as_ref().map(|l| l.geo.lng);
+    let fence = crate::geo_policy::geofence_for_user(&conn, claims.sub, org_id);
+    let (out_of_zone, distance_m) =
+        crate::geo_policy::evaluate_punch(fence.as_ref(), punch_lat, punch_lng);
+    if out_of_zone {
+        let policy = crate::geo_policy::geofence_policy(&conn, org_id);
+        if policy.eq_ignore_ascii_case("reject") {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "Clock-in rejected: you are outside the allowed branch geofence",
+            ));
+        }
+    }
+
     // Close any open session (today or prior-day overnight) before starting a new one
     close_open_session_before_clock_in(&conn, claims.sub, &date, &time, &ts, &shift);
 
     match conn.execute(
-        "INSERT INTO attendance (user_id, date, clock_in, status, is_late, clock_in_location, clock_in_face_verified, clock_in_face_match_score, source, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'present', ?4, ?5, ?6, ?7, 'app', ?8, ?8)",
+        "INSERT INTO attendance (user_id, date, clock_in, status, is_late, clock_in_location, clock_in_face_verified, clock_in_face_match_score, source, out_of_zone, geofence_distance_m, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'present', ?4, ?5, ?6, ?7, 'app', ?8, ?9, ?10, ?10)",
         crate::params![
             claims.sub,
             &date,
@@ -176,20 +190,54 @@ pub async fn clock_in(
             location_json,
             if face_verified { 1 } else { 0 },
             body.face_match_score,
+            if out_of_zone { 1 } else { 0 },
+            distance_m,
             &ts,
         ],
     ) {
-        Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-            "message": "Clocked in",
-            "time": time,
-            "shift": shift.to_json(),
-            "is_late": is_late,
-        }))),
+        Ok(_) => {
+            let attendance_id = conn.last_insert_rowid();
+            let ctx = serde_json::json!({
+                "attendance_id": attendance_id,
+                "user_id": claims.sub,
+                "date": date,
+                "clock_in": time,
+                "is_late": is_late,
+                "out_of_zone": out_of_zone,
+                "geofence_distance_m": distance_m,
+                "source": "app",
+                "organization_id": org_id,
+                "created_by": claims.sub,
+            });
+            // Fire workflows/webhooks after responding so clock-in feels instant.
+            let pool_bg = pool.clone();
+            let ctx_bg = ctx.clone();
+            let late = is_late;
+            tokio::spawn(async move {
+                let Ok(conn) = pool_bg.get_for_tenant(org_id) else {
+                    log::warn!("clock_in side-effects: database unavailable");
+                    return;
+                };
+                crate::workflow_logic::trigger(&conn, org_id, "attendance_clock_in", &ctx_bg);
+                if late {
+                    crate::workflow_logic::trigger(&conn, org_id, "attendance_late", &ctx_bg);
+                }
+                crate::tenant_webhooks::dispatch(&conn, org_id, "attendance.clock_in", &ctx_bg);
+            });
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "message": "Clocked in",
+                "time": time,
+                "shift": shift.to_json(),
+                "is_late": is_late,
+                "out_of_zone": out_of_zone,
+                "geofence_distance_m": distance_m,
+            })))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
 
-pub async fn clock_out(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+pub async fn clock_out(pool: web::Data<DbPool>, req: HttpRequest, body: Option<web::Json<crate::models::attendance::ClockOutRequest>>) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
@@ -216,9 +264,13 @@ pub async fn clock_out(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespons
     let duration = calc_duration_minutes(&clock_in, &time);
     let early_exit = early_for_shift(&session_shift, &time);
 
+    let location_json = body
+        .and_then(|b| b.into_inner().location)
+        .and_then(|loc| serde_json::to_string(&loc).ok());
+
     match conn.execute(
-        "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
-        crate::params![&time, duration, if early_exit { 1 } else { 0 }, &ts, att_id],
+        "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, clock_out_location=COALESCE(?4, clock_out_location), updated_at=?5 WHERE id=?6",
+        crate::params![&time, duration, if early_exit { 1 } else { 0 }, location_json, &ts, att_id],
     ) {
         Ok(rows) if rows > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
             "message": "Clocked out",
@@ -260,6 +312,22 @@ pub async fn list(
     } else if let Some(user_id) = query.user_id {
         conditions.push("a.user_id = ?".to_string());
         params.push(crate::db::into_param_value(user_id));
+    } else {
+        let is_sa = crate::tenant::user_is_super_admin(&conn, claims.sub, org_id);
+        let (permissions, _) = crate::plan_limits::resolve_effective_permissions(
+            &conn,
+            org_id,
+            crate::middleware::rbac::load_user_permissions(&conn, claims.sub, is_sa),
+        );
+        let scope = crate::branch_scope::resolve_branch_scope(
+            &conn, claims.sub, org_id, &permissions, is_sa,
+        );
+        crate::branch_scope::push_users_branch_condition_qmark(
+            &mut conditions,
+            &mut params,
+            &scope,
+            "u",
+        );
     }
 
     if let Some(ref status) = query.status {
@@ -349,8 +417,8 @@ pub async fn list(
     let rows: Vec<serde_json::Value> = list_rows
         .iter()
         .map(|item| {
-            let shift = resolve_shift_for_user(&conn, item.att.user_id, &item.att.date);
-            let mut session = session_json(&item.att, Some(&shift));
+            // List view uses stored late/early flags; skip per-row shift resolution (N+1).
+            let mut session = session_json(&item.att, None);
             if let Some(obj) = session.as_object_mut() {
                 obj.insert(
                     "user".to_string(),
@@ -866,15 +934,49 @@ pub async fn store_manual(
         org_id,
         body.user_id,
         date,
-        clock_in,
-        clock_out,
-        status,
+        clock_in.clone(),
+        clock_out.clone(),
+        status.clone(),
         body.notes.clone(),
     ) {
-        Ok(id) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-            "message": "Attendance entry created",
-            "id": id,
-        }))),
+        Ok(id) => {
+            if let Some(email) = crate::tenant_email::user_email(&conn, body.user_id) {
+                let (text, html) = crate::attendance_shift_email::render_manual_attendance_email(
+                    date,
+                    &status,
+                    clock_in.as_deref(),
+                    clock_out.as_deref(),
+                );
+                crate::tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &email,
+                    &format!("Attendance Updated: {date}"),
+                    text,
+                    html,
+                );
+            }
+            if status.eq_ignore_ascii_case("absent") {
+                crate::workflow_logic::trigger(
+                    &conn,
+                    org_id,
+                    "attendance_absent",
+                    &serde_json::json!({
+                        "attendance_id": id,
+                        "user_id": body.user_id,
+                        "date": date,
+                        "status": status,
+                        "source": "manual",
+                        "organization_id": org_id,
+                        "created_by": claims.sub,
+                    }),
+                );
+            }
+            HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "message": "Attendance entry created",
+                "id": id,
+            })))
+        }
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&e)),
     }
 }
@@ -995,5 +1097,111 @@ pub async fn destroy(
     }
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "message": "Attendance record deleted",
+    })))
+}
+
+/// GET /api/admin/attendance/live-locations — all org users for live map monitoring
+pub async fn live_locations(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get_for_tenant(org_id) {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+
+    let stmt = match conn.prepare(
+        "SELECT u.id, u.name, u.email,
+                p.ip_address, p.latitude, p.longitude, p.city, p.region, p.country,
+                p.accuracy_meters, p.last_active_at,
+                CASE WHEN open_sess.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_clocked_in,
+                open_sess.clock_in_location
+         FROM users u
+         LEFT JOIN user_presence p ON p.user_id = u.id AND p.organization_id = u.organization_id
+         LEFT JOIN (
+             SELECT a.user_id, MAX(a.id) AS attendance_id
+             FROM attendance a
+             INNER JOIN users uu ON uu.id = a.user_id AND uu.organization_id = ?1
+             WHERE a.clock_out IS NULL AND a.deleted_at IS NULL
+             GROUP BY a.user_id
+         ) open_ids ON open_ids.user_id = u.id
+         LEFT JOIN attendance open_sess ON open_sess.id = open_ids.attendance_id
+         WHERE u.organization_id = ?1
+           AND u.deleted_at IS NULL
+         ORDER BY is_clocked_in DESC,
+                  CASE WHEN p.last_active_at IS NULL THEN 1 ELSE 0 END,
+                  p.last_active_at DESC,
+                  u.name ASC",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}")))
+        }
+    };
+
+    let users: Vec<serde_json::Value> = stmt.query_map(crate::params![org_id], |row| {
+        let mut latitude: Option<f64> = row.get_idx::<Option<f64>>(4)?;
+        let mut longitude: Option<f64> = row.get_idx::<Option<f64>>(5)?;
+        let clock_in_location: Option<String> = row.get_idx::<Option<String>>(12)?;
+        if latitude.is_none() || longitude.is_none() {
+            if let Some(ref loc) = clock_in_location {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(loc) {
+                    let geo = v.get("geo");
+                    let lat = geo
+                        .and_then(|g| g.get("lat"))
+                        .and_then(|x| x.as_f64())
+                        .or_else(|| v.get("lat").and_then(|x| x.as_f64()));
+                    let lng = geo
+                        .and_then(|g| g.get("lng"))
+                        .and_then(|x| x.as_f64())
+                        .or_else(|| v.get("lng").and_then(|x| x.as_f64()));
+                    if lat.is_some() && lng.is_some() {
+                        latitude = lat;
+                        longitude = lng;
+                    }
+                }
+            }
+        }
+        let has_location = latitude.is_some() && longitude.is_some();
+        let is_clocked_in = row.get_idx::<i64>(11)? != 0;
+        Ok(serde_json::json!({
+            "id": row.get_idx::<i64>(0)?,
+            "name": row.get_idx::<String>(1)?,
+            "email": row.get_idx::<String>(2)?,
+            "ip_address": row.get_idx::<Option<String>>(3)?,
+            "latitude": latitude,
+            "longitude": longitude,
+            "city": row.get_idx::<Option<String>>(6)?,
+            "region": row.get_idx::<Option<String>>(7)?,
+            "country": row.get_idx::<Option<String>>(8)?,
+            "accuracy_meters": row.get_idx::<Option<f64>>(9)?,
+            "last_active_at": row.get_idx::<Option<String>>(10)?,
+            "has_location": has_location,
+            "is_clocked_in": is_clocked_in,
+            "is_active": is_clocked_in,
+        }))
+    });
+
+    let clocked_in_count = users
+        .iter()
+        .filter(|u| u.get("is_clocked_in").and_then(|v| v.as_bool()) == Some(true))
+        .count() as i64;
+    let clocked_out_count = (users.len() as i64) - clocked_in_count;
+    let without_location = users
+        .iter()
+        .filter(|u| u.get("has_location").and_then(|v| v.as_bool()) == Some(false))
+        .count() as i64;
+    let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "users": users,
+        "active_count": clocked_in_count,
+        "inactive_count": clocked_out_count,
+        "clocked_in_count": clocked_in_count,
+        "clocked_out_count": clocked_out_count,
+        "without_location_count": without_location,
+        "updated_at": updated_at,
     })))
 }

@@ -9,6 +9,18 @@ export function storageUrl(path: string | null | undefined): string {
         return trimmed;
     }
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        // Legacy CloudFront / absolute S3 URLs → route through authenticated API when possible
+        try {
+            const u = new URL(trimmed);
+            const m = u.pathname.match(
+                /\/(?:hrm\/)?((?:users|chat|doctor-reports|announcements|org-notifications|desktop-updates)\/.+)$/,
+            );
+            if (m?.[1]) {
+                return apiUrl(`/admin/files/${m[1].replace(/^\/+/, '')}`);
+            }
+        } catch {
+            /* ignore */
+        }
         return '';
     }
 
@@ -49,7 +61,7 @@ export async function authStorageFetch(url: string): Promise<Response> {
     return fetch(url, { headers, credentials: 'include' });
 }
 
-/** Fetch file with Bearer token and return a blob: URL (cached). */
+/** Fetch file with Bearer token and return a blob: URL (cached). Empty string means failure. */
 export async function fetchAuthenticatedBlobUrl(url: string): Promise<string> {
     if (!url) return '';
     const cached = blobCache.get(url);
@@ -58,14 +70,27 @@ export async function fetchAuthenticatedBlobUrl(url: string): Promise<string> {
     const res = await authStorageFetch(url);
     if (!res.ok) return '';
     const blob = await res.blob();
+    if (!blob || blob.size === 0) return '';
     const blobUrl = URL.createObjectURL(blob);
     blobCache.set(url, blobUrl);
     return blobUrl;
 }
 
+/** Drop one cached blob URL (e.g. after replacing a profile photo). */
+export function invalidateStorageBlobUrl(pathOrUrl: string | null | undefined): void {
+    if (!pathOrUrl) return;
+    const url = pathOrUrl.startsWith('http') || pathOrUrl.startsWith('/api/')
+        ? pathOrUrl
+        : storageUrl(pathOrUrl);
+    if (!url) return;
+    const cached = blobCache.get(url);
+    if (cached?.startsWith('blob:')) URL.revokeObjectURL(cached);
+    blobCache.delete(url);
+}
+
 export function clearStorageBlobCache(): void {
-    for (const url of blobCache.values()) {
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+    for (const blobUrl of blobCache.values()) {
+        if (blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
     }
     blobCache.clear();
 }

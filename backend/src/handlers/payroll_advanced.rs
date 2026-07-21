@@ -41,6 +41,23 @@ pub struct VariablePayRequest {
     pub notes: Option<String>,
 }
 
+/// Query params arrive as strings via `serde_json::Value`; accept both string and number.
+fn query_i32(q: &serde_json::Value, key: &str, default: i32) -> i32 {
+    match q.get(key) {
+        Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(default as i64) as i32,
+        Some(serde_json::Value::String(s)) => s.parse().unwrap_or(default),
+        _ => default,
+    }
+}
+
+fn query_i64_opt(q: &serde_json::Value, key: &str) -> Option<i64> {
+    match q.get(key) {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 pub async fn variable_pay_list(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -51,24 +68,34 @@ pub async fn variable_pay_list(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    let month = query.get("month").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let year = query.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let month = query_i32(&query, "month", 0);
+    let year = query_i32(&query, "year", 0);
+    let filter_user_id = query_i64_opt(&query, "user_id");
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let stmt = match conn.prepare(
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
         "SELECT v.id, v.user_id, u.name, v.item_type, v.label, v.amount, v.status, v.notes
          FROM payroll_variable_items v
          JOIN users u ON u.id = v.user_id AND u.organization_id = ?1
-         WHERE v.organization_id = ?1 AND v.month = ?2 AND v.year = ?3
-         ORDER BY v.id DESC",
-    ) {
-        Ok(s) => s,
-        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
-    };
-    let rows: Vec<serde_json::Value> = stmt
-        .query_map(crate::params![org_id, month, year], |row| {
+         WHERE v.organization_id = ?1 AND v.month = ?2 AND v.year = ?3",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    if let Some(uid) = filter_user_id {
+        params.push(crate::db::into_param_value(uid));
+        let n = params.len();
+        sql.push_str(&format!(" AND v.user_id = ?{n}"));
+    }
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY v.id DESC");
+    let rows: Vec<serde_json::Value> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
             Ok(serde_json::json!({
                 "id": row.get_idx::<i64>(0)?,
                 "user_id": row.get_idx::<i64>(1)?,
@@ -79,7 +106,9 @@ pub async fn variable_pay_list(
                 "status": row.get_idx::<String>(6)?,
                 "notes": row.get_idx::<Option<String>>(7)?,
             }))
-        });
+        }),
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
     HttpResponse::Ok().json(ApiResponse::success(rows))
 }
 
@@ -98,6 +127,12 @@ pub async fn variable_pay_store(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, body.user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let now = now_str();
     if conn
         .execute(
@@ -122,7 +157,10 @@ pub async fn variable_pay_store(
         return HttpResponse::InternalServerError().json(ApiError::new("Failed to add variable pay"));
     }
     let id = conn.last_insert_rowid();
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({ "id": id })))
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "id": id,
+        "message": "Bonus added for this payroll month",
+    })))
 }
 
 pub async fn variable_pay_destroy(
@@ -174,54 +212,37 @@ pub async fn reimbursement_list(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let sql = if status.is_empty() {
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
         "SELECT r.id, r.user_id, u.name, r.title, r.amount, r.status, r.claim_month, r.claim_year, r.created_at
          FROM reimbursement_claims r JOIN users u ON u.id = r.user_id
-         WHERE r.organization_id = ?1 ORDER BY r.id DESC LIMIT 200"
-    } else {
-        "SELECT r.id, r.user_id, u.name, r.title, r.amount, r.status, r.claim_month, r.claim_year, r.created_at
-         FROM reimbursement_claims r JOIN users u ON u.id = r.user_id
-         WHERE r.organization_id = ?1 AND r.status = ?2 ORDER BY r.id DESC LIMIT 200"
-    };
-    let rows: Vec<serde_json::Value> = if status.is_empty() {
-        conn.prepare(sql)
-            .ok()
-            .map(|stmt| {
-                stmt.query_map([org_id], |row| {
-                    Ok(serde_json::json!({
-                        "id": row.get_idx::<i64>(0)?,
-                        "user_id": row.get_idx::<i64>(1)?,
-                        "user_name": row.get_idx::<String>(2)?,
-                        "title": row.get_idx::<String>(3)?,
-                        "amount": row.get_idx::<f64>(4)?,
-                        "status": row.get_idx::<String>(5)?,
-                        "claim_month": row.get_idx::<i32>(6)?,
-                        "claim_year": row.get_idx::<i32>(7)?,
-                        "created_at": row.get_idx::<String>(8)?,
-                    }))
-                })
+         WHERE r.organization_id = ?1",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if !status.is_empty() {
+        sql.push_str(" AND r.status = ?2");
+        params.push(crate::db::into_param_value(status.to_string()));
+    }
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY r.id DESC LIMIT 200");
+    let rows: Vec<serde_json::Value> = conn
+        .prepare(&sql)
+        .map(|stmt| {
+            stmt.query_map(&params, |row| {
+                Ok(serde_json::json!({
+                    "id": row.get_idx::<i64>(0)?,
+                    "user_id": row.get_idx::<i64>(1)?,
+                    "user_name": row.get_idx::<String>(2)?,
+                    "title": row.get_idx::<String>(3)?,
+                    "amount": row.get_idx::<f64>(4)?,
+                    "status": row.get_idx::<String>(5)?,
+                    "claim_month": row.get_idx::<i32>(6)?,
+                    "claim_year": row.get_idx::<i32>(7)?,
+                    "created_at": row.get_idx::<String>(8)?,
+                }))
             })
-            .unwrap_or_default()
-    } else {
-        conn.prepare(sql)
-            .ok()
-            .map(|stmt| {
-                stmt.query_map(crate::params![org_id, status], |row| {
-                    Ok(serde_json::json!({
-                        "id": row.get_idx::<i64>(0)?,
-                        "user_id": row.get_idx::<i64>(1)?,
-                        "user_name": row.get_idx::<String>(2)?,
-                        "title": row.get_idx::<String>(3)?,
-                        "amount": row.get_idx::<f64>(4)?,
-                        "status": row.get_idx::<String>(5)?,
-                        "claim_month": row.get_idx::<i32>(6)?,
-                        "claim_year": row.get_idx::<i32>(7)?,
-                        "created_at": row.get_idx::<String>(8)?,
-                    }))
-                })
-            })
-            .unwrap_or_default()
-    };
+        })
+        .unwrap_or_default();
     HttpResponse::Ok().json(ApiResponse::success(rows))
 }
 
@@ -724,15 +745,23 @@ pub async fn compliance_export(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    let stmt = conn.prepare(
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
         "SELECT u.name, u.email, p.gross_salary, p.pf_deduction, p.esi_deduction, p.net_salary, p.basic_salary
          FROM payslips p JOIN users u ON u.id = p.user_id
          WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
-    ).ok();
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
 
-    let rows: Vec<(String, String, f64, f64, f64, f64, f64)> = stmt
+    let rows: Vec<(String, String, f64, f64, f64, f64, f64)> = conn
+        .prepare(&sql)
         .map(|s| {
-            s.query_map(crate::params![org_id, month, year], |row| {
+            s.query_map(&params, |row| {
                 Ok((
                     row.get_idx::<String>(0)?,
                     row.get_idx::<String>(1)?,

@@ -210,12 +210,12 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                 <CardHeader>
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                         <CardTitle>All Leave Requests</CardTitle>
-                        <div className="flex flex-wrap gap-2 items-center">
-                            <div className="relative">
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+                            <div className="relative w-full sm:w-56">
                                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                                 <Input
                                     placeholder="Search by name or email"
-                                    className="pl-8 w-56"
+                                    className="w-full pl-8"
                                     value={search}
                                     onChange={(e) => {
                                         setSearch(e.target.value);
@@ -230,7 +230,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                     setCurrentPage(1);
                                 }}
                             >
-                                <SelectTrigger className="w-[140px]">
+                                <SelectTrigger className="w-full sm:w-[140px]">
                                     <SelectValue placeholder="Status" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -247,7 +247,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                     setCurrentPage(1);
                                 }}
                             >
-                                <SelectTrigger className="w-[160px]">
+                                <SelectTrigger className="w-full sm:w-[160px]">
                                     <SelectValue placeholder="Leave Type" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -266,7 +266,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                     setCurrentPage(1);
                                 }}
                             >
-                                <SelectTrigger className="w-[100px]">
+                                <SelectTrigger className="w-full sm:w-[100px]">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -282,8 +282,8 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                         </div>
                     </div>
                 </CardHeader>
-                <CardContent>
-                    <div className="rounded-md border">
+                <CardContent className="min-w-0">
+                    <div className="overflow-x-auto rounded-md border">
                         <Table>
                             <TableHeader>
                                 <TableRow>
@@ -456,11 +456,11 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
 
                     {/* Pagination */}
                     {!loading && requests.length > 0 && (
-                        <div className="flex items-center justify-between mt-4">
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div className="text-sm text-muted-foreground">
                                 Showing {from} to {to} of {total} results
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     variant="outline"
                                     size="sm"

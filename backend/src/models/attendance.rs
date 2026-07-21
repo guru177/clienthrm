@@ -13,6 +13,7 @@ pub struct Attendance {
     pub notes: Option<String>,
     pub status: Option<String>,
     pub clock_in_location: Option<String>,
+    pub clock_out_location: Option<String>,
     pub clock_in_face_match_score: Option<f64>,
     pub clock_in_face_verified: bool,
     pub source: Option<String>,
@@ -47,6 +48,11 @@ pub struct LocationPayload {
 pub struct ClockInRequest {
     pub face_verified: Option<bool>,
     pub face_match_score: Option<f64>,
+    pub location: Option<LocationPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClockOutRequest {
     pub location: Option<LocationPayload>,
 }
 
@@ -120,6 +126,7 @@ impl Attendance {
             notes: row.get("notes").ok(),
             status: row.get("status").ok(),
             clock_in_location: row.get("clock_in_location").ok(),
+            clock_out_location: row.get("clock_out_location").ok(),
             clock_in_face_match_score: row.get("clock_in_face_match_score").ok(),
             clock_in_face_verified: row.get_boolish("clock_in_face_verified").unwrap_or(false),
             source: row.get("source").ok(),

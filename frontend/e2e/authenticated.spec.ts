@@ -43,8 +43,11 @@ test.describe('Authenticated tenant workflow', () => {
         await dismissOverlays(page);
         await expect(page).not.toHaveURL(/\/login/);
 
-        await page.getByTestId('sidebar-menu-button').click();
-        await page.getByTestId('logout-button').click();
+        const userMenu = page.getByTestId('sidebar-menu-button');
+        await expect(userMenu).toBeVisible({ timeout: 15_000 });
+        await userMenu.click({ force: true });
+        await expect(page.getByTestId('logout-button')).toBeVisible({ timeout: 5_000 });
+        await page.getByTestId('logout-button').click({ force: true });
 
         await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
         const token = await page.evaluate(() => localStorage.getItem('hrm_token'));

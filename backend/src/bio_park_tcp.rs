@@ -196,6 +196,16 @@ fn try_parse_punch(
             crate::params![ip],
             |row| row.get_idx::<String>(0),
         )
+        .or_else(|_| {
+            // Local tunnel / NAT often shows 127.0.0.1 — fall back to sole registered device
+            conn.query_row(
+                "SELECT serial_number FROM biometric_devices
+                 WHERE (SELECT COUNT(*) FROM biometric_devices) = 1
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get_idx::<String>(0),
+            )
+        })
         .unwrap_or_else(|_| "unknown".into());
 
     if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
@@ -225,6 +235,24 @@ fn try_parse_punch(
     if crate::handlers::biometric::store_incoming_punch(
         &conn, &sn, &pin, &punch_time, 0, 0, &now,
     ) {
+        // Punches count as live activity — keep device online in admin UI
+        if let Some(org_id) = crate::biometric_device_logic::touch_registered_device(
+            &conn,
+            &sn,
+            None,
+            Some(ip),
+            &now,
+        ) {
+            events.emit(
+                "device_heartbeat",
+                serde_json::json!({
+                    "organization_id": org_id,
+                    "serial_number": sn,
+                    "ip_address": ip,
+                    "last_heartbeat": now,
+                }),
+            );
+        }
         events.emit(
             "punches_received",
             serde_json::json!({

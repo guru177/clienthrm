@@ -48,6 +48,9 @@ fn trigger_type_variants(trigger_type: &str) -> Vec<String> {
                 "leave_submitted".to_string(),
             ]
         }
+        "user_created" | "user_joined" => {
+            vec!["user_created".to_string(), "user_joined".to_string()]
+        }
         other => vec![other.to_string()],
     }
 }
@@ -58,7 +61,6 @@ pub fn trigger(
     trigger_type: &str,
     context: &serde_json::Value,
 ) {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let variants = trigger_type_variants(trigger_type);
 
     let mut workflows: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
@@ -86,15 +88,74 @@ pub fn trigger(
         }
     }
 
-    let created_by = context
-        .get("approved_by")
-        .or_else(|| context.get("created_by"))
-        .or_else(|| context.get("rejected_by"))
-        .and_then(|v| v.as_i64())
-        .and_then(|uid| org_scoped_user(conn, org_id, uid));
-
     for (workflow_id, name, conditions_json, actions_json) in workflows {
-        if let Some(ref conditions_str) = conditions_json {
+        run_one_workflow(
+            conn,
+            org_id,
+            workflow_id,
+            &name,
+            conditions_json.as_deref(),
+            actions_json.as_deref(),
+            trigger_type,
+            context,
+            true,
+        );
+    }
+}
+
+/// Execute a single workflow by id (for admin "Test with sample payload"), ignoring is_active.
+pub fn test_workflow(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    workflow_id: i64,
+    trigger_type: &str,
+    context: &serde_json::Value,
+) {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT name, trigger_conditions, actions FROM workflows
+             WHERE id = ?1 AND organization_id = ?2",
+            crate::params![workflow_id, org_id],
+            |r| {
+                Ok((
+                    r.get_idx::<String>(0)?,
+                    r.get_idx::<Option<String>>(1)?,
+                    r.get_idx::<Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok();
+    let Some((name, conditions_json, actions_json)) = row else {
+        return;
+    };
+    run_one_workflow(
+        conn,
+        org_id,
+        workflow_id,
+        &name,
+        conditions_json.as_deref(),
+        actions_json.as_deref(),
+        trigger_type,
+        context,
+        false,
+    );
+}
+
+fn run_one_workflow(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    workflow_id: i64,
+    name: &str,
+    conditions_json: Option<&str>,
+    actions_json: Option<&str>,
+    trigger_type: &str,
+    context: &serde_json::Value,
+    enforce_conditions: bool,
+) {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    if enforce_conditions {
+        if let Some(conditions_str) = conditions_json {
             if !conditions_str.trim().is_empty() {
                 match serde_json::from_str::<serde_json::Value>(conditions_str) {
                     Ok(conditions) => {
@@ -104,7 +165,7 @@ pub fn trigger(
                                 name,
                                 workflow_id
                             );
-                            continue;
+                            return;
                         }
                     }
                     Err(e) => {
@@ -114,87 +175,95 @@ pub fn trigger(
                             workflow_id,
                             e
                         );
-                        continue;
+                        return;
                     }
                 }
             }
         }
+    }
 
-        let execution_id = conn
-            .execute(
-                "INSERT INTO workflow_executions (workflow_id, status, trigger_type, created_at, updated_at)
-                 VALUES (?1, 'running', ?2, ?3, ?3)",
-                crate::params![workflow_id, trigger_type, &now],
-            )
-            .map(|_| conn.last_insert_rowid());
+    let created_by = context
+        .get("approved_by")
+        .or_else(|| context.get("created_by"))
+        .or_else(|| context.get("rejected_by"))
+        .or_else(|| context.get("user_id"))
+        .and_then(|v| v.as_i64())
+        .and_then(|uid| org_scoped_user(conn, org_id, uid));
 
-        if let Some(ref actions_str) = actions_json {
-            if let Ok(actions) = serde_json::from_str::<serde_json::Value>(actions_str) {
-                let actions = normalize_workflow_actions(&actions);
-                let (executed, skipped) = if let Some(actor) = created_by {
-                    execute_actions(conn, org_id, actor, &name, &actions, context, &now)
+    let execution_id = conn
+        .execute(
+            "INSERT INTO workflow_executions (workflow_id, status, trigger_type, created_at, updated_at)
+             VALUES (?1, 'running', ?2, ?3, ?3)",
+            crate::params![workflow_id, trigger_type, &now],
+        )
+        .map(|_| conn.last_insert_rowid());
+
+    if let Some(actions_str) = actions_json {
+        if let Ok(actions) = serde_json::from_str::<serde_json::Value>(actions_str) {
+            let actions = normalize_workflow_actions(&actions);
+            let (executed, skipped) = if let Some(actor) = created_by {
+                execute_actions(conn, org_id, actor, name, &actions, context, &now)
+            } else {
+                log::warn!(
+                    "Workflow '{}' (id={}) skipped actions — no org-scoped actor",
+                    name,
+                    workflow_id
+                );
+                (0, action_count(&actions))
+            };
+
+            if let Ok(exec_id) = execution_id {
+                let exec_status = if skipped > 0 && executed == 0 {
+                    "failed"
+                } else if skipped > 0 {
+                    "partial"
                 } else {
-                    log::warn!(
-                        "Workflow '{}' (id={}) skipped actions — no org-scoped actor",
-                        name,
-                        workflow_id
-                    );
-                    (0, action_count(&actions))
+                    "completed"
                 };
-
-                if let Ok(exec_id) = execution_id {
-                    let exec_status = if skipped > 0 && executed == 0 {
-                        "failed"
-                    } else if skipped > 0 {
-                        "partial"
-                    } else {
-                        "completed"
-                    };
-                    let _ = conn.execute(
-                        "UPDATE workflow_executions SET status = ?1, updated_at = ?2 WHERE id = ?3",
-                        crate::params![exec_status, &now, exec_id],
-                    );
-                }
-
-                if executed > 0 || skipped == 0 {
-                    let _ = conn.execute(
-                        "UPDATE workflows SET execution_count = COALESCE(execution_count, 0) + 1, updated_at = ?1 WHERE id = ?2 AND organization_id = ?3",
-                        crate::params![&now, workflow_id, org_id],
-                    );
-                    log::info!(
-                        "Workflow '{}' (id={}) executed for trigger '{}' in org {} (status: {} executed, {} skipped)",
-                        name,
-                        workflow_id,
-                        trigger_type,
-                        org_id,
-                        executed,
-                        skipped
-                    );
-                }
-                continue;
+                let _ = conn.execute(
+                    "UPDATE workflow_executions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                    crate::params![exec_status, &now, exec_id],
+                );
             }
-        }
 
-        if let Ok(exec_id) = execution_id {
-            let _ = conn.execute(
-                "UPDATE workflow_executions SET status = 'completed', updated_at = ?1 WHERE id = ?2",
-                crate::params![&now, exec_id],
-            );
+            if executed > 0 || skipped == 0 {
+                let _ = conn.execute(
+                    "UPDATE workflows SET execution_count = COALESCE(execution_count, 0) + 1, updated_at = ?1 WHERE id = ?2 AND organization_id = ?3",
+                    crate::params![&now, workflow_id, org_id],
+                );
+                log::info!(
+                    "Workflow '{}' (id={}) executed for trigger '{}' in org {} (status: {} executed, {} skipped)",
+                    name,
+                    workflow_id,
+                    trigger_type,
+                    org_id,
+                    executed,
+                    skipped
+                );
+            }
+            return;
         }
+    }
 
+    if let Ok(exec_id) = execution_id {
         let _ = conn.execute(
-            "UPDATE workflows SET execution_count = COALESCE(execution_count, 0) + 1, updated_at = ?1 WHERE id = ?2 AND organization_id = ?3",
-            crate::params![&now, workflow_id, org_id],
-        );
-
-        log::info!(
-            "Workflow '{}' (id={}) executed for trigger '{}' in org {}",
-            name,
-            workflow_id,
-            trigger_type,
-            org_id
+            "UPDATE workflow_executions SET status = 'completed', updated_at = ?1 WHERE id = ?2",
+            crate::params![&now, exec_id],
         );
     }
+
+    let _ = conn.execute(
+        "UPDATE workflows SET execution_count = COALESCE(execution_count, 0) + 1, updated_at = ?1 WHERE id = ?2 AND organization_id = ?3",
+        crate::params![&now, workflow_id, org_id],
+    );
+
+    log::info!(
+        "Workflow '{}' (id={}) executed for trigger '{}' in org {}",
+        name,
+        workflow_id,
+        trigger_type,
+        org_id
+    );
 }
 
 fn conditions_match(conditions: &serde_json::Value, context: &serde_json::Value) -> bool {
@@ -327,6 +396,11 @@ fn canonical_action_type(action_type: &str) -> &str {
         "send_notification" | "notify" => "notification",
         "send_email" => "email",
         "assign_to_user" | "task" => "create_task",
+        "webhook_post" | "http_webhook" => "webhook",
+        "send_whatsapp" | "whatsapp_message" => "whatsapp",
+        "assign_manager_notification" | "notify_manager" | "escalate_to_manager" => {
+            "notify_manager"
+        }
         other => other,
     }
 }
@@ -338,6 +412,25 @@ pub const SUPPORTED_TRIGGER_TYPES: &[&str] = &[
     "leave_submitted",
     "leave_approved",
     "leave_rejected",
+    "attendance_clock_in",
+    "attendance_late",
+    "attendance_absent",
+    "grocery_claim_submitted",
+    "asset_expense_submitted",
+    "doctor_report_published",
+    "user_created",
+    "user_joined",
+    "payslip_generated",
+    "task_overdue",
+];
+
+pub const SUPPORTED_ACTION_TYPES: &[&str] = &[
+    "create_task",
+    "notification",
+    "email",
+    "webhook",
+    "whatsapp",
+    "notify_manager",
 ];
 
 pub fn validate_workflow_trigger(trigger_type: &str) -> Result<(), String> {
@@ -577,6 +670,37 @@ fn execute_actions(
                     .or_else(|| action_field_str(&action, "body"))
                     .unwrap_or(subject);
                 let recipient = resolve_assignee(conn, org_id, created_by, context, &action);
+                let mut sent_smtp = false;
+                if let Some(uid) = recipient {
+                    if let Some(email) = crate::tenant_email::user_email(conn, uid) {
+                        let plain = body.to_string();
+                        let html = crate::tenant_email::render_base_template(
+                            subject,
+                            &format!(
+                                r#"<p style="margin:0;font-size:15px;line-height:1.6;color:#64748b;">{}</p>"#,
+                                crate::tenant_email::html_escape(body)
+                            ),
+                        );
+                        if crate::smtp_config::resolve(conn, org_id).is_some() {
+                            crate::tenant_email::send_tenant_email(
+                                conn,
+                                org_id,
+                                &email,
+                                subject,
+                                plain,
+                                html,
+                            );
+                            sent_smtp = true;
+                            log::info!(
+                                "Workflow email [{}] sent via SMTP to user {}: {}",
+                                workflow_name,
+                                uid,
+                                subject
+                            );
+                        }
+                    }
+                }
+                // Always keep in-app notice; use as sole path when SMTP unavailable.
                 if insert_org_notification(
                     conn,
                     org_id,
@@ -586,12 +710,166 @@ fn execute_actions(
                     recipient,
                     now,
                 ) {
-                    log::info!(
-                        "Workflow email [{}] queued as in-app notice for user {:?}: {}",
-                        workflow_name,
-                        recipient,
-                        subject
+                    if !sent_smtp {
+                        log::info!(
+                            "Workflow email [{}] queued as in-app notice for user {:?}: {}",
+                            workflow_name,
+                            recipient,
+                            subject
+                        );
+                    }
+                    executed += 1;
+                } else if sent_smtp {
+                    executed += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            "webhook" => {
+                let url = action_field_str(&action, "url").unwrap_or("");
+                if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+                    log::warn!(
+                        "Workflow '{}' skipped webhook — missing/invalid url",
+                        workflow_name
                     );
+                    skipped += 1;
+                    continue;
+                }
+                let payload = serde_json::json!({
+                    "workflow": workflow_name,
+                    "trigger_context": context,
+                    "sent_at": now,
+                });
+                let url_owned = url.to_string();
+                let wf_name = workflow_name.to_string();
+                // Fire-and-forget so leave/attendance APIs are not blocked by dead endpoints.
+                std::thread::spawn(move || {
+                    match reqwest::blocking::Client::new()
+                        .post(&url_owned)
+                        .header("Content-Type", "application/json")
+                        .header("User-Agent", "Raintech-HRM-Workflow/1.0")
+                        .json(&payload)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send()
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            log::info!(
+                                "Workflow webhook [{}] POST {} -> {}",
+                                wf_name,
+                                url_owned,
+                                resp.status()
+                            );
+                        }
+                        Ok(resp) => {
+                            log::warn!(
+                                "Workflow '{}' webhook {} returned {}",
+                                wf_name,
+                                url_owned,
+                                resp.status()
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Workflow '{}' webhook {} failed: {}",
+                                wf_name,
+                                url_owned,
+                                e
+                            );
+                        }
+                    }
+                });
+                executed += 1;
+            }
+            "whatsapp" => {
+                let message = action_field_str(&action, "message")
+                    .or_else(|| action_field_str(&action, "body"))
+                    .unwrap_or("Workflow notification");
+                let recipient = resolve_assignee(conn, org_id, created_by, context, &action);
+                let Some(uid) = recipient else {
+                    skipped += 1;
+                    continue;
+                };
+                let phone: Option<String> = conn
+                    .query_row(
+                        "SELECT phone FROM users WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+                        crate::params![uid, org_id],
+                        |r| r.get_idx::<Option<String>>(0),
+                    )
+                    .ok()
+                    .flatten()
+                    .filter(|p| !p.trim().is_empty());
+                let Some(phone) = phone else {
+                    log::warn!(
+                        "Workflow '{}' WhatsApp skipped — user {} has no phone",
+                        workflow_name,
+                        uid
+                    );
+                    skipped += 1;
+                    continue;
+                };
+                if send_workflow_whatsapp(conn, org_id, &phone, message) {
+                    executed += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            "notify_manager" => {
+                let message = action_field_str(&action, "message")
+                    .or_else(|| action_field_str(&action, "body"))
+                    .unwrap_or("Workflow escalation");
+                let subject_user = context
+                    .get("user_id")
+                    .or_else(|| context.get("employee_user_id"))
+                    .and_then(|v| v.as_i64());
+                let manager_id = subject_user.and_then(|uid| {
+                    conn.query_row(
+                        "SELECT COALESCE(reporting_manager_id, manager_id) FROM users
+                         WHERE id = ?1 AND organization_id = ?2 AND deleted_at IS NULL",
+                        crate::params![uid, org_id],
+                        |r| r.get_idx::<Option<i64>>(0),
+                    )
+                    .ok()
+                    .flatten()
+                });
+                let Some(manager_id) = manager_id.and_then(|m| org_scoped_user(conn, org_id, m))
+                else {
+                    log::warn!(
+                        "Workflow '{}' notify_manager skipped — no manager for user {:?}",
+                        workflow_name,
+                        subject_user
+                    );
+                    skipped += 1;
+                    continue;
+                };
+                let title = format!("Workflow: {}", workflow_name);
+                if insert_org_notification(
+                    conn,
+                    org_id,
+                    created_by,
+                    &title,
+                    message,
+                    Some(manager_id),
+                    now,
+                ) {
+                    if let Some(email) = crate::tenant_email::user_email(conn, manager_id) {
+                        if crate::smtp_config::resolve(conn, org_id).is_some() {
+                            let html = crate::tenant_email::render_base_template(
+                                &title,
+                                &format!(
+                                    r#"<p style="margin:0;font-size:15px;line-height:1.6;color:#64748b;">{}</p>"#,
+                                    crate::tenant_email::html_escape(message)
+                                ),
+                            );
+                            crate::tenant_email::send_tenant_email(
+                                conn,
+                                org_id,
+                                &email,
+                                &title,
+                                message.to_string(),
+                                html,
+                            );
+                        }
+                    }
                     executed += 1;
                 } else {
                     skipped += 1;
@@ -609,6 +887,71 @@ fn execute_actions(
         }
     }
     (executed, skipped)
+}
+
+fn send_workflow_whatsapp(
+    conn: &crate::db::Connection,
+    org_id: i64,
+    phone: &str,
+    message: &str,
+) -> bool {
+    let auth_key: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = 'msg91_auth_key'",
+            crate::params![org_id],
+            |r| r.get_idx::<Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("MSG91_AUTH_KEY")
+                .or_else(|_| std::env::var("MSG91_AUTHKEY"))
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
+    let Some(auth_key) = auth_key else {
+        log::warn!("Workflow WhatsApp skipped — MSG91 not configured");
+        return false;
+    };
+    let sender: String = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE organization_id = ?1 AND key = 'msg91_whatsapp_sender'",
+            crate::params![org_id],
+            |r| r.get_idx::<Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| phone.to_string());
+    let phone_digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let payload = serde_json::json!({
+        "integrated_number": sender,
+        "content_type": "text",
+        "payload": {
+            "to": phone_digits,
+            "type": "text",
+            "text": { "body": message }
+        }
+    });
+    match reqwest::blocking::Client::new()
+        .post("https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/")
+        .header("authkey", &auth_key)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+    {
+        Ok(r) if r.status().is_success() => true,
+        Ok(r) => {
+            log::warn!("Workflow WhatsApp MSG91 status {}", r.status());
+            false
+        }
+        Err(e) => {
+            log::warn!("Workflow WhatsApp failed: {e}");
+            false
+        }
+    }
 }
 
 #[cfg(test)]

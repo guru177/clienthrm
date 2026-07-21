@@ -112,6 +112,8 @@ export default function DepartmentsIndex() {
     };
 
     const handleFormSuccess = () => {
+        setFormOpen(false);
+        setEditingDepartment(null);
         setRefreshTrigger((prev) => prev + 1);
     };
 
@@ -175,7 +177,11 @@ export default function DepartmentsIndex() {
                 </div>
 
                 {/* Departments Table */}
-                <DepartmentTable onEdit={handleEdit} onRefresh={handleFormSuccess} />
+                <DepartmentTable
+                    onEdit={handleEdit}
+                    onRefresh={handleFormSuccess}
+                    refreshTrigger={refreshTrigger}
+                />
 
                 {/* Department Form Modal */}
                 <DepartmentForm

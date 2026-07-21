@@ -10,7 +10,7 @@ use crate::models::asset::{
 };
 use crate::models::{ApiError, ApiResponse};
 use crate::tenant::org_id_from_claims;
-use lettre::{Message, message::MultiPart};
+use crate::tenant_email;
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -51,7 +51,7 @@ pub async fn index(
         params.push(crate::db::into_param_value(status.clone()));
     }
 
-    sql.push_str(" ORDER BY name ASC");
+    sql.push_str(" ORDER BY COALESCE(created_at, '') DESC, id DESC");
 
     let items: Vec<Asset> = conn
         .prepare(&sql)
@@ -83,7 +83,8 @@ pub async fn store(
         return HttpResponse::Forbidden().json(ApiError::new("Missing permission: manage-assets"));
     }
 
-    let now = chrono::Utc::now().naive_utc();
+    // created_at/updated_at are TEXT in Postgres schema — bind as strings.
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let status = body.status.clone().unwrap_or_else(|| "available".to_string());
 
     log::info!("Inserting asset: org={}, name={}, type={}, id={:?}, status={}, date={:?}, cost={:?}, notes={:?}", org_id, body.name, body.asset_type, body.identifier, status, body.purchase_date, body.purchase_cost, body.notes);
@@ -272,6 +273,16 @@ pub async fn allocations_index(
         params.push(crate::db::into_param_value(status.clone()));
     }
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    // Convert trailing bare `?` binds by rewriting status to numbered if present is awkward;
+    // instead push branch filter with qmark conditions after converting status.
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(&mut conditions, &mut params, &scope, "u");
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
+
     sql.push_str(" ORDER BY aa.created_at DESC");
 
     let items: Vec<AssetAllocation> = conn
@@ -304,7 +315,14 @@ pub async fn allocate(
         return HttpResponse::Forbidden().json(ApiError::new("Missing permission: manage-assets"));
     }
 
-    let now = chrono::Utc::now().naive_utc();
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, body.user_id, org_id, &scope)
+    {
+        return resp;
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     
     // Begin transaction to insert allocation and update asset status
     let tx = match conn.unchecked_transaction() {
@@ -350,27 +368,20 @@ pub async fn allocate(
             let asset_name = tx.query_row("SELECT name FROM assets WHERE id = ?1", crate::params![body.asset_id], |row| row.get_idx::<String>(0)).unwrap_or_default();
             
             let _ = tx.commit();
-            
-            // SEND EMAIL
+
             if !user_email.is_empty() && !asset_name.is_empty() {
-                if let Some(smtp) = crate::smtp_config::resolve(&conn, org_id) {
-                    if let Ok(from) = smtp.from_mailbox() {
-                        let (text, html) = crate::asset_email::render_allocation_email(&asset_name, &body.allocated_date);
-                        let multipart = MultiPart::alternative_plain_html(text, html);
-                        if let Ok(msg) = Message::builder()
-                            .from(from)
-                            .to(user_email.parse().unwrap_or_else(|_| "user@example.com".parse().unwrap()))
-                            .subject(format!("New Asset Allocated: {}", asset_name))
-                            .multipart(multipart)
-                        {
-                            actix_web::rt::spawn(async move {
-                                let _ = actix_web::web::block(move || smtp.send(&msg)).await;
-                            });
-                        }
-                    }
-                }
+                let (text, html) =
+                    crate::asset_email::render_allocation_email(&asset_name, &body.allocated_date);
+                tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &user_email,
+                    &format!("New Asset Allocated: {asset_name}"),
+                    text,
+                    html,
+                );
             }
-            
+
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"message": "Asset allocated successfully"})))
         },
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{e}"))),
@@ -474,6 +485,14 @@ pub async fn expenses_index(
         params.push(crate::db::into_param_value(status.clone()));
     }
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(&mut conditions, &mut params, &scope, "u");
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
+
     sql.push_str(" ORDER BY ae.created_at DESC");
 
     let items: Vec<AssetExpense> = conn
@@ -491,9 +510,6 @@ pub async fn expenses_review(
     path: web::Path<i64>,
     body: web::Json<ReviewAssetExpenseRequest>,
 ) -> HttpResponse {
-    use lettre::{Message, Transport};
-    use lettre::message::MultiPart;
-
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
@@ -510,7 +526,7 @@ pub async fn expenses_review(
         return HttpResponse::Forbidden().json(ApiError::new("Missing permission: manage-assets"));
     }
 
-    let now = chrono::Utc::now().naive_utc();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let expense_id = path.into_inner();
     let reviewer_id = claims.sub;
 
@@ -538,29 +554,23 @@ pub async fn expenses_review(
             let asset_name = tx.query_row("SELECT name FROM assets WHERE id = ?1", crate::params![asset_id], |row| row.get_idx::<String>(0)).unwrap_or_default();
             
             let _ = tx.commit();
-            
-            // SEND EMAIL TO EMPLOYEE
+
             if !employee_email.is_empty() {
-                if let Some(smtp) = crate::smtp_config::resolve(&conn, org_id) {
-                    if let Ok(from) = smtp.from_mailbox() {
-                        let subject = format!("Expense Log {}: {}", body.status.to_uppercase(), asset_name);
-                        let text = format!("Your expense log of Rs. {} for asset '{}' has been {}.", amount, asset_name, body.status);
-                        let html = format!("<p>Your expense log of <strong>Rs. {}</strong> for asset <strong>'{}'</strong> has been <strong>{}</strong>.</p>", amount, asset_name, body.status);
-                        let multipart = MultiPart::alternative_plain_html(text, html);
-                        if let Ok(msg) = Message::builder()
-                            .from(from)
-                            .to(employee_email.parse().unwrap_or_else(|_| "user@example.com".parse().unwrap()))
-                            .subject(subject)
-                            .multipart(multipart)
-                        {
-                            actix_web::rt::spawn(async move {
-                                let _ = actix_web::web::block(move || smtp.send(&msg)).await;
-                            });
-                        }
-                    }
-                }
+                let (text, html) = crate::asset_email::render_expense_review_email(
+                    &asset_name,
+                    amount,
+                    &body.status,
+                );
+                tenant_email::send_tenant_email(
+                    &conn,
+                    org_id,
+                    &employee_email,
+                    &format!("Expense Log {}: {}", body.status.to_uppercase(), asset_name),
+                    text,
+                    html,
+                );
             }
-            
+
             HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Expense reviewed successfully"})))
         },
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Expense not found")),
@@ -662,7 +672,7 @@ pub async fn my_assets_store_expense(
         return HttpResponse::Forbidden().json(ApiError::new("Asset is not currently allocated to you"));
     }
 
-    let now = chrono::Utc::now().naive_utc();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     match conn.execute(
         "INSERT INTO asset_expenses (organization_id, asset_id, user_id, expense_type, amount, expense_date, description, status, created_at, updated_at)
@@ -681,52 +691,49 @@ pub async fn my_assets_store_expense(
     ) {
         Ok(_) => {
             let expense_id = conn.last_insert_rowid();
-            // Fetch info for email
-            let asset_name = conn.query_row("SELECT name FROM assets WHERE id = ?1", crate::params![body.asset_id], |row| row.get_idx::<String>(0)).unwrap_or_default();
-            let mut admin_emails = Vec::new();
-            if let Ok(stmt) = conn.prepare(
-                "SELECT DISTINCT u.email FROM users u 
-                 JOIN role_user ru ON u.id = ru.user_id 
-                 JOIN permission_role pr ON ru.role_id = pr.role_id 
-                 JOIN permissions p ON p.id = pr.permission_id 
-                 WHERE u.organization_id = ?1 AND p.name = 'manage-assets' AND u.status = 'active'"
-            ) {
-                let emails = stmt.query_map(crate::params![org_id], |row| row.get_idx::<String>(0));
-                admin_emails.extend(emails);
+            let asset_name = conn
+                .query_row(
+                    "SELECT name FROM assets WHERE id = ?1",
+                    crate::params![body.asset_id],
+                    |row| row.get_idx::<String>(0),
+                )
+                .unwrap_or_default();
+            let logged_by_name = tenant_email::user_name(&conn, claims.sub)
+                .unwrap_or_else(|| "An Employee".to_string());
+            let admin_emails = tenant_email::emails_with_permission(&conn, org_id, "manage-assets");
+            if !admin_emails.is_empty() && !asset_name.is_empty() {
+                let (text, html) = crate::asset_email::render_expense_email(
+                    &asset_name,
+                    body.amount,
+                    &logged_by_name,
+                );
+                tenant_email::send_tenant_email_bulk(
+                    &conn,
+                    org_id,
+                    &admin_emails,
+                    &format!("New Expense Logged: {asset_name}"),
+                    text,
+                    html,
+                );
             }
-            
-            // SEND EMAIL TO ADMINS
-            if !admin_emails.is_empty() {
-                if let Some(smtp) = crate::smtp_config::resolve(&conn, org_id) {
-                    if let Ok(from) = smtp.from_mailbox() {
-                        let logged_by_name = conn.query_row(
-                            "SELECT name FROM users WHERE id = ?1",
-                            crate::params![claims.sub],
-                            |row| row.get_idx::<String>(0)
-                        ).unwrap_or_else(|_| "An Employee".to_string());
-                        
-                        let (text, html) = crate::asset_email::render_expense_email(&asset_name, body.amount, &logged_by_name);
-                        
-                        actix_web::rt::spawn(async move {
-                            for admin_email in admin_emails {
-                                let multipart = lettre::message::MultiPart::alternative_plain_html(text.clone(), html.clone());
-                                if let Ok(msg) = lettre::Message::builder()
-                                    .from(from.clone())
-                                    .to(admin_email.parse().unwrap_or_else(|_| "admin@example.com".parse().unwrap()))
-                                    .subject(format!("New Expense Logged: {}", asset_name))
-                                    .multipart(multipart)
-                                {
-                                    let _ = actix_web::web::block({
-                                        let smtp = smtp.clone();
-                                        move || smtp.send(&msg)
-                                    }).await;
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-            
+
+            crate::workflow_logic::trigger(
+                &conn,
+                org_id,
+                "asset_expense_submitted",
+                &serde_json::json!({
+                    "expense_id": expense_id,
+                    "asset_id": body.asset_id,
+                    "user_id": claims.sub,
+                    "expense_type": body.expense_type,
+                    "amount": body.amount,
+                    "expense_date": body.expense_date,
+                    "description": body.description,
+                    "organization_id": org_id,
+                    "created_by": claims.sub,
+                }),
+            );
+
             HttpResponse::Created().json(ApiResponse::success(serde_json::json!({
                 "id": expense_id,
                 "message": "Expense submitted successfully for review"

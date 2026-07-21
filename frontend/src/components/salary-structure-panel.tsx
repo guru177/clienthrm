@@ -62,7 +62,6 @@ export function SalaryStructurePanel({
     const [data, setData] = useState<SalaryData | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
-    const [rawDebug, setRawDebug] = useState<string | null>(null);
     const [isEditing, setIsEditing] = useState(false);
     const [saving, setSaving] = useState(false);
     const [clearingCtc, setClearingCtc] = useState(false);
@@ -86,7 +85,6 @@ export function SalaryStructurePanel({
     useEffect(() => {
         let cancelled = false;
         setLoadError(null);
-        setRawDebug(null);
         setData(null);
         setLoading(true);
         axios
@@ -102,8 +100,6 @@ export function SalaryStructurePanel({
             .then((res) => {
                 if (cancelled) return;
                 const raw = res.data;
-                console.log('[SalaryStructurePanel] raw response:', res.status, JSON.parse(JSON.stringify(raw)));
-                setRawDebug(JSON.stringify(raw, null, 2));
                 if (!raw.success) {
                     setLoadError(raw.message ?? 'Server returned error.');
                     return;
@@ -147,7 +143,7 @@ export function SalaryStructurePanel({
     };
 
     const handleRemoveCtc = async () => {
-        if (!(await confirm({ description: 'Remove CTC profile? You can then set up manual salary components for payroll.' }))) return;
+        if (!(await confirm({ description: 'Remove yearly CTC? You can then set monthly pay using Extra for this person.' }))) return;
         setClearingCtc(true);
         try {
             const res = await axios.delete(`/admin/users/${userId}/ctc-profile`);
@@ -294,12 +290,6 @@ export function SalaryStructurePanel({
                     </a>{' '}
                     first.
                 </p>
-                {rawDebug && (
-                    <details className="text-xs text-muted-foreground">
-                        <summary className="cursor-pointer text-destructive">Debug: API response (click to expand)</summary>
-                        <pre className="mt-1 overflow-auto rounded bg-muted p-2 text-xs">{rawDebug}</pre>
-                    </details>
-                )}
             </div>
         );
     }
@@ -315,8 +305,9 @@ export function SalaryStructurePanel({
                 {isLocked && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 px-3 py-3 space-y-2">
                         <p className="text-xs text-amber-800 dark:text-amber-300">
-                            Payroll currently uses <strong>CTC Split</strong>. Manual amounts below are synced
-                            read-only. Remove CTC to assign components manually for payroll.
+                            This employee is on <strong>monthly CTC</strong>, so amounts here are view-only.
+                            To set pay by ticking components yourself, remove CTC under{' '}
+                            <strong>Monthly salary</strong>.
                         </p>
                         <Button
                             type="button"

@@ -13,7 +13,7 @@ export default defineConfig({
     timeout: 60_000,
     use: {
         baseURL,
-        testIdAttribute: 'data-test',
+        testIdAttribute: 'data-testid',
         trace: 'on-first-retry',
         screenshot: 'only-on-failure',
     },

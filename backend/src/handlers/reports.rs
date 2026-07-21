@@ -10,7 +10,7 @@ use crate::middleware::auth::get_claims_from_request;
 use crate::models::attendance::Attendance;
 use crate::models::{ApiError, ApiResponse};
 use crate::models::user::JwtClaims;
-use crate::shift_logic::{resolve_shift_for_user, user_is_scheduled_working_day};
+use crate::shift_logic::{resolve_shift_for_user_readonly, user_is_scheduled_working_day};
 use crate::tenant::org_id_from_claims;
 
 #[derive(Debug, Deserialize)]
@@ -23,6 +23,8 @@ pub struct ReportMonthQuery {
 pub struct DailyAttendanceQuery {
     pub date: Option<String>,
     pub search: Option<String>,
+    pub center_id: Option<i64>,
+    pub designation_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,7 +154,7 @@ fn session_detail_json(
     user_name: Option<&str>,
     user_email: Option<&str>,
 ) -> serde_json::Value {
-    let shift = resolve_shift_for_user(conn, att.user_id, &att.date);
+    let shift = resolve_shift_for_user_readonly(conn, att.user_id, &att.date);
     let source = normalize_source(att.source.as_deref());
     let clock_in = att.clock_in.as_ref().map(|t| combine_datetime(&att.date, t));
     let clock_out = att.clock_out.as_ref().map(|t| {
@@ -188,7 +190,7 @@ fn session_log_json(
     user_email: Option<&str>,
     employee_id: Option<&str>,
 ) -> serde_json::Value {
-    let shift = resolve_shift_for_user(conn, att.user_id, &att.date);
+    let shift = resolve_shift_for_user_readonly(conn, att.user_id, &att.date);
     let source = normalize_source(att.source.as_deref());
     let clock_in = att.clock_in.as_ref().map(|t| combine_datetime(&att.date, t));
     let clock_out = att.clock_out.as_ref().map(|t| {
@@ -245,13 +247,14 @@ pub async fn attendance_summary(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now();
     let month = query.month.unwrap_or(now.month() as i32);
     let year = query.year.unwrap_or(now.year());
     let (start, end) = month_bounds(month, year);
 
-    let stmt = match conn.prepare(
+    let mut sql = String::from(
         "SELECT u.id, u.name, u.employee_id,
                 COUNT(DISTINCT a.date) AS present_days,
                 COUNT(DISTINCT CASE WHEN a.is_late = 1 THEN a.date END) AS late_marks,
@@ -261,16 +264,18 @@ pub async fn attendance_summary(
            AND a.clock_out IS NOT NULL
            AND a.date >= COALESCE(NULLIF(substr(u.date_of_joining, 1, 10), ''), '1900-01-01')
            AND (u.date_of_exit IS NULL OR u.date_of_exit = '' OR a.date <= substr(u.date_of_exit, 1, 10))
-         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?3
-         GROUP BY u.id
-         ORDER BY u.name",
-    ) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
+         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?3",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(start),
+        crate::db::into_param_value(end),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" GROUP BY u.id ORDER BY u.name");
 
-    let rows: Vec<serde_json::Value> = stmt
-        .query_map(crate::params![start, end, org_id], |row| {
+    let rows: Vec<serde_json::Value> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
             Ok(serde_json::json!({
                 "user_id": row.get_idx::<i64>(0)?,
                 "name": row.get_idx::<String>(1)?,
@@ -279,12 +284,80 @@ pub async fn attendance_summary(
                 "late_marks": row.get_idx::<i64>(4).unwrap_or(0),
                 "early_exits": row.get_idx::<i64>(5).unwrap_or(0),
             }))
-        });
+        }),
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    };
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "month": month,
         "year": year,
         "employees": rows,
+        "total": rows.len(),
+    })))
+}
+
+/// GET /api/admin/reports/out-of-zone-punches
+pub async fn out_of_zone_punches(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    query: web::Query<ReportMonthQuery>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
+    let org_id = org_id_from_claims(&claims);
+    let conn = match pool.get_read() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+
+    let now = chrono::Utc::now();
+    let month = query.month.unwrap_or(now.month() as i32);
+    let year = query.year.unwrap_or(now.year());
+    let (start, end) = month_bounds(month, year);
+
+    let mut sql = String::from(
+        "SELECT a.id, u.id, u.name, a.date, a.clock_in, a.geofence_distance_m, a.source
+         FROM attendance a
+         INNER JOIN users u ON u.id = a.user_id AND u.organization_id = ?3
+         WHERE a.out_of_zone = 1 AND a.date >= ?1 AND a.date <= ?2",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(start),
+        crate::db::into_param_value(end),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY a.date DESC, a.clock_in DESC LIMIT 500");
+
+    let rows: Vec<serde_json::Value> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
+            Ok(serde_json::json!({
+                "attendance_id": row.get_idx::<i64>(0)?,
+                "user_id": row.get_idx::<i64>(1)?,
+                "name": row.get_idx::<String>(2)?,
+                "date": row.get_idx::<String>(3)?,
+                "clock_in": row.get_idx::<Option<String>>(4)?,
+                "geofence_distance_m": row.get_idx::<Option<f64>>(5)?,
+                "source": row.get_idx::<Option<String>>(6)?,
+            }))
+        }),
+        Err(e) => {
+            return HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+                "month": month,
+                "year": year,
+                "punches": [],
+                "note": format!("out_of_zone not available: {e}"),
+            })));
+        }
+    };
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "month": month,
+        "year": year,
+        "punches": rows,
         "total": rows.len(),
     })))
 }
@@ -304,25 +377,29 @@ pub async fn payroll_register(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let now = chrono::Utc::now();
     let month = query.month.unwrap_or(now.month() as i32);
     let year = query.year.unwrap_or(now.year());
 
-    let stmt = match conn.prepare(
+    let mut sql = String::from(
         "SELECT p.id, u.name, u.employee_id, p.gross_salary, p.total_deductions, p.net_salary, p.status,
                 p.present_days, p.working_days, p.lop_deduction, COALESCE(p.shift_penalty, 0)
          FROM payslips p
          JOIN users u ON u.id = p.user_id AND u.organization_id = ?3
-         WHERE p.month = ?1 AND p.year = ?2 AND p.status = 'generated'
-         ORDER BY u.name",
-    ) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
+         WHERE p.month = ?1 AND p.year = ?2 AND p.status = 'generated'",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+        crate::db::into_param_value(org_id),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY u.name");
 
-    let rows: Vec<serde_json::Value> = stmt
-        .query_map(crate::params![month, year, org_id], |row| {
+    let rows: Vec<serde_json::Value> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
             Ok(serde_json::json!({
                 "payslip_id": row.get_idx::<i64>(0)?,
                 "name": row.get_idx::<String>(1)?,
@@ -336,7 +413,9 @@ pub async fn payroll_register(
                 "lop_deduction": row.get_idx::<f64>(9).unwrap_or(0.0),
                 "shift_penalty": row.get_idx::<f64>(10).unwrap_or(0.0),
             }))
-        });
+        }),
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    };
 
     let total_gross: f64 = rows.iter().filter_map(|r| r.get("gross_salary").and_then(|v| v.as_f64())).sum();
     let total_net: f64 = rows.iter().filter_map(|r| r.get("net_salary").and_then(|v| v.as_f64())).sum();
@@ -711,24 +790,28 @@ pub async fn leave_balance(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let year = chrono::Utc::now().year();
     let base_quota = crate::payroll_logic::annual_leave_quota(&conn, org_id);
 
-    let users_stmt = match conn.prepare(
-        "SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin = 0 AND organization_id = ?1 ORDER BY name",
-    ) {
-        Ok(s) => s,
-        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
-    };
-    let users: Vec<(i64, String, Option<String>)> = users_stmt
-        .query_map([org_id], |row| {
+    let mut sql = String::from(
+        "SELECT id, name, employee_id FROM users u WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?1",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    sql.push_str(" ORDER BY u.name");
+
+    let users: Vec<(i64, String, Option<String>)> = match conn.prepare(&sql) {
+        Ok(stmt) => stmt.query_map(&params, |row| {
             Ok((
                 row.get_idx::<i64>(0)?,
                 row.get_idx::<String>(1)?,
                 row.get_idx::<Option<String>>(2)?,
             ))
-        });
+        }),
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    };
 
     let rows: Vec<serde_json::Value> = users
         .into_iter()
@@ -816,15 +899,53 @@ pub async fn daily_attendance_register(
         let trimmed = search.trim();
         if !trimmed.is_empty() {
             let like = format!("%{trimmed}%");
-            sql.push_str(
-                " AND (u.name LIKE ?3 OR COALESCE(u.email, '') LIKE ?4 OR COALESCE(u.phone, '') LIKE ?5 OR COALESCE(d.name, '') LIKE ?6)",
-            );
+            let n = params.len() + 1;
+            sql.push_str(&format!(
+                " AND (u.name LIKE ?{n} OR COALESCE(u.email, '') LIKE ?{} OR COALESCE(u.phone, '') LIKE ?{} OR COALESCE(d.name, '') LIKE ?{})",
+                n + 1,
+                n + 2,
+                n + 3,
+            ));
             params.push(crate::db::into_param_value(like.clone()));
             params.push(crate::db::into_param_value(like.clone()));
             params.push(crate::db::into_param_value(like.clone()));
             params.push(crate::db::into_param_value(like));
         }
     }
+
+    if let Some(desg_id) = query.designation_id {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND u.designation_id = ?{idx}"));
+        params.push(crate::db::into_param_value(desg_id));
+    }
+
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+
+    if let Some(center_id) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
+        let wl_idx = params.len() + 1;
+        let dept_idx = wl_idx + 1;
+        let org_idx = wl_idx + 2;
+        sql.push_str(&format!(
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                OR u.department_id IN (
+                  SELECT d.id FROM departments d
+                  WHERE d.center_id = ?{dept_idx} AND d.organization_id = ?{org_idx}
+                )
+              )"
+        ));
+        params.push(crate::db::into_param_value(center_id.to_string()));
+        params.push(crate::db::into_param_value(center_id));
+        params.push(crate::db::into_param_value(org_id));
+    }
+
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
 
     sql.push_str(
         " GROUP BY u.id, u.name, u.employee_id, u.phone, d.name ORDER BY u.name",
@@ -1250,6 +1371,9 @@ pub async fn attendance_register(
             emp_params.push(crate::db::into_param_value(like));
         }
     }
+
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    crate::branch_scope::append_users_branch_filter(&mut emp_sql, &mut emp_params, &scope, "u");
 
     emp_sql.push_str(" ORDER BY u.name");
 

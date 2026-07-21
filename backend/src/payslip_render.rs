@@ -43,10 +43,22 @@ pub struct PayslipRenderData {
     pub adjustments_json: String,
     pub emp_name: String,
     pub emp_id: Option<String>,
+    pub emp_email: Option<String>,
+    pub emp_phone: Option<String>,
+    pub emp_address: Option<String>,
+    pub emp_city: Option<String>,
+    pub emp_state: Option<String>,
+    pub emp_postal: Option<String>,
+    pub emp_account: Option<String>,
+    pub emp_bank: Option<String>,
+    pub emp_pan: Option<String>,
+    pub emp_tax_regime: Option<String>,
     pub dept: Option<String>,
     pub designation: Option<String>,
     pub company_name: String,
     pub company_address: Option<String>,
+    pub company_phone: Option<String>,
+    pub company_email: Option<String>,
     pub pan_number: Option<String>,
     pub pf_number: Option<String>,
 }
@@ -74,7 +86,10 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
                     COALESCE(p.lop_basic, 0), COALESCE(p.lop_hra, 0), COALESCE(p.lop_transport, 0),
                     COALESCE(p.pf_deduction, 0), COALESCE(p.esi_deduction, 0), COALESCE(p.tds, 0),
                     COALESCE(p.prof_tax, 0), COALESCE(p.advance_deduction, 0), COALESCE(p.lw_employee, 0),
-                    COALESCE(p.adjustments, '[]'), u.name, u.employee_id, d.name, des.name
+                    COALESCE(p.adjustments, '[]'),
+                    u.name, u.employee_id, u.email, u.phone, u.address, u.city, u.state, u.postal_code,
+                    u.account_number, u.bank_name, u.pan_number, u.tax_regime,
+                    d.name, des.name
              FROM payslips p
              JOIN users u ON u.id = p.user_id
              LEFT JOIN departments d ON d.id = u.department_id AND d.organization_id = u.organization_id
@@ -119,6 +134,16 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
                     r.get_idx::<Option<String>>(33)?,
                     r.get_idx::<Option<String>>(34)?,
                     r.get_idx::<Option<String>>(35)?,
+                    r.get_idx::<Option<String>>(36)?,
+                    r.get_idx::<Option<String>>(37)?,
+                    r.get_idx::<Option<String>>(38)?,
+                    r.get_idx::<Option<String>>(39)?,
+                    r.get_idx::<Option<String>>(40)?,
+                    r.get_idx::<Option<String>>(41)?,
+                    r.get_idx::<Option<String>>(42)?,
+                    r.get_idx::<Option<String>>(43)?,
+                    r.get_idx::<Option<String>>(44)?,
+                    r.get_idx::<Option<String>>(45)?,
                 ))
             },
         )
@@ -159,13 +184,28 @@ pub fn load_payslip(conn: &Connection, payslip_id: i64, org_id: i64) -> Option<P
         adjustments_json: base.31,
         emp_name: base.32,
         emp_id: base.33,
-        dept: base.34,
-        designation: base.35,
+        emp_email: base.34,
+        emp_phone: base.35,
+        emp_address: base.36,
+        emp_city: base.37,
+        emp_state: base.38,
+        emp_postal: base.39,
+        emp_account: base.40,
+        emp_bank: base.41,
+        emp_pan: base.42,
+        emp_tax_regime: base.43,
+        dept: base.44,
+        designation: base.45,
         company_name: setting(conn, org_id, "company_name")
             .or_else(|| setting(conn, org_id, "app_name"))
             .unwrap_or_else(|| "Company".into()),
         company_address: setting(conn, org_id, "business_location")
             .or_else(|| setting(conn, org_id, "company_address")),
+        company_phone: setting(conn, org_id, "company_phone")
+            .or_else(|| setting(conn, org_id, "support_phone")),
+        company_email: setting(conn, org_id, "company_email")
+            .or_else(|| setting(conn, org_id, "mail_from_address"))
+            .or_else(|| setting(conn, org_id, "support_email")),
         pan_number: setting(conn, org_id, "pan_number"),
         pf_number: setting(conn, org_id, "pf_number"),
     })
@@ -525,10 +565,22 @@ mod tests {
             adjustments_json: "[]".into(),
             emp_name: "Test User".into(),
             emp_id: None,
+            emp_email: None,
+            emp_phone: None,
+            emp_address: None,
+            emp_city: None,
+            emp_state: None,
+            emp_postal: None,
+            emp_account: None,
+            emp_bank: None,
+            emp_pan: None,
+            emp_tax_regime: None,
             dept: None,
             designation: None,
             company_name: "Acme".into(),
             company_address: None,
+            company_phone: None,
+            company_email: None,
             pan_number: None,
             pf_number: None,
         };

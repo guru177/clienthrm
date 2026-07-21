@@ -1067,7 +1067,7 @@ export default function PayrollPage() {
         }
     }, [filterMode, selectedCenter, fetchDepartments]);
 
-    // Load employees when filter changes
+    // Load employees when filter / period changes
     useEffect(() => {
         if (filterMode === 'all') {
             fetchEmployees();
@@ -1079,7 +1079,7 @@ export default function PayrollPage() {
             setEmployees([]);
             setCheckedIds(new Set());
         }
-    }, [filterMode, selectedDept, selectedCenter, month, year]);
+    }, [filterMode, selectedDept, selectedCenter, month, year, fetchEmployees]);
 
     const handleFilterMode = (mode: FilterMode) => {
         setFilterMode(mode);

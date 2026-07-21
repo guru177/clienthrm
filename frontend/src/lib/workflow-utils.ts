@@ -13,11 +13,24 @@ export const SUPPORTED_TRIGGERS = [
     { value: 'leave_request_submitted', label: 'Leave Request Submitted' },
     { value: 'leave_request_approved', label: 'Leave Request Approved' },
     { value: 'leave_request_rejected', label: 'Leave Request Rejected' },
+    { value: 'attendance_clock_in', label: 'Attendance Clock In' },
+    { value: 'attendance_late', label: 'Attendance Late' },
+    { value: 'attendance_absent', label: 'Attendance Absent' },
+    { value: 'grocery_claim_submitted', label: 'Grocery Claim Submitted' },
+    { value: 'asset_expense_submitted', label: 'Asset Expense Submitted' },
+    { value: 'doctor_report_published', label: 'Doctor Report Published' },
+    { value: 'user_created', label: 'User Created / Joined' },
+    { value: 'payslip_generated', label: 'Payslip Generated' },
+    { value: 'task_overdue', label: 'Task Overdue' },
 ] as const;
 
 export const SUPPORTED_ACTIONS = [
     { value: 'create_task', label: 'Create Task' },
     { value: 'send_notification', label: 'Send In-App Notification' },
+    { value: 'send_email', label: 'Send Email' },
+    { value: 'webhook', label: 'Webhook POST' },
+    { value: 'whatsapp', label: 'Send WhatsApp' },
+    { value: 'notify_manager', label: 'Notify Manager' },
 ] as const;
 
 export const CONDITION_FIELDS = [
@@ -25,6 +38,10 @@ export const CONDITION_FIELDS = [
     { value: 'days_count', label: 'Days Count' },
     { value: 'reason', label: 'Reason' },
     { value: 'user_id', label: 'User ID' },
+    { value: 'amount', label: 'Amount' },
+    { value: 'is_late', label: 'Is Late' },
+    { value: 'status', label: 'Status' },
+    { value: 'source', label: 'Source' },
 ] as const;
 
 export const CONDITION_OPERATORS = [
@@ -41,6 +58,12 @@ const UI_TYPE_FROM_ENGINE: Record<string, string> = {
     notify: 'send_notification',
     email: 'send_email',
     task: 'create_task',
+    webhook_post: 'webhook',
+    http_webhook: 'webhook',
+    send_whatsapp: 'whatsapp',
+    whatsapp_message: 'whatsapp',
+    assign_manager_notification: 'notify_manager',
+    escalate_to_manager: 'notify_manager',
 };
 
 /** Convert API-stored actions into UI { type, config } shape for forms. */
@@ -100,15 +123,17 @@ export function conditionsToApi(rules: TriggerCondition[]): unknown[] | undefine
     const active = rules.filter((r) => r.field.trim());
     if (active.length === 0) return undefined;
     return active.map((r) => {
-        let value: string | number | string[] = r.value;
+        let value: string | number | string[] | boolean = r.value;
         if (r.operator === 'in') {
             value = r.value
                 .split(',')
                 .map((s) => s.trim())
                 .filter(Boolean);
-        } else if (r.field === 'days_count' || r.field === 'user_id') {
+        } else if (r.field === 'days_count' || r.field === 'user_id' || r.field === 'amount') {
             const n = Number(r.value);
             if (!Number.isNaN(n)) value = n;
+        } else if (r.field === 'is_late') {
+            value = r.value === 'true' || r.value === '1';
         }
         return { field: r.field, operator: r.operator, value };
     });

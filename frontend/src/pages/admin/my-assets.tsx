@@ -89,15 +89,15 @@ export default function MyAssetsPage() {
     }
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h2 className="text-2xl font-bold tracking-tight">My Assets</h2>
-                    <p className="text-muted-foreground">View your currently assigned company assets and log maintenance/fuel expenses.</p>
+        <div className="min-w-0 max-w-full space-y-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                    <h2 className="text-2xl font-bold tracking-tight break-words">My Assets</h2>
+                    <p className="text-muted-foreground break-words">View your currently assigned company assets and log maintenance/fuel expenses.</p>
                 </div>
                 <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}>
                     <DialogTrigger asChild>
-                        <Button disabled={allocations.length === 0}><Plus className="mr-2 h-4 w-4" /> Log Expense</Button>
+                        <Button className="min-h-11 w-full shrink-0 sm:w-auto" disabled={allocations.length === 0}><Plus className="mr-2 h-4 w-4" /> Log Expense</Button>
                     </DialogTrigger>
                     <DialogContent>
                         <DialogHeader><DialogTitle>Log Asset Expense</DialogTitle></DialogHeader>
@@ -166,7 +166,32 @@ export default function MyAssetsPage() {
 
             <div>
                 <h3 className="text-lg font-medium mt-8 mb-4">My Expense History</h3>
-                <div className="rounded-md border">
+                <div className="space-y-3 md:hidden" data-testid="asset-expense-mobile-cards">
+                    {expenses.length === 0 ? (
+                        <p className="rounded-lg border border-dashed p-6 text-center text-muted-foreground">
+                            No expenses logged yet
+                        </p>
+                    ) : (
+                        expenses.map((exp) => (
+                            <div key={exp.id} className="rounded-xl border p-4 space-y-2">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                        <p className="font-medium">{exp.asset_name}</p>
+                                        <p className="text-sm text-muted-foreground capitalize">
+                                            {exp.expense_type} · {exp.expense_date}
+                                        </p>
+                                    </div>
+                                    <Badge variant={statusBadgeVariant(exp.status)}>{exp.status}</Badge>
+                                </div>
+                                <p className="text-lg font-semibold">₹{exp.amount.toLocaleString()}</p>
+                                {exp.description ? (
+                                    <p className="text-sm text-muted-foreground">{exp.description}</p>
+                                ) : null}
+                            </div>
+                        ))
+                    )}
+                </div>
+                <div className="hidden rounded-md border md:block">
                     <Table>
                         <TableHeader>
                             <TableRow>

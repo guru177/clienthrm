@@ -208,6 +208,21 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
             "edit-jobs"
         });
     }
+    if path.starts_with("/api/admin/integrations/") {
+        return Some("manage-settings");
+    }
+    if path.starts_with("/api/admin/manager/") {
+        if path.contains("/approve") {
+            return Some("approve-leave-requests");
+        }
+        if path.contains("/reject") {
+            return Some("reject-leave-requests");
+        }
+        if path.contains("/leave") {
+            return Some("approve-leave-requests");
+        }
+        return Some("view-attendance");
+    }
     if path.starts_with("/api/admin/attendance/clock-in")
         || path.starts_with("/api/admin/attendance/clock-out")
     {

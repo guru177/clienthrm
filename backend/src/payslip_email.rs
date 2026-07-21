@@ -62,37 +62,37 @@ fn build_email_bodies(
          View and download your payslip: {portal}/admin/my-payslips\n\n\
          Your payslip is attached as an A4 PDF.\n"
     );
-    let html = format!(
-        r#"<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px;margin:0 auto;color:#1e293b">
-  <div style="background:linear-gradient(135deg,#071b3a,#1e4a8a);color:#fff;border-radius:12px 12px 0 0;padding:24px 28px">
-    <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;opacity:.85">Salary statement</div>
-    <div style="font-size:22px;font-weight:700;margin-top:6px">{app_name}</div>
-    <div style="font-size:13px;opacity:.9;margin-top:4px">{period}</div>
-  </div>
-  <div style="border:1px solid #e2e8f0;border-top:0;border-radius:0 0 12px 12px;padding:24px 28px;background:#fff">
-    <p style="margin:0 0 16px">Dear {name},</p>
-    <p style="margin:0 0 20px;color:#475569">Your payslip for <strong>{period}</strong> is attached as a PDF. Summary:</p>
-    <table style="width:100%;border-collapse:collapse;font-size:14px">
-      <tr>
-        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;color:#64748b">Gross salary</td>
-        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">₹{gross:.2}</td>
-      </tr>
-      <tr>
-        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;color:#64748b">Total deductions</td>
-        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">₹{deductions:.2}</td>
-      </tr>
-      <tr>
-        <td style="padding:14px 0;font-weight:700;color:#071b3a">Net pay</td>
-        <td style="padding:14px 0;text-align:right;font-size:20px;font-weight:700;color:#071b3a">₹{net:.2}</td>
-      </tr>
-    </table>
-    <p style="margin:24px 0 0">
-      <a href="{portal}/admin/my-payslips" style="display:inline-block;background:#071b3a;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View My Payslips</a>
-    </p>
-    <p style="font-size:12px;color:#94a3b8;margin:20px 0 0">Full breakdown is in the attached A4 PDF.</p>
-  </div>
-</div>"#
+    let body_html = format!(
+        r#"<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#64748b;">Dear {name},</p>
+<p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#64748b;">
+  Your payslip for <strong style="color:#071b3a;">{period}</strong> is attached as a PDF. Summary:
+</p>
+<table role="presentation" width="100%" style="margin-bottom:24px;border-collapse:collapse;font-size:14px;">
+  <tr>
+    <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;color:#64748b;">Gross salary</td>
+    <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600;color:#001f3f;">₹{gross:.2}</td>
+  </tr>
+  <tr>
+    <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;color:#64748b;">Total deductions</td>
+    <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600;color:#001f3f;">₹{deductions:.2}</td>
+  </tr>
+  <tr>
+    <td style="padding:14px 0;font-weight:700;color:#071b3a;">Net pay</td>
+    <td style="padding:14px 0;text-align:right;font-size:20px;font-weight:700;color:#071b3a;">₹{net:.2}</td>
+  </tr>
+</table>
+<p style="margin:24px 0 0;">
+  <a href="{portal}/admin/my-payslips" style="display:inline-block;background:#001f3f;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">View My Payslips</a>
+</p>
+<p style="font-size:12px;color:#94a3b8;margin:20px 0 0;">Full breakdown is in the attached A4 PDF.</p>"#,
+        name = crate::tenant_email::html_escape(name),
+        period = crate::tenant_email::html_escape(&period),
+        gross = gross,
+        deductions = deductions,
+        net = net,
+        portal = crate::tenant_email::html_escape(&portal),
     );
+    let html = crate::tenant_email::render_base_template("Payslip Generated", &body_html);
     (plain, html)
 }
 
@@ -149,9 +149,14 @@ pub fn send_payslip_email(
     let attach_name = crate::payslip_render::payslip_filename(&data);
 
     let from = smtp.from_mailbox()?;
-    let to = email
+    let (actual_to, original) = crate::tenant_email::resolve_recipient(&email);
+    let to = actual_to
         .parse()
         .map_err(|_| "Invalid employee email address".to_string())?;
+    let subject = crate::tenant_email::resolve_subject(
+        &format!("{app_name} — Payslip {period}"),
+        original.as_deref(),
+    );
 
     let pdf_type = ContentType::parse("application/pdf")
         .map_err(|_| "Invalid PDF content type".to_string())?;
@@ -160,7 +165,7 @@ pub fn send_payslip_email(
     let message = Message::builder()
         .from(from)
         .to(to)
-        .subject(format!("{app_name} — Payslip {period}"))
+        .subject(subject)
         .multipart(
             MultiPart::mixed()
                 .multipart(MultiPart::alternative_plain_html(plain, html))

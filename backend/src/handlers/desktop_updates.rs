@@ -7,7 +7,7 @@ use crate::db::DbPool;
 use crate::handlers::platform_audit::audit_from_request;
 use crate::middleware::platform_auth::require_role;
 use crate::models::{ApiError, ApiResponse};
-use crate::storage::{mime_for_path, resolve_storage_file};
+use crate::storage::{mime_for_path, read_stored_bytes};
 
 fn allowed_desktop_update_name(name: &str) -> bool {
     if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
@@ -33,18 +33,9 @@ pub async fn serve(path: web::Path<String>) -> HttpResponse {
     }
 
     let relative = format!("desktop-updates/{tail}");
-    let file_path = match resolve_storage_file(&relative) {
-        Ok(p) => p,
-        Err(e) => return HttpResponse::NotFound().json(ApiError::new(&e)),
-    };
-
-    if !file_path.is_file() {
-        return HttpResponse::NotFound().json(ApiError::new("Update file not found"));
-    }
-
-    let bytes = match std::fs::read(&file_path) {
+    let bytes = match read_stored_bytes(&relative) {
         Ok(b) => b,
-        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Update file not readable")),
+        Err(e) => return HttpResponse::NotFound().json(ApiError::new(&e)),
     };
 
     let mut response = HttpResponse::Ok();
