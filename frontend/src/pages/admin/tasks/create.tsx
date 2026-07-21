@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppLayout from '@/layouts/app-layout';
 import { Button } from '@/components/ui/button';
@@ -22,14 +22,16 @@ interface User {
     name: string;
 }
 
-interface Props {
-    users?: User[];
-    projects?: Array<{ id: number; name: string }>;
+interface ProjectOption {
+    id: number;
+    name: string;
 }
 
-export default function Create({ users = [], projects = [] }: Props) {
+export default function Create() {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
+    const [users, setUsers] = useState<User[]>([]);
+    const [projects, setProjects] = useState<ProjectOption[]>([]);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [formData, setFormData] = useState({
         title: '',
@@ -44,6 +46,33 @@ export default function Create({ users = [], projects = [] }: Props) {
         related_type: 'none',
         related_id: '',
     });
+
+    useEffect(() => {
+        void loadOptions();
+    }, []);
+
+    const loadOptions = async () => {
+        try {
+            const [usersRes, projectsRes] = await Promise.all([
+                axios.get('/admin/users/list'),
+                axios.get('/admin/projects/list').catch(() => axios.get('/admin/projects')),
+            ]);
+            const userData = usersRes.data?.data;
+            setUsers(Array.isArray(userData) ? userData : userData?.data || []);
+            const projectData = projectsRes.data?.data;
+            const projectRows = Array.isArray(projectData)
+                ? projectData
+                : projectData?.data || [];
+            setProjects(
+                projectRows.map((p: { id: number; name: string }) => ({
+                    id: p.id,
+                    name: p.name,
+                })),
+            );
+        } catch (error) {
+            handleApiError(error);
+        }
+    };
 
     const breadcrumbs = [
         // { label: 'Dashboard', href: '/admin/dashboard' },

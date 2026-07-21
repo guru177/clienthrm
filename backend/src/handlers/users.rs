@@ -1437,7 +1437,8 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         "SELECT u.id, u.name, u.email, u.employee_id FROM users u WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string();
     let mut bind: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
     append_users_branch_filter(&mut sql, &mut bind, &scope, "u");
-    sql.push_str(" ORDER BY COALESCE(u.created_at, '') DESC, u.id DESC");
+    // Avoid COALESCE(created_at, '') — Postgres TIMESTAMP cannot coalesce with ''.
+    sql.push_str(" ORDER BY u.created_at DESC, u.id DESC");
 
     let users: Vec<serde_json::Value> = conn
         .prepare(&sql)

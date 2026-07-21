@@ -1680,7 +1680,23 @@ pub fn migrate_assets(conn: &crate::db::Connection) {
 
 /// Branch-scoped RBAC: which centers a user may administer.
 pub fn migrate_user_centers(conn: &crate::db::Connection) {
-    let ddl = r#"
+    let ddl = if conn.backend() == crate::db::dialect::Backend::Postgres {
+        r#"
+        CREATE TABLE IF NOT EXISTS user_centers (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            center_id INTEGER NOT NULL REFERENCES centers(id) ON DELETE CASCADE,
+            organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(user_id, center_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_centers_user ON user_centers(user_id);
+        CREATE INDEX IF NOT EXISTS idx_user_centers_org ON user_centers(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_user_centers_center ON user_centers(center_id);
+        "#
+    } else {
+        r#"
         CREATE TABLE IF NOT EXISTS user_centers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1693,7 +1709,8 @@ pub fn migrate_user_centers(conn: &crate::db::Connection) {
         CREATE INDEX IF NOT EXISTS idx_user_centers_user ON user_centers(user_id);
         CREATE INDEX IF NOT EXISTS idx_user_centers_org ON user_centers(organization_id);
         CREATE INDEX IF NOT EXISTS idx_user_centers_center ON user_centers(center_id);
-    "#;
+        "#
+    };
     let sql = crate::db::dialect::adapt_sql(ddl, conn.backend());
     if let Err(e) = conn.execute_batch(&sql) {
         log::warn!("user_centers migration: {e}");
@@ -1741,7 +1758,7 @@ pub fn migrate_user_centers(conn: &crate::db::Connection) {
     if conn.backend() == crate::db::dialect::Backend::Postgres {
         let _ = conn.execute(
             "INSERT INTO user_centers (user_id, center_id, organization_id, created_at, updated_at)
-             SELECT u.id, c.id, u.organization_id, datetime('now'), datetime('now')
+             SELECT u.id, c.id, u.organization_id, NOW(), NOW()
              FROM users u
              INNER JOIN centers c ON c.organization_id = u.organization_id
                AND TRIM(COALESCE(u.work_location, '')) = CAST(c.id AS TEXT)

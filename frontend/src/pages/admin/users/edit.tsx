@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import axios from '@/lib/axios';
 import { storageUrl } from '@/lib/storage-url';
-import { ArrowLeft, Banknote, Briefcase, Building2, Camera, IdCard, MapPin, Save, Trash2, Upload, Users } from 'lucide-react';
+import { ArrowLeft, Banknote, Briefcase, Building2, Camera, IdCard, MapPin, Save, Search, Trash2, Upload, Users } from 'lucide-react';
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { useStorageSrc } from '@/hooks/use-storage-src';
 import { invalidateStorageBlobUrl } from '@/lib/storage-url';
@@ -143,6 +143,7 @@ export default function EditUserPage() {
     const [designations, setDesignations] = useState<Designation[]>([]);
     const [centers, setCenters] = useState<Center[]>([]);
     const [managedCenterIds, setManagedCenterIds] = useState<number[]>([]);
+    const [branchSearch, setBranchSearch] = useState('');
     const [loading, setLoading] = useState(true);
 
     const [formData, setFormData] = useState({
@@ -224,6 +225,39 @@ export default function EditUserPage() {
             (d) => String(d.center_id ?? '') === String(formData.work_location),
         );
     }, [departments, formData.work_location]);
+
+    const filteredManagedCenters = useMemo(() => {
+        const q = branchSearch.trim().toLowerCase();
+        const list = centers
+            .map((c) => ({ ...c, idNum: Number(c.id) }))
+            .filter((c) => c.idNum > 0);
+        const filtered = q
+            ? list.filter((c) => {
+                  const hay = `${c.name} ${c.city || ''} ${c.state || ''} ${c.address_line1 || ''}`.toLowerCase();
+                  return hay.includes(q);
+              })
+            : list;
+        // Selected first, then A–Z
+        return filtered.sort((a, b) => {
+            const aSel = managedCenterIds.includes(a.idNum) ? 0 : 1;
+            const bSel = managedCenterIds.includes(b.idNum) ? 0 : 1;
+            if (aSel !== bSel) return aSel - bSel;
+            return a.name.localeCompare(b.name);
+        });
+    }, [centers, branchSearch, managedCenterIds]);
+
+    const toggleManagedCenter = (id: number, checked: boolean) => {
+        setManagedCenterIds((prev) =>
+            checked ? (prev.includes(id) ? prev : [...prev, id]) : prev.filter((x) => x !== id),
+        );
+    };
+
+    const selectAllVisibleBranches = () => {
+        const ids = filteredManagedCenters.map((c) => c.idNum);
+        setManagedCenterIds((prev) => Array.from(new Set([...prev, ...ids])));
+    };
+
+    const clearManagedBranches = () => setManagedCenterIds([]);
 
     useEffect(() => {
         if (!id) return;
@@ -1208,41 +1242,6 @@ export default function EditUserPage() {
                                     )}
                                 </div>
 
-                                {/* Branch lives under Basic Information; managed branches stay here */}
-                                {canAccessAllCenters() && centers.length > 0 && (
-                                    <div className="space-y-2 md:col-span-2">
-                                        <Label>Managed branches (branch RBAC)</Label>
-                                        <p className="text-xs text-muted-foreground">
-                                            Branches this user may administer. Leave empty to use their work branch only.
-                                            Org admins with Access All Centers ignore this list.
-                                        </p>
-                                        <div className="grid gap-2 sm:grid-cols-2">
-                                            {centers.map((center) => {
-                                                const checked = managedCenterIds.includes(Number(center.id));
-                                                return (
-                                                    <label
-                                                        key={center.id}
-                                                        className="flex items-center gap-2 text-sm"
-                                                    >
-                                                        <Checkbox
-                                                            checked={checked}
-                                                            onCheckedChange={(v) => {
-                                                                const id = Number(center.id);
-                                                                setManagedCenterIds((prev) =>
-                                                                    v
-                                                                        ? [...prev, id]
-                                                                        : prev.filter((x) => x !== id),
-                                                                );
-                                                            }}
-                                                        />
-                                                        {center.name}
-                                                    </label>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                )}
-
                                 <div className="space-y-2">
                                     <Label htmlFor="work_state">Work State (PT)</Label>
                                     <Input
@@ -1284,6 +1283,122 @@ export default function EditUserPage() {
                             </div>
                         </CardContent>
                     </Card>
+
+                    {/* Branch access — dedicated, searchable panel */}
+                    {canAccessAllCenters() && centers.length > 0 && (
+                        <Card className="overflow-hidden border-primary/10">
+                            <CardHeader className="bg-gradient-to-r from-slate-50 to-transparent dark:from-slate-900/40">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div className="space-y-1">
+                                        <CardTitle className="flex items-center gap-2 text-lg">
+                                            <MapPin className="h-5 w-5 text-primary" />
+                                            Branch access
+                                        </CardTitle>
+                                        <CardDescription className="max-w-xl">
+                                            Choose which branches this person can manage. Leave empty to limit them
+                                            to their own work branch. Full org admins already see every branch and
+                                            do not need this list.
+                                        </CardDescription>
+                                    </div>
+                                    <Badge
+                                        variant={managedCenterIds.length > 0 ? 'default' : 'secondary'}
+                                        className="w-fit shrink-0"
+                                    >
+                                        {managedCenterIds.length === 0
+                                            ? 'Work branch only'
+                                            : `${managedCenterIds.length} selected`}
+                                    </Badge>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="space-y-4 pt-4">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                                    <div className="relative flex-1">
+                                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                        <Input
+                                            value={branchSearch}
+                                            onChange={(e) => setBranchSearch(e.target.value)}
+                                            placeholder="Search branches by name or city…"
+                                            className="pl-9"
+                                            disabled={!canEditAdminFields}
+                                        />
+                                    </div>
+                                    <div className="flex shrink-0 gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={selectAllVisibleBranches}
+                                            disabled={!canEditAdminFields || filteredManagedCenters.length === 0}
+                                        >
+                                            Select visible
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={clearManagedBranches}
+                                            disabled={!canEditAdminFields || managedCenterIds.length === 0}
+                                        >
+                                            Clear all
+                                        </Button>
+                                    </div>
+                                </div>
+
+                                {filteredManagedCenters.length === 0 ? (
+                                    <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-10 text-center text-sm text-muted-foreground">
+                                        No branches match “{branchSearch}”.
+                                    </div>
+                                ) : (
+                                    <div className="max-h-72 overflow-y-auto rounded-xl border bg-background/50 p-2">
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                            {filteredManagedCenters.map((center) => {
+                                                const checked = managedCenterIds.includes(center.idNum);
+                                                return (
+                                                    <label
+                                                        key={center.id}
+                                                        className={[
+                                                            'flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors',
+                                                            checked
+                                                                ? 'border-primary/40 bg-primary/5 shadow-sm'
+                                                                : 'border-transparent hover:border-border hover:bg-muted/40',
+                                                            !canEditAdminFields ? 'cursor-not-allowed opacity-70' : '',
+                                                        ].join(' ')}
+                                                    >
+                                                        <Checkbox
+                                                            className="mt-0.5"
+                                                            checked={checked}
+                                                            disabled={!canEditAdminFields}
+                                                            onCheckedChange={(v) =>
+                                                                toggleManagedCenter(center.idNum, !!v)
+                                                            }
+                                                        />
+                                                        <span className="min-w-0 flex-1">
+                                                            <span className="block truncate text-sm font-medium leading-snug">
+                                                                {center.name}
+                                                            </span>
+                                                            {(center.city || center.state || center.address_line1) && (
+                                                                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                                                    {[center.address_line1, center.city, center.state]
+                                                                        .filter(Boolean)
+                                                                        .join(' · ')}
+                                                                </span>
+                                                            )}
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <p className="text-xs text-muted-foreground">
+                                    Tip: set their <span className="font-medium">Branch</span> under Basic Information
+                                    for day-to-day placement; use this list only when they need to administer extra
+                                    locations.
+                                </p>
+                            </CardContent>
+                        </Card>
+                    )}
 
                     {/* Bank Details */}
                     <Card>

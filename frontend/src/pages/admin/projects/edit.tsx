@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import AppLayout from '@/layouts/app-layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,35 +40,70 @@ interface User {
     name: string;
 }
 
-interface Props {
-    project?: Project;
-    users?: User[];
-}
-
-export default function Edit({ project = {} as Project, users }: Props) {
+export default function Edit() {
     const navigate = useNavigate();
-    const safeUsers = users ?? [];
+    const { id } = useParams<{ id: string }>();
+    const [project, setProject] = useState<Project | null>(null);
+    const [users, setUsers] = useState<User[]>([]);
+    const [pageLoading, setPageLoading] = useState(true);
     const [loading, setLoading] = useState(false);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [formData, setFormData] = useState({
-        name: project.name,
-        description: project.description || '',
-        status: project.status,
-        priority: project.priority,
-        start_date: project.start_date || '',
-        end_date: project.end_date || '',
-        budget: project.budget || '',
-        progress_percentage: project.progress_percentage.toString(),
-        project_manager_id: project.project_manager_id?.toString() || 'none',
+        name: '',
+        description: '',
+        status: 'planning',
+        priority: 'medium',
+        start_date: '',
+        end_date: '',
+        budget: '',
+        progress_percentage: '0',
+        project_manager_id: 'none',
     });
     const [selectedTeamMembers, setSelectedTeamMembers] = useState<
         Array<{ userId: string; role: string }>
-    >(
-        project.team_members?.map((member) => ({
-            userId: member.id.toString(),
-            role: member.pivot.role,
-        })) || [],
-    );
+    >([]);
+
+    useEffect(() => {
+        void loadPage();
+    }, [id]);
+
+    const loadPage = async () => {
+        if (!id) return;
+        setPageLoading(true);
+        try {
+            const [projectRes, usersRes] = await Promise.all([
+                axios.get(`/admin/projects/${id}`),
+                axios.get('/admin/users/list'),
+            ]);
+            const p = (projectRes.data?.data || projectRes.data) as Project;
+            setProject(p);
+            setFormData({
+                name: p.name || '',
+                description: p.description || '',
+                status: p.status || 'planning',
+                priority: p.priority || 'medium',
+                start_date: p.start_date || '',
+                end_date: p.end_date || '',
+                budget: p.budget || '',
+                progress_percentage: String(p.progress_percentage ?? 0),
+                project_manager_id: p.project_manager_id?.toString() || 'none',
+            });
+            setSelectedTeamMembers(
+                p.team_members?.map((member) => ({
+                    userId: member.id.toString(),
+                    role: member.pivot?.role || 'member',
+                })) || [],
+            );
+            const userData = usersRes.data?.data;
+            setUsers(Array.isArray(userData) ? userData : userData?.data || []);
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setPageLoading(false);
+        }
+    };
+
+    const safeUsers = users;
 
     const breadcrumbs = [
         { label: 'Projects', href: '/admin/projects' },
@@ -109,6 +144,7 @@ export default function Edit({ project = {} as Project, users }: Props) {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!project?.id) return;
         setLoading(true);
         setErrors({});
 
@@ -138,6 +174,25 @@ export default function Edit({ project = {} as Project, users }: Props) {
             setLoading(false);
         }
     };
+
+    if (pageLoading) {
+        return (
+            <AppLayout breadcrumbs={breadcrumbs}>
+                <div className="p-8 text-muted-foreground">Loading project...</div>
+            </AppLayout>
+        );
+    }
+
+    if (!project) {
+        return (
+            <AppLayout breadcrumbs={breadcrumbs}>
+                <div className="p-8 space-y-4">
+                    <p className="text-muted-foreground">Project not found.</p>
+                    <Button onClick={() => navigate('/admin/projects')}>Back to Projects</Button>
+                </div>
+            </AppLayout>
+        );
+    }
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>

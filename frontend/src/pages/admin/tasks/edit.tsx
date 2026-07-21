@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import AppLayout from '@/layouts/app-layout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,33 +37,80 @@ interface User {
     name: string;
 }
 
-interface Props {
-    task?: Task;
-    users?: User[];
-    projects?: Array<{ id: number; name: string }>;
+interface ProjectOption {
+    id: number;
+    name: string;
 }
 
-export default function Edit({
-    task = {} as Task,
-    users = [],
-    projects = [],
-}: Props) {
+export default function Edit() {
     const navigate = useNavigate();
+    const { id } = useParams<{ id: string }>();
+    const [task, setTask] = useState<Task | null>(null);
+    const [users, setUsers] = useState<User[]>([]);
+    const [projects, setProjects] = useState<ProjectOption[]>([]);
     const [loading, setLoading] = useState(false);
+    const [pageLoading, setPageLoading] = useState(true);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [formData, setFormData] = useState({
-        title: task.title,
-        description: task.description || '',
-        status: task.status,
-        priority: task.priority,
-        type: task.type,
-        due_date: task.due_date || '',
-        due_time: task.due_time || '',
-        assigned_to: task.assigned_to_id?.toString() || 'unassigned',
-        project_id: task.project_id?.toString() || 'none',
-        related_type: task.related_type || 'none',
-        related_id: task.related_id?.toString() || '',
+        title: '',
+        description: '',
+        status: 'todo',
+        priority: 'medium',
+        type: 'other',
+        due_date: '',
+        due_time: '',
+        assigned_to: 'unassigned',
+        project_id: 'none',
+        related_type: 'none',
+        related_id: '',
     });
+
+    useEffect(() => {
+        void loadPage();
+    }, [id]);
+
+    const loadPage = async () => {
+        if (!id) return;
+        setPageLoading(true);
+        try {
+            const [taskRes, usersRes, projectsRes] = await Promise.all([
+                axios.get(`/admin/tasks/${id}`),
+                axios.get('/admin/users/list'),
+                axios.get('/admin/projects/list').catch(() => axios.get('/admin/projects')),
+            ]);
+            const t = (taskRes.data?.data || taskRes.data) as Task;
+            setTask(t);
+            setFormData({
+                title: t.title || '',
+                description: t.description || '',
+                status: t.status || 'todo',
+                priority: t.priority || 'medium',
+                type: t.type || 'other',
+                due_date: t.due_date || '',
+                due_time: t.due_time || '',
+                assigned_to: t.assigned_to_id?.toString() || 'unassigned',
+                project_id: t.project_id?.toString() || 'none',
+                related_type: t.related_type || 'none',
+                related_id: t.related_id?.toString() || '',
+            });
+            const userData = usersRes.data?.data;
+            setUsers(Array.isArray(userData) ? userData : userData?.data || []);
+            const projectData = projectsRes.data?.data;
+            const projectRows = Array.isArray(projectData)
+                ? projectData
+                : projectData?.data || [];
+            setProjects(
+                projectRows.map((p: { id: number; name: string }) => ({
+                    id: p.id,
+                    name: p.name,
+                })),
+            );
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setPageLoading(false);
+        }
+    };
 
     const breadcrumbs = [
         // { label: 'Dashboard', href: '/admin/dashboard' },
@@ -84,6 +131,7 @@ export default function Edit({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!task?.id) return;
         setLoading(true);
         setErrors({});
 
@@ -108,9 +156,27 @@ export default function Edit({
         return [];
     };
 
+    if (pageLoading) {
+        return (
+            <AppLayout breadcrumbs={breadcrumbs}>
+                <div className="p-8 text-muted-foreground">Loading task...</div>
+            </AppLayout>
+        );
+    }
+
+    if (!task) {
+        return (
+            <AppLayout breadcrumbs={breadcrumbs}>
+                <div className="p-8 space-y-4">
+                    <p className="text-muted-foreground">Task not found.</p>
+                    <Button onClick={() => navigate('/admin/tasks')}>Back to Tasks</Button>
+                </div>
+            </AppLayout>
+        );
+    }
+
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-
             <div className="space-y-6">
                 {/* Hero Header */}
                 <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#e8f2fd] via-[#d0e4f8] to-[#c4d8f0] dark:from-[#0d1e33] dark:via-[#0a1828] dark:to-[#071220] px-6 py-5 shadow-sm border border-white/60 dark:border-white/10">

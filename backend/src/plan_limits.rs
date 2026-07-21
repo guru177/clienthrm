@@ -406,7 +406,8 @@ pub fn apply_plan_to_permissions(user_permissions: Vec<String>, plan: &OrgPlanIn
     let allowed: HashSet<&str> = plan_permissions.iter().map(String::as_str).collect();
     user_permissions
         .into_iter()
-        .filter(|p| allowed.contains(p.as_str()))
+        // Keep branch RBAC bypass even though it is not a plan-module permission.
+        .filter(|p| allowed.contains(p.as_str()) || p == "access-all-centers")
         .collect()
 }
 

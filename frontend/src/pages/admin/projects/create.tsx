@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppLayout from '@/layouts/app-layout';
 import { Button } from '@/components/ui/button';
@@ -23,13 +23,10 @@ interface User {
     name: string;
 }
 
-interface Props {
-    users?: User[];
-}
-
-export default function Create({ users = [] }: Props) {
+export default function Create() {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
+    const [users, setUsers] = useState<User[]>([]);
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [formData, setFormData] = useState({
         name: '',
@@ -45,6 +42,20 @@ export default function Create({ users = [] }: Props) {
     const [selectedTeamMembers, setSelectedTeamMembers] = useState<
         Array<{ userId: string; role: string }>
     >([]);
+
+    useEffect(() => {
+        void loadUsers();
+    }, []);
+
+    const loadUsers = async () => {
+        try {
+            const res = await axios.get('/admin/users/list');
+            const data = res.data?.data;
+            setUsers(Array.isArray(data) ? data : data?.data || []);
+        } catch (error) {
+            handleApiError(error);
+        }
+    };
 
     const breadcrumbs = [
         { label: 'Projects', href: '/admin/projects' },
