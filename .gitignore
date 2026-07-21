@@ -104,6 +104,9 @@ tmp_*.rst
 tmp-asar-check/
 tmp-asar-inspect/
 tools/cloudflared.exe
+__pycache__/
+*.pyc
+scripts/api_test_results.csv
 
 # Android TWA (local secrets / build output)
 android-twa/android.keystore
