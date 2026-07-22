@@ -47,6 +47,7 @@ export default function RoleTable({
 }: RoleTableProps) {
     const navigate = useNavigate();
     const { can } = usePermissions();
+    const confirm = useConfirm();
     const [roles, setRoles] = useState<Role[]>(rolesFromParent || []);
     const [search, setSearch] = useState('');
     const [isFormOpen, setIsFormOpen] = useState(false);
@@ -94,13 +95,17 @@ export default function RoleTable({
     }, [controlled, rolesFromParent, refreshToken]);
 
     const filteredRoles = Array.isArray(roles)
-        ? roles.filter((role) =>
-            role.name.toLowerCase().includes(search.toLowerCase())
-        )
+        ? roles.filter((role) => {
+            if (!role) return false;
+            const q = search.trim().toLowerCase();
+            if (!q) return true;
+            const name = (role.name ?? '').toLowerCase();
+            const slug = (role.slug ?? '').toLowerCase();
+            return name.includes(q) || slug.includes(q);
+        })
         : [];
 
     const handleSort = (column: string) => {
-    const confirm = useConfirm();
         if (sortBy === column) {
             setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
         } else {
@@ -144,11 +149,10 @@ export default function RoleTable({
             return;
         }
 
-        if (
-            !confirm(
-                `Are you sure you want to delete the role "${role.name}"? This action cannot be undone.`
-            )
-        ) {
+        const ok = await confirm(
+            `Are you sure you want to delete the role "${role.name ?? 'this role'}"? This action cannot be undone.`,
+        );
+        if (!ok) {
             return;
         }
 

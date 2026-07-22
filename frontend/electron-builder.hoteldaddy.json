@@ -1,12 +1,77 @@
 {
-    "directories": {
-        "output": "release-hoteldaddy"
-    },
+    "appId": "com.raintech.hrm",
+    "productName": "HR Daddy",
+    "copyright": "Copyright © Raintech Software",
     "artifactName": "HR-Daddy-HotelDaddy-Setup-${version}.${ext}",
+    "asar": true,
+    "npmRebuild": false,
+    "removePackageScripts": true,
     "publish": [
         {
             "provider": "generic",
             "url": "https://hrm-api.hoteldaddy.in/api/public/desktop/updates"
         }
-    ]
+    ],
+    "directories": {
+        "output": "release-hoteldaddy",
+        "buildResources": "build"
+    },
+    "files": [
+        {
+            "from": ".",
+            "filter": [
+                "dist/**/*",
+                "!dist/**/*.map",
+                "electron/**/*",
+                "!electron/branding/**",
+                "!electron/**/*.example",
+                "package.json"
+            ]
+        }
+    ],
+    "extraResources": [
+        {
+            "from": "electron/branding",
+            "to": "branding",
+            "filter": [
+                "**/*"
+            ]
+        }
+    ],
+    "win": {
+        "target": [
+            {
+                "target": "nsis",
+                "arch": [
+                    "x64"
+                ]
+            }
+        ],
+        "icon": "build/icon.ico",
+        "legalTrademarks": "HR Daddy is a trademark of Raintech Software"
+    },
+    "nsis": {
+        "oneClick": false,
+        "perMachine": false,
+        "allowElevation": true,
+        "allowToChangeInstallationDirectory": true,
+        "installerIcon": "build/icon.ico",
+        "uninstallerIcon": "build/icon.ico",
+        "installerHeader": "build/installerHeader.bmp",
+        "installerSidebar": "build/installerSidebar.bmp",
+        "uninstallerSidebar": "build/uninstallerSidebar.bmp",
+        "license": "build/license.txt",
+        "include": "build/installer.nsh",
+        "installerLanguages": [
+            "en_US"
+        ],
+        "displayLanguageSelector": false,
+        "createDesktopShortcut": "always",
+        "createStartMenuShortcut": true,
+        "shortcutName": "HR Daddy",
+        "menuCategory": "HR Daddy",
+        "runAfterFinish": true,
+        "deleteAppDataOnUninstall": false,
+        "guid": "a7c4e8f2-9b1d-4e6a-bc3d-0187a3b4c5d6"
+    }
 }

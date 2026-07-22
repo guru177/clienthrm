@@ -236,8 +236,19 @@ async function flowWorkflow(page) {
 
     await page.goto(`${BASE}/admin/leave-requests`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissAnnouncements(page);
-    const leaveText = await page.textContent('body');
-    record('E2E-08', 'Leave requests page loads (workflow trigger source)', (leaveText || '').length > 100);
+    // Wait for the Leave Requests heading (or fallback body content) — checking
+    // textContent immediately after domcontentloaded races React hydration and
+    // was producing intermittent false FAIL with body length < 100.
+    const leaveReady = await page
+        .getByRole('heading', { name: /leave requests/i })
+        .first()
+        .waitFor({ state: 'visible', timeout: 15000 })
+        .then(() => true)
+        .catch(async () => {
+            const leaveText = ((await page.textContent('body')) || '').toLowerCase();
+            return leaveText.includes('leave') && leaveText.length > 100;
+        });
+    record('E2E-08', 'Leave requests page loads (workflow trigger source)', leaveReady);
 }
 
 async function main() {

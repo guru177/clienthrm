@@ -23,6 +23,8 @@ Installer output:
 frontend/release-hoteldaddy/HR-Daddy-HotelDaddy-Setup-1.0.0.exe
 ```
 
+Uses the same assisted NSIS wizard as the regular desktop build (welcome page, license, install directory, branded header/sidebar — not one-click).
+
 ## API configuration
 
 The build script writes:

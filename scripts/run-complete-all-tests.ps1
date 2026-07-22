@@ -32,7 +32,8 @@ $env:E2E_PASSWORD = $env:HRM_PASSWORD
 $env:E2E_ORG_SLUG = $env:HRM_ORG_SLUG
 $env:PLAYWRIGHT_SKIP_WEBSERVER = "1"
 $env:PLAYWRIGHT_SKIP_API = "1"
-$env:PLATFORM_ADMIN_PASSWORD = if ($env:PLATFORM_ADMIN_PASSWORD) { $env:PLATFORM_ADMIN_PASSWORD } else { "LocalTest123!" }
+# Match backend/.env PLATFORM_ADMIN_PASSWORD (local seed). Override via env when needed.
+$env:PLATFORM_ADMIN_PASSWORD = if ($env:PLATFORM_ADMIN_PASSWORD) { $env:PLATFORM_ADMIN_PASSWORD } else { "retaildaddy@0123" }
 $Fe = "http://localhost:5174"
 $Platform = "http://localhost:5175"
 $Results = @()
@@ -57,8 +58,12 @@ function Run-Step {
     Write-Host $Name -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
     try {
-        & $Action | Out-Null
-        $exit = if ($null -ne $global:LASTEXITCODE) { $global:LASTEXITCODE } else { $LASTEXITCODE }
+        # Do NOT pipe to Out-Null — piping a native command (python/node/cargo)
+        # through a PowerShell cmdlet often clobbers $LASTEXITCODE and produces
+        # false FAIL results when the suite actually passed.
+        & $Action
+        $exit = $LASTEXITCODE
+        if ($null -eq $exit) { $exit = 0 }
         if ($exit -eq 0) {
             Add-Result $Name "PASS" ""
             Write-Host "[PASS] $Name" -ForegroundColor Green
@@ -303,7 +308,8 @@ $failed = (@($Results | Where-Object { $_.Status -eq "FAIL" })).Count
 $skipped = (@($Results | Where-Object { $_.Status -eq "SKIP" })).Count
 Write-Host "Suites: $passed passed, $failed failed, $skipped skipped"
 
-if ($ok) {
+# Prefer Results table over $ok — PowerShell -and chaining can miss a FAIL in edge cases.
+if ($failed -eq 0) {
     Write-Host "All suites passed." -ForegroundColor Green
     exit 0
 }

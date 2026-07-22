@@ -22,7 +22,7 @@ DB = os.path.join(os.path.dirname(__file__), "..", "database", "database.sqlite"
 TENANT_ORG1 = {"email": "info@retaildaddy.in", "password": os.environ.get("HRM_PASSWORD", "Guru!1234"), "org_slug": "mashuptech"}
 PLATFORM = {
     "email": os.environ.get("PLATFORM_ADMIN_EMAIL", "admin@retaildaddy.in"),
-    "password": os.environ.get("PLATFORM_ADMIN_PASSWORD", "LocalTest123!"),
+    "password": os.environ.get("PLATFORM_ADMIN_PASSWORD", "retaildaddy@0123"),
 }
 SN_ORG1 = "A250902070"
 DEVICE_IP = "172.16.1.68"
@@ -310,12 +310,22 @@ def main() -> int:
         user_rows = users.get("data", []) if isinstance(users, dict) else []
         if not isinstance(user_rows, list):
             user_rows = []
-        cross = any(u.get("email") == "guruprasad6282@gmail.com" for u in user_rows if isinstance(u, dict))
+        # Real isolation invariant: every row must belong to the caller's org.
+        # (Previously this test used a specific email as a "cross-tenant sentinel",
+        # but that broke as soon as the same email was legitimately reused in
+        # another org — see QA-DEEP-AUDIT-2026-07-22.)
+        expected_org = 1
+        foreign_rows = [
+            u for u in user_rows
+            if isinstance(u, dict)
+            and u.get("organization_id") is not None
+            and u.get("organization_id") != expected_org
+        ]
         suite.record(
             "SAAS-21",
             "User list excludes other tenants",
-            code == 200 and not cross,
-            f"sample={len(user_rows)}",
+            code == 200 and len(foreign_rows) == 0,
+            f"sample={len(user_rows)} foreign={len(foreign_rows)}",
         )
 
         # Unauthenticated

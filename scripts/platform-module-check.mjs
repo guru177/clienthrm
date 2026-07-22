@@ -6,7 +6,7 @@ import { chromium } from '../frontend/node_modules/playwright/index.mjs';
 
 const BASE = process.env.PLATFORM_URL || 'http://localhost:5175';
 const EMAIL = process.env.PLATFORM_ADMIN_EMAIL || 'admin@retaildaddy.in';
-const PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD || 'LocalTest123!';
+const PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD || 'retaildaddy@0123';
 
 const MODULES = [
     { module: 'Login', path: '/login', guest: true },

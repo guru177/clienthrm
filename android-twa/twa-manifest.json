@@ -1,6 +1,6 @@
 {
     "packageId":  "com.raintech.hrm",
-    "host":  "pride-murphy-gpl-analyses.trycloudflare.com",
+    "host":  "hrm.hoteldaddy.in",
     "name":  "Raintech HRM",
     "launcherName":  "HR Daddy",
     "display":  "standalone",
@@ -13,8 +13,8 @@
     "backgroundColor":  "#FFFFFF",
     "enableNotifications":  false,
     "startUrl":  "/",
-    "iconUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/logo512.png",
-    "maskableIconUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/maskable-icon-512.png",
+    "iconUrl":  "https://hrm.hoteldaddy.in/logo512.png",
+    "maskableIconUrl":  "https://hrm.hoteldaddy.in/maskable-icon-512.png",
     "splashScreenFadeOutDuration":  300,
     "signingKey":  {
                        "path":  "./android.keystore",
@@ -26,7 +26,7 @@
 
                   ],
     "generatorApp":  "bubblewrap-cli",
-    "webManifestUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/manifest.webmanifest",
+    "webManifestUrl":  "https://hrm.hoteldaddy.in/manifest.webmanifest",
     "fallbackType":  "customtabs",
     "features":  {
                      "locationDelegation":  {
@@ -39,7 +39,7 @@
     "enableSiteSettingsShortcut":  true,
     "isChromeOSOnly":  false,
     "isMetaQuest":  false,
-    "fullScopeUrl":  "https://pride-murphy-gpl-analyses.trycloudflare.com/",
+    "fullScopeUrl":  "https://hrm.hoteldaddy.in/",
     "minSdkVersion":  21,
     "orientation":  "portrait-primary",
     "fingerprints":  [
