@@ -435,7 +435,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         // ── Settings ──
         .route("/api/admin/settings/app", web::get().to(handlers::settings::index))
         .route("/api/admin/settings/app", web::post().to(handlers::settings::update))
-        .route("/api/admin/settings/app/logo", web::post().to(handlers::settings::upload_logo))
+        // /api/admin/settings/app/logo removed 2026-07-22: replaced by the generic
+        // app-settings POST that accepts base64 or CloudFront URLs directly.
         .route("/api/admin/settings/password", web::put().to(handlers::settings::update_password))
         .route("/api/admin/settings/profile", web::patch().to(handlers::settings::update_profile))
         .route("/api/admin/settings/profile/photo", web::post().to(handlers::settings::update_profile_photo))

@@ -172,8 +172,12 @@ export async function apiDelete<T = any>(path: string): Promise<{ success: boole
     return apiFetch<T>(path, { method: 'DELETE' });
 }
 
-/** Multipart upload (no JSON Content-Type) */
-export async function apiUpload<T = any>(path: string, formData: FormData): Promise<{ success: boolean; data: T }> {
+/** Multipart upload (no JSON Content-Type). Retries once on 401 after refreshing the JWT. */
+export async function apiUpload<T = any>(
+    path: string,
+    formData: FormData,
+    retried = false,
+): Promise<{ success: boolean; data: T }> {
     const token = getToken();
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (token) {
@@ -181,6 +185,17 @@ export async function apiUpload<T = any>(path: string, formData: FormData): Prom
     }
 
     const response = await fetch(apiUrl(path), { method: 'POST', headers, body: formData });
+
+    if (response.status === 401 && !retried && !path.startsWith('/auth/')) {
+        const refreshed = await tryRefreshToken();
+        if (refreshed) {
+            return apiUpload<T>(path, formData, true);
+        }
+        clearToken();
+        navigateToLogin();
+        throw new Error('Unauthorized');
+    }
+
     const text = await response.text();
     let json: { success?: boolean; data?: T; message?: string } = {};
     if (text) {

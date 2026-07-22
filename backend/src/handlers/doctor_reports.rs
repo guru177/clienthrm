@@ -297,12 +297,12 @@ pub async fn update(
 
     let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
     if existing_doctor != claims.sub && !is_super {
+        // Only doctor author, super-admin, or a user with edit-doctor-reports can edit
         let perms = load_user_permissions(&conn, claims.sub, false);
-        // Only doctor author or admin/super-admin can edit
-        if !has_permission(&perms, "edit-doctor-reports") || !is_super {
-            if existing_doctor != claims.sub {
-                return HttpResponse::Forbidden().json(ApiError::new("Only the authoring doctor or an admin can edit this report"));
-            }
+        if !has_permission(&perms, "edit-doctor-reports") {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "Only the authoring doctor or an authorized admin can edit this report",
+            ));
         }
     }
 

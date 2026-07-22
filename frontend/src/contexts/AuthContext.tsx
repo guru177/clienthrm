@@ -96,10 +96,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     function isAuthFailure(err: unknown): boolean {
+        // Only a genuine 401 should nuke the session. A 403 means the token is
+        // still valid but the actor lacks permission for that endpoint — that
+        // must not force a logout mid-navigation (e.g. transient plan/subscription
+        // gate on /auth/me). Match on the exact "API error: 401" surface produced
+        // by apiFetch and the literal "Unauthorized" string thrown after a
+        // failed refresh.
         const msg = err instanceof Error ? err.message : String(err);
-        if (/unauthorized/i.test(msg)) return true;
+        if (msg === 'Unauthorized') return true;
         const status = /API error: (\d+)/i.exec(msg)?.[1];
-        return status === '401' || status === '403';
+        return status === '401';
     }
 
     async function loadUser() {

@@ -867,6 +867,17 @@ pub async fn approve(
             "Leave request not found or already processed",
         ));
     }
+    // Block self-approval unless the actor is a super-admin. A user with both
+    // create-leave-requests and approve-leave-requests should not be able to
+    // approve their own leave — approval must be a distinct actor.
+    if user_id == claims.sub {
+        let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+        if !is_super {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "You cannot approve your own leave request",
+            ));
+        }
+    }
     if leave_dates_outside_employment(&conn, user_id, &start_date, &end_date) {
         return HttpResponse::BadRequest().json(ApiError::new(
             "Leave dates fall outside the employee employment period",
@@ -1012,6 +1023,15 @@ pub async fn reject(
             "Leave request not found or already processed",
         ));
     };
+    // Prevent self-rejection: users must cancel their own pending request via delete/withdraw, not reject.
+    if user_id == claims.sub {
+        let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+        if !is_super {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "You cannot reject your own leave request. Delete or withdraw it instead.",
+            ));
+        }
+    }
 
     let updated = conn.execute(
         "UPDATE leave_requests SET status='rejected', approved_by=?1, rejection_reason=?2, updated_at=?3

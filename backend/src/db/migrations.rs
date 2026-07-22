@@ -1803,6 +1803,66 @@ pub fn migrate_user_hr_managed(conn: &crate::db::Connection) {
     log::info!("users.hr_managed column ready");
 }
 
+/// Remove duplicate `role_user` rows (same user assigned the same role N times) and
+/// add a unique constraint so the `ON CONFLICT DO NOTHING` idempotent inserts we
+/// use across `role_defaults.rs`, `tenant.rs`, and user CRUD actually deduplicate.
+/// Without this, every `sync_role_defaults` run duplicates every membership.
+pub fn migrate_role_user_unique(conn: &crate::db::Connection) {
+    if conn.backend() != crate::db::dialect::Backend::Postgres {
+        return;
+    }
+    // Delete duplicate rows keeping the smallest id per (user_id, role_id).
+    let _ = conn.execute_batch(
+        "DELETE FROM role_user r
+         USING role_user r2
+         WHERE r.user_id = r2.user_id
+           AND r.role_id = r2.role_id
+           AND r.id > r2.id",
+    );
+    match conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_role_user_user_role_unique
+         ON role_user(user_id, role_id)",
+    ) {
+        Ok(()) => log::info!("role_user unique (user_id, role_id) index ready"),
+        Err(e) => log::warn!("role_user unique index skipped: {e}"),
+    }
+}
+
+/// Remove duplicate `payslips` rows for the same (user_id, month, year) and
+/// enforce a unique index so regeneration cannot create parallel payslips.
+/// Keeps the row with the highest `updated_at` (most recently generated).
+pub fn migrate_payslips_unique(conn: &crate::db::Connection) {
+    if conn.backend() != crate::db::dialect::Backend::Postgres {
+        return;
+    }
+    // Drop older duplicates. When `updated_at` is NULL treat it as older; when tied,
+    // keep the row with the larger `id` (assumed most recent regenerate).
+    let _ = conn.execute_batch(
+        "DELETE FROM payslips p
+         USING payslips p2
+         WHERE p.user_id = p2.user_id
+           AND p.month = p2.month
+           AND p.year = p2.year
+           AND (
+             (p.updated_at IS NULL AND p2.updated_at IS NOT NULL)
+             OR (p.updated_at IS NOT NULL AND p2.updated_at IS NOT NULL
+                 AND p.updated_at < p2.updated_at)
+             OR (
+               (p.updated_at = p2.updated_at
+                 OR (p.updated_at IS NULL AND p2.updated_at IS NULL))
+               AND p.id < p2.id
+             )
+           )",
+    );
+    match conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS payslips_user_month_year_unique
+         ON payslips(user_id, month, year)",
+    ) {
+        Ok(()) => log::info!("payslips unique (user_id, month, year) index ready"),
+        Err(e) => log::warn!("payslips unique index skipped: {e}"),
+    }
+}
+
 /// Prevent duplicate active emails within an organization (case-insensitive).
 pub fn migrate_users_unique_org_email(conn: &crate::db::Connection) {
     // Soft-fail when historical duplicates exist — app-layer still enforces new writes.

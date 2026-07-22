@@ -147,4 +147,27 @@ describe('AuthContext', () => {
         );
         expect(localStorage.getItem('hrm_token')).toBe('still-valid-token');
     });
+
+    it('keeps token when /auth/me returns 403 (session valid, permission narrow)', async () => {
+        // Regression for QA-DEEP-AUDIT-2026-07-22: a transient 403 from /auth/me
+        // must NOT clear the token. Only a definitive 401 should nuke the session.
+        server.use(
+            http.get('/api/auth/me', () =>
+                HttpResponse.json({ message: 'Forbidden' }, { status: 403 }),
+            ),
+        );
+        localStorage.setItem('hrm_token', 'session-still-valid');
+        render(
+            <MemoryRouter>
+                <AuthProvider>
+                    <AuthProbe />
+                </AuthProvider>
+            </MemoryRouter>,
+        );
+        await waitFor(
+            () => expect(screen.getByTestId('user-email').textContent).toBe('none'),
+            { timeout: 8_000 },
+        );
+        expect(localStorage.getItem('hrm_token')).toBe('session-still-valid');
+    });
 });

@@ -749,8 +749,14 @@ fn insert_manual_record(
         return Err("Employee not found in organization".to_string());
     }
 
-    if date.trim().len() < 10 {
-        return Err("A valid date (YYYY-MM-DD) is required".to_string());
+    let parsed_date = match NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return Err("A valid date (YYYY-MM-DD) is required".to_string()),
+    };
+    // Reject future-dated attendance. A same-day entry is allowed; anything past
+    // today is almost always a data-entry mistake and would corrupt payroll/leave math.
+    if parsed_date > chrono::Local::now().date_naive() {
+        return Err("Attendance cannot be marked for a future date".to_string());
     }
 
     if clock_in.is_none() && clock_out.is_some() {

@@ -348,6 +348,15 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.starts_with("/api/admin/chat") {
         return Some("view-chat");
     }
+    // `/api/admin/assets*`, `/api/admin/asset-allocations`, `/api/admin/asset-expenses`,
+    // `/api/admin/my-assets*`, `/api/admin/grocery-benefits*`, `/api/admin/grocery-claims*`
+    // deliberately return `None` here. These prefixes mix admin management with employee
+    // self-service (`grocery-claims` POST is an employee action; `grocery-claims/{id}/review`
+    // POST is admin; `my-assets/expenses` POST is employee). Gating them by method at the
+    // middleware would either lock out employees or under-gate admins. Each handler
+    // enforces the correct slug (`view-assets`/`manage-assets`,
+    // `view-grocery-benefits`/`manage-grocery-benefits`/`view-my-grocery-benefits`)
+    // before touching data, and those checks were verified in the QA sweep.
     None
 }
 

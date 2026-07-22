@@ -1020,21 +1020,28 @@ export default function PayrollPage() {
         } catch (e) { handleApiError(e); }
     }, [month, year]);
 
-    // Fetch departments
+    // Fetch departments. Log — don't toast — because payroll page renders before
+    // filters are chosen, and a startup 403 would surface as a distracting error.
     const fetchDepartments = useCallback(async (centerId?: string | number) => {
         try {
             const params = centerId ? { center_id: centerId } : undefined;
             const r = await axios.get('/admin/departments/list', { params });
             setDepartments(r.data?.data?.data ?? r.data?.data ?? []);
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.warn('[payroll] fetchDepartments failed', e);
+            setDepartments([]);
+        }
     }, []);
 
-    // Fetch centers
+    // Fetch centers — same rationale as fetchDepartments.
     const fetchCenters = useCallback(async () => {
         try {
             const r = await axios.get('/admin/settings/centers');
             if (r.data.success) setCenters(r.data.data ?? []);
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            console.warn('[payroll] fetchCenters failed', e);
+            setCenters([]);
+        }
     }, []);
 
     // Fetch employees

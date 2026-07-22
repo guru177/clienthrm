@@ -167,15 +167,6 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<s
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Settings updated"})))
 }
 
-pub async fn upload_logo(req: HttpRequest) -> HttpResponse {
-    let _c = match get_claims_from_request(&req) {
-        Ok(c) => c,
-        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
-    };
-    let _ = _c;
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deprecated"})))
-}
-
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdatePasswordRequest {
     pub current_password: String,

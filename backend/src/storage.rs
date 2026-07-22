@@ -193,6 +193,54 @@ pub fn can_access_storage_file(
     }
 
     if relative.starts_with("user-docs/") {
+        // Identity documents (Aadhaar, PAN, etc.) are private:
+        // - The owning employee can always read their own files
+        // - HR / admins with view-users or edit-users can read any doc in the org
+        // - Super-admins bypass entirely
+        // Anyone else gets 403.
+        let owner_matches: bool = conn
+            .query_row(
+                "SELECT 1 FROM users
+                 WHERE organization_id = ?2 AND id = ?5 AND deleted_at IS NULL
+                   AND (
+                     doc_aadhaar = ?1 OR doc_aadhaar = ?3 OR doc_aadhaar = ?4
+                     OR doc_pan = ?1 OR doc_pan = ?3 OR doc_pan = ?4
+                     OR doc_id_proof = ?1 OR doc_id_proof = ?3 OR doc_id_proof = ?4
+                     OR doc_other = ?1 OR doc_other = ?3 OR doc_other = ?4
+                   )
+                 LIMIT 1",
+                crate::params![&relative, org_id, &legacy, &legacy2, user_id],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if owner_matches {
+            return true;
+        }
+        let is_super_admin = crate::tenant::user_is_super_admin(conn, user_id, org_id);
+        if is_super_admin {
+            let doc_belongs_to_org: bool = conn
+                .query_row(
+                    "SELECT 1 FROM users
+                     WHERE organization_id = ?2 AND deleted_at IS NULL
+                       AND (
+                         doc_aadhaar = ?1 OR doc_aadhaar = ?3 OR doc_aadhaar = ?4
+                         OR doc_pan = ?1 OR doc_pan = ?3 OR doc_pan = ?4
+                         OR doc_id_proof = ?1 OR doc_id_proof = ?3 OR doc_id_proof = ?4
+                         OR doc_other = ?1 OR doc_other = ?3 OR doc_other = ?4
+                       )
+                     LIMIT 1",
+                    crate::params![&relative, org_id, &legacy, &legacy2],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            return doc_belongs_to_org;
+        }
+        let perms = crate::middleware::rbac::load_user_permissions(conn, user_id, false);
+        if !crate::middleware::rbac::has_permission(&perms, "view-users")
+            && !crate::middleware::rbac::has_permission(&perms, "edit-users")
+        {
+            return false;
+        }
         return conn
             .query_row(
                 "SELECT 1 FROM users
