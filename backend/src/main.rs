@@ -115,11 +115,9 @@ async fn run_api_server(
         let allowed = cors_origins.clone();
         let cors = Cors::default()
             .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-            .allowed_headers(vec![
-                actix_web::http::header::AUTHORIZATION,
-                actix_web::http::header::CONTENT_TYPE,
-                actix_web::http::header::ACCEPT,
-            ])
+            // Allow any request header on preflight so SPA/axios custom headers
+            // (and future ones) do not fail CORS before the real request runs.
+            .allow_any_header()
             .supports_credentials()
             .max_age(3600)
             .allowed_origin_fn(move |origin, _req_head| {

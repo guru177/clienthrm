@@ -1,6 +1,5 @@
 use actix_web::body::{BoxBody, EitherBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
-use actix_web::error::ErrorForbidden;
 use actix_web::http::Method;
 use actix_web::{middleware::Next, Error, HttpResponse};
 
@@ -420,28 +419,40 @@ where
         return Ok(res.map_into_right_body());
     }
 
+    // Always return HttpResponse (not Err) so outer CORS middleware can attach
+    // Access-Control-* headers. Returning Err(ErrorUnauthorized) produced plain
+    // 401s without CORS, which browsers surface as a misleading CORS failure
+    // when the SPA calls the API cross-origin (e.g. hrm.hoteldaddy.in → hrm-api).
     let claims = match extract_claims(&req) {
         Ok(c) => c,
-        Err(e) => return Err(e),
+        Err(e) => {
+            let body = HttpResponse::Unauthorized().json(ApiError::new(&e.to_string()));
+            return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
+        }
     };
 
-    let pool = req
-        .app_data::<actix_web::web::Data<DbPool>>()
-        .ok_or_else(|| ErrorForbidden("Server configuration error"))?;
-    let conn = pool
-        .get()
-        .map_err(|_| ErrorForbidden("Database unavailable"))?;
+    let Some(pool) = req.app_data::<actix_web::web::Data<DbPool>>() else {
+        let body = HttpResponse::Forbidden().json(ApiError::new("Server configuration error"));
+        return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
+    };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => {
+            let body = HttpResponse::Forbidden().json(ApiError::new("Database unavailable"));
+            return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
+        }
+    };
 
     let (org_id, is_super_admin) = match crate::tenant::verify_tenant_session(&conn, &claims) {
         Ok(v) => v,
         Err(msg) => {
-            let body = HttpResponse::Forbidden().json(crate::models::ApiError::new(&msg));
+            let body = HttpResponse::Forbidden().json(ApiError::new(&msg));
             return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
         }
     };
 
     if let Err(msg) = crate::subscription_period::ensure_org_subscription_enforced(&conn, org_id) {
-        let body = HttpResponse::Forbidden().json(crate::models::ApiError::new(&msg));
+        let body = HttpResponse::Forbidden().json(ApiError::new(&msg));
         return Ok(req.into_response(body.map_into_boxed_body()).map_into_left_body());
     }
 
