@@ -560,10 +560,18 @@ pub async fn channels_store(
 
     if is_private {
         if let Some(ids) = &body.member_ids {
+            let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
             for uid in ids {
                 if *uid != user_id && !user_in_organization(&conn, *uid, org_id) {
                     return HttpResponse::BadRequest()
                         .json(ApiError::new("Member does not belong to this organization"));
+                }
+                if *uid != user_id {
+                    if let Err(resp) =
+                        crate::branch_scope::require_user_in_scope(&conn, *uid, org_id, &scope)
+                    {
+                        return resp;
+                    }
                 }
             }
             for uid in ids {
@@ -730,10 +738,14 @@ pub async fn channels_add_members(
     if let Some(resp) = ensure_space_access(&conn, space_id, org_id, user_id) {
         return resp;
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
     for uid in &body.user_ids {
         if !user_in_organization(&conn, *uid, org_id) {
             return HttpResponse::BadRequest()
                 .json(ApiError::new("Member does not belong to this organization"));
+        }
+        if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, *uid, org_id, &scope) {
+            return resp;
         }
     }
     let now = now_ts();
@@ -768,10 +780,18 @@ pub async fn dm_store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
     for uid in &ids {
         if !user_in_organization(&conn, *uid, org_id) {
             return HttpResponse::BadRequest()
                 .json(ApiError::new("Member does not belong to this organization"));
+        }
+        if *uid != user_id {
+            if let Err(resp) =
+                crate::branch_scope::require_user_in_scope(&conn, *uid, org_id, &scope)
+            {
+                return resp;
+            }
         }
     }
 

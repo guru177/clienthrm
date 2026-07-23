@@ -15,8 +15,6 @@ pub mod task;
 pub mod workflow;
 pub mod payslip;
 pub mod salary;
-pub mod career;
-pub mod job_application;
 pub mod biometric;
 
 pub mod chat;

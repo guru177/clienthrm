@@ -12,6 +12,7 @@ import { type NavItem } from '@/types';
 const sidebarNavItems: NavItem[] = [
     { title: 'Profile', href: '/admin/settings/profile', icon: null },
     { title: 'Password', href: '/admin/settings/password', icon: null },
+    { title: 'Two-Factor', href: '/admin/settings/two-factor', icon: null },
     { title: 'Appearance', href: '/admin/settings/appearance', icon: null },
 ];
 

@@ -19,6 +19,7 @@ Per-module reference for Raintech HRM. Each document covers purpose, permissions
 |--------|----------|----------|
 | Auth & Onboarding | — | [auth-onboarding.md](auth-onboarding.md) |
 | Dashboard | `dashboard` | [dashboard.md](dashboard.md) |
+| Org Chart | `users` | [org-chart.md](org-chart.md) |
 | Users & Roles | `users` | [users-roles.md](users-roles.md) |
 | Centers | `centers` | [centers.md](centers.md) |
 | Branch RBAC | — | [branch-rbac.md](branch-rbac.md) |

@@ -165,7 +165,7 @@ export default function GroceryBenefitsPage() {
                 subsidy_percentage: enrollForm.subsidy_percentage,
                 monthly_allowance: enrollForm.monthly_allowance,
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setEnrollDialogOpen(false);
             fetchBenefits();
         } catch (error) {
@@ -183,7 +183,7 @@ export default function GroceryBenefitsPage() {
                 monthly_allowance: editForm.monthly_allowance,
                 status: editForm.status,
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setEditDialogOpen(false);
             fetchBenefits();
         } catch (error) {
@@ -197,7 +197,7 @@ export default function GroceryBenefitsPage() {
         if (!(await confirm({ title: 'Remove Grocery Benefit', description: 'Remove this employee from grocery benefits?' }))) return;
         try {
             const res = await axios.delete(`/admin/grocery-benefits/${id}`);
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             fetchBenefits();
         } catch (error) {
             handleApiError(error);
@@ -211,7 +211,7 @@ export default function GroceryBenefitsPage() {
                 status: reviewForm.status,
                 review_notes: reviewForm.review_notes || undefined,
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setReviewDialogOpen(false);
             fetchClaims();
         } catch (error) {

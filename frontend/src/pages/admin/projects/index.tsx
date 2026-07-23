@@ -161,9 +161,9 @@ export default function Index() {
 
     const handleDelete = async (project: Project) => {
         if (
-            !confirm(
-                `Are you sure you want to delete "${project.name}"? This action cannot be undone.`,
-            )
+            !(await confirm({
+                description: `Are you sure you want to delete "${project.name}"? This action cannot be undone.`,
+            }))
         ) {
             return;
         }

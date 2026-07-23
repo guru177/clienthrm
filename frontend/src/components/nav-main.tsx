@@ -1,15 +1,13 @@
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
 
 import {
-    Collapsible, CollapsibleContent, CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import {
-    SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
-    SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem,
+    SidebarGroup,
+    SidebarGroupLabel,
+    SidebarMenu,
+    SidebarMenuButton,
+    SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { type NavGroup, type NavItem } from '@/types';
-import { cn } from '@/lib/utils';
 
 function isNavGroup(item: NavItem | NavGroup): item is NavGroup {
     return 'items' in item;
@@ -31,7 +29,8 @@ function isNavHrefActive(pathname: string, href: string, allHrefs: string[]): bo
         pathname.startsWith('/admin/settings/') &&
         !pathname.startsWith('/admin/settings/profile') &&
         !pathname.startsWith('/admin/settings/password') &&
-        !pathname.startsWith('/admin/settings/appearance')
+        !pathname.startsWith('/admin/settings/appearance') &&
+        !pathname.startsWith('/admin/settings/two-factor')
     ) {
         return true;
     }
@@ -48,71 +47,70 @@ function isNavHrefActive(pathname: string, href: string, allHrefs: string[]): bo
     return !hasMoreSpecificMatch;
 }
 
+function NavLinkItem({
+    item,
+    isActive,
+}: {
+    item: NavItem;
+    isActive: boolean;
+}) {
+    return (
+        <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={isActive} tooltip={{ children: item.title }}>
+                <Link to={item.href}>
+                    {item.icon && <item.icon aria-hidden />}
+                    <span>{item.title}</span>
+                </Link>
+            </SidebarMenuButton>
+        </SidebarMenuItem>
+    );
+}
+
+/**
+ * Section labels (not collapsible dropdowns): grouping without hiding destinations.
+ * Closed accordion nav forces extra clicks and makes users hunt for pages.
+ */
 export function NavMain({ items = [] }: { items: (NavItem | NavGroup)[] }) {
     const location = useLocation();
     const navHrefs = collectNavHrefs(items);
     const urlIsActive = (href: string) =>
         isNavHrefActive(location.pathname, href, navHrefs);
 
+    const topLevelLinks = items.filter((item): item is NavItem => !isNavGroup(item));
+    const groups = items.filter(isNavGroup);
+
     return (
-        <SidebarGroup className="px-2.5 py-1">
-            <SidebarMenu>
-                {items.map((item) =>
-                    isNavGroup(item) ? (
-                        <Collapsible
-                            key={item.title}
-                            asChild
-                            defaultOpen={item.items.some((sub) => urlIsActive(sub.href))}
-                        >
-                            <SidebarMenuItem>
-                                <CollapsibleTrigger asChild>
-                                    <SidebarMenuButton
-                                        tooltip={{ children: item.title }}
-                                        className={cn(
-                                            'group/nav-group',
-                                            item.items.some((sub) => urlIsActive(sub.href)) &&
-                                                'bg-white/45 font-semibold text-sidebar-foreground shadow-[inset_0_0_0_1px_rgba(7,27,58,0.06)]',
-                                        )}
-                                    >
-                                        {item.icon && <item.icon aria-hidden />}
-                                        <span>{item.title}</span>
-                                        <ChevronRight
-                                            aria-hidden
-                                            className={cn(
-                                                'ml-auto size-3.5 shrink-0 opacity-40 transition-all duration-200',
-                                                'group-data-[state=open]/nav-group:rotate-90 group-data-[state=open]/nav-group:opacity-65',
-                                            )}
-                                        />
-                                    </SidebarMenuButton>
-                                </CollapsibleTrigger>
-                                <CollapsibleContent>
-                                    <SidebarMenuSub>
-                                        {item.items.map((subItem) => (
-                                            <SidebarMenuSubItem key={subItem.title}>
-                                                <SidebarMenuSubButton asChild isActive={urlIsActive(subItem.href)}>
-                                                    <Link to={subItem.href}>
-                                                        {subItem.icon && <subItem.icon aria-hidden />}
-                                                        <span>{subItem.title}</span>
-                                                    </Link>
-                                                </SidebarMenuSubButton>
-                                            </SidebarMenuSubItem>
-                                        ))}
-                                    </SidebarMenuSub>
-                                </CollapsibleContent>
-                            </SidebarMenuItem>
-                        </Collapsible>
-                    ) : (
-                        <SidebarMenuItem key={item.title}>
-                            <SidebarMenuButton asChild isActive={urlIsActive(item.href)} tooltip={{ children: item.title }}>
-                                <Link to={item.href}>
-                                    {item.icon && <item.icon aria-hidden />}
-                                    <span>{item.title}</span>
-                                </Link>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                    ),
-                )}
-            </SidebarMenu>
-        </SidebarGroup>
+        <>
+            {topLevelLinks.length > 0 && (
+                <SidebarGroup className="px-2.5 py-1">
+                    <SidebarMenu>
+                        {topLevelLinks.map((item) => (
+                            <NavLinkItem
+                                key={item.href}
+                                item={item}
+                                isActive={urlIsActive(item.href)}
+                            />
+                        ))}
+                    </SidebarMenu>
+                </SidebarGroup>
+            )}
+
+            {groups.map((group) => (
+                <SidebarGroup key={group.title} className="px-2.5 py-1">
+                    <SidebarGroupLabel className="px-2 text-[11px] font-semibold uppercase tracking-wide text-sidebar-foreground/55">
+                        {group.title}
+                    </SidebarGroupLabel>
+                    <SidebarMenu>
+                        {group.items.map((subItem) => (
+                            <NavLinkItem
+                                key={subItem.href}
+                                item={subItem}
+                                isActive={urlIsActive(subItem.href)}
+                            />
+                        ))}
+                    </SidebarMenu>
+                </SidebarGroup>
+            ))}
+        </>
     );
 }

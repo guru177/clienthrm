@@ -1,7 +1,6 @@
 mod bio_park_tcp;
 mod biometric_device_logic;
 mod biometric_events;
-mod career_logic;
 mod chat_events;
 mod chat_department_channels;
 mod role_defaults;

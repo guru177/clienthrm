@@ -110,6 +110,7 @@ See [Branch-scoped RBAC](branch-rbac.md). Org admins get `access-all-centers`; b
 
 ## Related modules
 
+- [Org Chart](org-chart.md) — reporting tree with designation + role badges
 - [Departments](departments.md), [Designations](designations.md), [Branch RBAC](branch-rbac.md)
 - [Payroll](payroll.md) — CTC on user profile
 - [Settings](settings.md) — profile/password for self

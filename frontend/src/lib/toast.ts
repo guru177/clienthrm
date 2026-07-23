@@ -63,8 +63,12 @@ export function handleApiResponse(response: any) {
  * Handle API error and show error toast
  */
 export function handleApiError(error: any) {
-    const message = error.response?.data?.message || 'Something went wrong';
-    const type = error.response?.data?.type || 'error';
-    
+    const message =
+        error?.response?.data?.message ||
+        (error instanceof Error && error.message ? error.message : null) ||
+        (typeof error?.message === 'string' ? error.message : null) ||
+        'Something went wrong';
+    const type = error?.response?.data?.type || 'error';
+
     showToast({ type, message });
 }

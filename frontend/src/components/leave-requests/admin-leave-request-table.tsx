@@ -1,6 +1,6 @@
 import axios from '@/lib/axios';
 import { usePermissions } from '@/hooks/use-permissions';
-import { RefreshCw, Check, X, Search, MoreVertical, Eye } from 'lucide-react';
+import { RefreshCw, Check, X, Search, MoreVertical, Eye, Ban } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import {
@@ -50,19 +50,29 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 import { fetchLeaveTypeOptions, labelForLeaveType, type LeaveTypeOption } from '@/lib/leave-types';
 
 interface AdminLeaveRequestTableProps {
     onRefresh?: () => void;
+    branchId?: string;
 }
 
-export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestTableProps) {
+export default function AdminLeaveRequestTable({
+    onRefresh,
+    branchId = 'all',
+}: AdminLeaveRequestTableProps) {
     const { hasPermission } = usePermissions();
+    const confirm = useConfirm();
     const canApprove =
         hasPermission('approve-leave-requests') || hasPermission('manage-leave-requests');
     const canReject =
         hasPermission('reject-leave-requests') || hasPermission('manage-leave-requests');
     const canManageRemarks = hasPermission('manage-leave-requests');
+    const canCancel =
+        hasPermission('manage-leave-requests') ||
+        hasPermission('approve-leave-requests') ||
+        hasPermission('reject-leave-requests');
     const [requests, setRequests] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState('all');
@@ -80,6 +90,8 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
     const [rejectId, setRejectId] = useState<number | null>(null);
     const [rejectionReason, setRejectionReason] = useState('');
     const [rejecting, setRejecting] = useState(false);
+    const [cancelId, setCancelId] = useState<number | null>(null);
+    const [cancelling, setCancelling] = useState(false);
     const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
     const [remarks, setRemarks] = useState('');
     const [updatingRemarks, setUpdatingRemarks] = useState(false);
@@ -91,7 +103,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
 
     useEffect(() => {
         fetchRequests();
-    }, [statusFilter, typeFilter, search, currentPage, perPage, sortBy, sortOrder]);
+    }, [statusFilter, typeFilter, search, currentPage, perPage, sortBy, sortOrder, branchId]);
 
     const fetchRequests = async () => {
         setLoading(true);
@@ -105,6 +117,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                     per_page: perPage,
                     sort_by: sortBy,
                     sort_order: sortOrder,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
                 },
             });
 
@@ -124,6 +137,15 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
     };
 
     const approveRequest = async (id: number) => {
+        if (
+            !(await confirm({
+                title: 'Approve leave request',
+                description: 'Approve this leave request? This may affect attendance and payroll.',
+                confirmText: 'Approve',
+            }))
+        ) {
+            return;
+        }
         setProcessingId(id);
         try {
             const response = await axios.post(`/admin/leave-requests/${id}/approve`, {
@@ -175,6 +197,22 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
             handleApiError(error);
         } finally {
             setUpdatingRemarks(false);
+        }
+    };
+
+    const cancelRequest = async () => {
+        if (!cancelId) return;
+        setCancelling(true);
+        try {
+            const response = await axios.delete(`/admin/leave-requests/${cancelId}`);
+            handleApiResponse(response);
+            setCancelId(null);
+            fetchRequests();
+            onRefresh?.();
+        } catch (error) {
+            handleApiError(error);
+        } finally {
+            setCancelling(false);
         }
     };
 
@@ -294,7 +332,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             ID
                                             {sortBy === 'id' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -305,7 +343,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             User
                                             {sortBy === 'user_name' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -317,7 +355,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Start Date
                                             {sortBy === 'start_date' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -328,7 +366,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             End Date
                                             {sortBy === 'end_date' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -339,7 +377,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Days
                                             {sortBy === 'days_count' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -350,7 +388,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Status
                                             {sortBy === 'status' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -361,7 +399,7 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                         <div className="flex items-center gap-1">
                                             Submitted
                                             {sortBy === 'created_at' && (
-                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : 'â†“'}</span>
+                                                <span className="text-xs">{sortOrder === 'asc' ? '↑' : '↓'}</span>
                                             )}
                                         </div>
                                     </TableHead>
@@ -444,6 +482,17 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                                                                 Reject
                                                             </DropdownMenuItem>
                                                         )}
+                                                        {canCancel &&
+                                                            (request.status === 'pending' ||
+                                                                request.status === 'approved') && (
+                                                                <DropdownMenuItem
+                                                                    className="text-red-600 focus:text-red-700"
+                                                                    onClick={() => setCancelId(request.id)}
+                                                                >
+                                                                    <Ban className="mr-2 h-4 w-4" />
+                                                                    Cancel request
+                                                                </DropdownMenuItem>
+                                                            )}
                                                     </DropdownMenuContent>
                                                 </DropdownMenu>
                                             </TableCell>
@@ -501,6 +550,33 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                     )}
                 </CardContent>
             </Card>
+
+            {/* Cancel Dialog */}
+            <AlertDialog
+                open={cancelId !== null}
+                onOpenChange={(open) => !open && setCancelId(null)}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel Leave Request</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Cancel this leave request? Pending and approved requests can be
+                            cancelled. Approved leave locked by a generated payslip cannot be
+                            cancelled until payroll is unlocked.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={cancelling}>Keep request</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={cancelRequest}
+                            disabled={cancelling}
+                            className="bg-red-500 hover:bg-red-600"
+                        >
+                            {cancelling ? 'Cancelling...' : 'Cancel request'}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {/* Reject Dialog */}
             <AlertDialog
@@ -623,6 +699,19 @@ export default function AdminLeaveRequestTable({ onRefresh }: AdminLeaveRequestT
                         <Button variant="outline" onClick={() => setSelectedRequest(null)}>
                             Close
                         </Button>
+                        {canCancel &&
+                            (selectedRequest?.status === 'pending' ||
+                                selectedRequest?.status === 'approved') && (
+                                <Button
+                                    variant="destructive"
+                                    onClick={() => {
+                                        if (!selectedRequest) return;
+                                        setCancelId(selectedRequest.id);
+                                    }}
+                                >
+                                    Cancel request
+                                </Button>
+                            )}
                         {selectedRequest?.status === 'pending' ? (
                             <>
                                 {canReject && (

@@ -39,10 +39,7 @@ import {
     Plus,
     Trash2,
     RefreshCw,
-    Activity,
-    Users,
     Cpu,
-    Clock,
     CircleHelp,
     Search,
     Calendar,
@@ -54,8 +51,6 @@ import axios from '@/lib/axios';
 import { resolveApiBase } from '@/lib/api-base';
 import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 import { isDeviceOnline, useBiometricLive } from '@/hooks/use-biometric-live';
-import AttendanceStats from '@/components/attendance/attendance-stats';
-import { useAttendanceStats } from '@/hooks/use-attendance-stats';
 import { usePermissions } from '@/hooks/use-permissions';
 
 interface BiometricDevice {
@@ -90,16 +85,6 @@ interface UserMapping {
     user_id: number;
     user_name: string | null;
     created_at: string | null;
-}
-
-interface BiometricStats {
-    scope?: 'org' | 'self';
-    total_devices?: number;
-    active_devices?: number;
-    today_punches?: number;
-    total_mappings?: number;
-    unmapped_punches?: number;
-    last_heartbeat?: string | null;
 }
 
 interface IngestKey {
@@ -156,9 +141,16 @@ const punchTypeLabel = (type: number) => {
 
 function timeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
-    const date = new Date(dateStr + 'Z');
-    const now = new Date();
-    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    // Backend heartbeats are UTC wall-clock without a Z suffix.
+    const normalized = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T');
+    const date = new Date(
+        normalized.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(normalized)
+            ? normalized
+            : `${normalized}Z`,
+    );
+    if (Number.isNaN(date.getTime())) return 'Unknown';
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 0) return 'Just now';
     if (seconds < 60) return `${seconds}s ago`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
@@ -169,9 +161,10 @@ export default function BiometricIndex() {
     const navigate = useNavigate();
     const { hasPermission } = usePermissions();
     const canManage = hasPermission('manage-attendance');
-    const { stats: attendanceStats, loading: attendanceStatsLoading } =
-        useAttendanceStats('biometric');
-    const [stats, setStats] = useState<BiometricStats | null>(null);
+    const canViewAttendance =
+        hasPermission('mark-attendance') ||
+        hasPermission('manage-attendance') ||
+        hasPermission('view-attendance');
     const [devices, setDevices] = useState<BiometricDevice[]>([]);
     const [punches, setPunches] = useState<BiometricPunch[]>([]);
     const [mappings, setMappings] = useState<UserMapping[]>([]);
@@ -253,7 +246,7 @@ export default function BiometricIndex() {
                 ev.type === 'device_heartbeat' ||
                 ev.type === 'punches_received'
             ) {
-                void Promise.all([loadStats(), loadDevices(), loadPunches()]);
+                void Promise.all([loadDevices(), loadPunches()]);
             }
         },
     });
@@ -265,14 +258,14 @@ export default function BiometricIndex() {
     // Fallback poll if WebSocket drops (device still uses HTTP heartbeat)
     useEffect(() => {
         const interval = setInterval(() => {
-            void Promise.all([loadStats(), loadDevices(), loadPunches()]);
+            void Promise.all([loadDevices(), loadPunches()]);
         }, 30000);
         return () => clearInterval(interval);
     }, []);
 
     const loadAll = async () => {
         setLoading(true);
-        const tasks = [loadStats(), loadPunches()];
+        const tasks = [loadPunches()];
         if (canManage) {
             tasks.push(loadDevices(), loadMappings(), loadUsers(), loadIngestKeys());
         }
@@ -282,21 +275,12 @@ export default function BiometricIndex() {
 
     const refreshAll = async () => {
         setRefreshing(true);
-        const tasks = [loadStats(), loadPunches()];
+        const tasks = [loadPunches()];
         if (canManage) {
             tasks.push(loadDevices(), loadMappings(), loadIngestKeys());
         }
         await Promise.all(tasks);
         setRefreshing(false);
-    };
-
-    const loadStats = async () => {
-        try {
-            const res = await axios.get('/admin/biometric/stats');
-            setStats(res.data.data);
-        } catch (error) {
-            handleApiError(error);
-        }
     };
 
     const loadDevices = async () => {
@@ -409,7 +393,7 @@ export default function BiometricIndex() {
             handleApiResponse(res);
             setMapOpen(false);
             setMapForm({ device_serial: '', device_pin: '', user_id: '' });
-            await Promise.all([loadMappings(), loadPunches(), loadStats()]);
+            await Promise.all([loadMappings(), loadPunches()]);
         } catch (error) {
             handleApiError(error);
         } finally {
@@ -493,11 +477,20 @@ export default function BiometricIndex() {
                                     Biometric Devices
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60 mt-1">
-                                    Manage attendance devices, punch logs & employee PIN mappings
+                                    Device punches sync to Attendance as check-in / check-out
                                 </p>
                             </div>
                         </div>
-                        <div className="flex gap-2 items-center">
+                        <div className="flex flex-wrap gap-2 items-center">
+                            {canViewAttendance && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => navigate('/admin/manual-attendance')}
+                                >
+                                    Attendance
+                                </Button>
+                            )}
                             <Badge
                                 variant="outline"
                                 className={
@@ -536,75 +529,9 @@ export default function BiometricIndex() {
                     </div>
                 </div>
 
-                {/* Device ops stats — managers only */}
-                {canManage && stats?.scope !== 'self' && (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                        <Card>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Devices</span>
-                                    <Cpu className="h-4 w-4 text-blue-500" />
-                                </div>
-                                <p className="text-2xl font-bold">{stats?.total_devices || 0}</p>
-                                <p className="text-xs text-muted-foreground mt-1">{stats?.active_devices || 0} active</p>
-                            </CardContent>
-                        </Card>
-                        <Card>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Today's Punches</span>
-                                    <Activity className="h-4 w-4 text-green-500" />
-                                </div>
-                                <p className="text-2xl font-bold">{stats?.today_punches || 0}</p>
-                            </CardContent>
-                        </Card>
-                        <Card>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mapped Users</span>
-                                    <Users className="h-4 w-4 text-purple-500" />
-                                </div>
-                                <p className="text-2xl font-bold">{stats?.total_mappings || 0}</p>
-                            </CardContent>
-                        </Card>
-                        <Card>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Unmapped</span>
-                                    <Clock className="h-4 w-4 text-orange-500" />
-                                </div>
-                                <p className="text-2xl font-bold text-orange-600">{stats?.unmapped_punches || 0}</p>
-                            </CardContent>
-                        </Card>
-                        <Card>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Signal</span>
-                                    {stats?.last_heartbeat ? <Wifi className="h-4 w-4 text-green-500" /> : <WifiOff className="h-4 w-4 text-red-500" />}
-                                </div>
-                                <p className="text-sm font-semibold">{timeAgo(stats?.last_heartbeat ?? null)}</p>
-                            </CardContent>
-                        </Card>
-                    </div>
-                )}
-
-                {!canManage && stats?.scope === 'self' && (
-                    <Card>
-                        <CardContent className="pt-6">
-                            <p className="text-sm text-muted-foreground">
-                                Your punches today:{' '}
-                                <span className="font-semibold text-foreground">
-                                    {stats.today_punches ?? 0}
-                                </span>
-                            </p>
-                        </CardContent>
-                    </Card>
-                )}
-
                 {/* Tabs */}
-                <Tabs defaultValue="statistics" className="w-full">
-                    <TabsList className={`grid w-full h-auto ${canManage ? 'grid-cols-5' : 'grid-cols-2'}`}>
-                        <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                <Tabs defaultValue="punches" className="w-full">
+                    <TabsList className={`grid w-full h-auto ${canManage ? 'grid-cols-4' : 'grid-cols-1'}`}>
                         <TabsTrigger value="punches">{canManage ? 'Punch Log' : 'My Punches'}</TabsTrigger>
                         {canManage && (
                             <>
@@ -614,21 +541,6 @@ export default function BiometricIndex() {
                             </>
                         )}
                     </TabsList>
-
-                    <TabsContent value="statistics" className="space-y-4">
-                        <AttendanceStats
-                            stats={attendanceStats}
-                            loading={attendanceStatsLoading}
-                            title="Biometric attendance statistics"
-                        />
-                        {!canManage && (
-                            <p className="text-sm text-muted-foreground">
-                                You see only attendance synced from your biometric punches. Device
-                                administration requires{' '}
-                                <code className="rounded bg-muted px-1">manage-attendance</code>.
-                            </p>
-                        )}
-                    </TabsContent>
 
                     {/* Punch Log Tab */}
                     <TabsContent value="punches">
@@ -643,6 +555,9 @@ export default function BiometricIndex() {
                                             </span>
                                         )}
                                     </CardTitle>
+                                    <p className="text-sm text-muted-foreground">
+                                        Mapped punches write check-in / check-out on the Attendance page.
+                                    </p>
                                     {punches.length > 0 && (
                                         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                                             <div className="relative w-full sm:flex-1 sm:max-w-sm">
@@ -711,6 +626,7 @@ export default function BiometricIndex() {
                                                     <TableHead>Type</TableHead>
                                                     <TableHead>Method</TableHead>
                                                     <TableHead>Device</TableHead>
+                                                    <TableHead>Attendance</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
@@ -744,6 +660,21 @@ export default function BiometricIndex() {
                                                             </TableCell>
                                                             <TableCell className="text-xs text-muted-foreground font-mono">
                                                                 {punch.device_serial.slice(0, 12)}
+                                                            </TableCell>
+                                                            <TableCell>
+                                                                {!punch.user_id ? (
+                                                                    <Badge variant="outline" className="text-xs">
+                                                                        Needs PIN map
+                                                                    </Badge>
+                                                                ) : punch.is_processed ? (
+                                                                    <Badge className="bg-green-600 text-xs hover:bg-green-600">
+                                                                        Synced
+                                                                    </Badge>
+                                                                ) : (
+                                                                    <Badge variant="secondary" className="text-xs">
+                                                                        Pending
+                                                                    </Badge>
+                                                                )}
                                                             </TableCell>
                                                         </TableRow>
                                                     );
@@ -1022,6 +953,7 @@ cargo run`}</pre>
                             <li>
                                 Find your PC&apos;s LAN IP (same subnet as the device, e.g. <code>172.16.1.x</code>):
                                 run <code className="bg-muted px-1 rounded">ipconfig</code> in PowerShell.
+                                Right now this PC is typically <code className="bg-muted px-1 rounded">172.16.1.3</code> on Wi‑Fi.
                             </li>
                             <li>
                                 On the device: <strong>Menu → Server</strong>:

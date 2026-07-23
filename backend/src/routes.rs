@@ -43,7 +43,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         )
         .route("/api/public/signup/send-otp", web::post().to(handlers::auth::send_signup_otp))
         .route("/api/public/signup", web::post().to(handlers::auth::signup))
-        .route("/api/public/careers", web::get().to(handlers::careers::public_list))
         .route(
             "/api/public/desktop/updates/{tail:.*}",
             web::get().to(handlers::desktop_updates::serve),
@@ -173,6 +172,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
         // ── Dashboard Analytics ──
         .route("/api/admin/dashboard/hr-data", web::get().to(handlers::analytics::hr_dashboard))
+
+        // ── Org Chart ──
+        .route("/api/admin/org-chart", web::get().to(handlers::org_chart::index))
 
         // ── Users ──
         .route("/api/admin/users", web::get().to(handlers::users::index))
@@ -326,28 +328,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/admin/workflows/{id}/duplicate", web::post().to(handlers::workflows::duplicate))
         .route("/api/admin/workflows/{id}/executions", web::get().to(handlers::workflows::executions))
         .route("/api/admin/workflows/{id}/test", web::post().to(handlers::workflows::test_run))
-
-        // ── Careers ──
-        .route("/api/admin/careers", web::get().to(handlers::careers::index))
-        .route("/api/admin/careers/stats", web::get().to(handlers::careers::stats))
-        .route("/api/admin/careers/list", web::get().to(handlers::careers::list))
-        .route("/api/admin/careers", web::post().to(handlers::careers::store))
-        .route("/api/admin/careers/{id}", web::get().to(handlers::careers::show))
-        .route("/api/admin/careers/{id}", web::put().to(handlers::careers::update))
-        .route("/api/admin/careers/{id}", web::delete().to(handlers::careers::destroy))
-
-        // ── Job Applications ──
-        .route("/api/admin/job-applications", web::get().to(handlers::job_applications::index))
-        .route("/api/admin/job-applications/stats", web::get().to(handlers::job_applications::stats))
-        .route("/api/admin/job-applications/list", web::get().to(handlers::job_applications::list))
-        .route("/api/admin/job-applications", web::post().to(handlers::job_applications::store))
-        .route("/api/admin/job-applications/{id}", web::get().to(handlers::job_applications::show))
-        .route("/api/admin/job-applications/{id}", web::delete().to(handlers::job_applications::destroy))
-        .route("/api/admin/job-applications/{id}/update-status", web::post().to(handlers::job_applications::update_status))
-        .route("/api/admin/job-applications/{id}/send-email", web::post().to(handlers::job_applications::send_email))
-        
-        // ── Webhooks ──
-        .route("/api/webhooks/incoming-resume", web::post().to(handlers::job_applications::webhook_incoming_resume))
 
         // ── Reports ──
         .route("/api/admin/reports/attendance-summary", web::get().to(handlers::reports::attendance_summary))

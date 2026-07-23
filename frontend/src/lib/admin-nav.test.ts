@@ -52,9 +52,9 @@ describe('resolveMobileTabs', () => {
     });
 
     it('falls back to sidebar links when no primary candidates match', () => {
-        const { tabs } = resolveMobileTabs(['view-jobs'], ['careers', 'job_applications']);
+        const { tabs } = resolveMobileTabs(['view-chat'], ['chat']);
         expect(tabs.length).toBeGreaterThan(0);
-        expect(tabs[0]?.href).toBe('/admin/careers');
+        expect(tabs[0]?.href).toBe('/admin/chat');
     });
 });
 

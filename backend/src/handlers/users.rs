@@ -92,7 +92,25 @@ fn load_user_summary(conn: &crate::db::Connection, user_id: i64, org_id: i64) ->
             .ok();
     }
     let stmt = conn
-        .prepare("SELECT r.* FROM roles r JOIN role_user ru ON r.id = ru.role_id WHERE ru.user_id = ?1")
+        .prepare(
+            "SELECT r.* FROM roles r
+             JOIN role_user ru ON r.id = ru.role_id
+             WHERE ru.user_id = ?1
+             ORDER BY
+               CASE lower(COALESCE(r.slug, ''))
+                 WHEN 'admin' THEN 1
+                 WHEN 'administrator' THEN 1
+                 WHEN 'hr' THEN 2
+                 WHEN 'branch-admin' THEN 3
+                 WHEN 'manager' THEN 4
+                 WHEN 'doctor' THEN 5
+                 WHEN 'employee' THEN 90
+                 WHEN 'user' THEN 91
+                 ELSE 50
+               END,
+               r.id
+             LIMIT 1",
+        )
         .ok()?;
     let roles: Vec<crate::models::role::Role> = stmt
         .query_map([user_id], crate::models::role::Role::from_row)
@@ -227,6 +245,38 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let query_string = req.query_string();
     let params: Vec<(String, String)> = serde_urlencoded::from_str(query_string).unwrap_or_default();
     let search = params.iter().find(|(k, _)| k == "search").map(|(_, v)| v.clone());
+    let status = params
+        .iter()
+        .find(|(k, _)| k == "status")
+        .map(|(_, v)| v.clone())
+        .filter(|v| !v.is_empty() && v != "all");
+    let department_id: Option<i64> = params
+        .iter()
+        .find(|(k, _)| k == "department_id")
+        .and_then(|(_, v)| v.parse().ok());
+    let role_id: Option<i64> = params
+        .iter()
+        .find(|(k, _)| k == "role_id")
+        .and_then(|(_, v)| v.parse().ok());
+    let center_id: Option<i64> = params
+        .iter()
+        .find(|(k, _)| k == "center_id")
+        .and_then(|(_, v)| v.parse().ok());
+    let hr_managed_filter = params
+        .iter()
+        .find(|(k, _)| k == "hr_managed")
+        .map(|(_, v)| v.as_str())
+        .filter(|v| *v == "1" || *v == "0" || *v == "true" || *v == "false");
+    let sort_by = params
+        .iter()
+        .find(|(k, _)| k == "sort_by")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("created_at");
+    let sort_order = params
+        .iter()
+        .find(|(k, _)| k == "sort_order")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("desc");
     let page: i64 = params
         .iter()
         .find(|(k, _)| k == "page")
@@ -245,11 +295,75 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     if let Some(ref s) = search {
         let idx = bind.len() + 1;
         where_sql.push_str(&format!(
-            " AND (u.name LIKE ?{idx} OR u.email LIKE ?{idx})"
+            " AND (u.name LIKE ?{idx} OR u.email LIKE ?{idx} OR COALESCE(u.phone,'') LIKE ?{idx} OR COALESCE(u.employee_id,'') LIKE ?{idx})"
         ));
         bind.push(crate::db::into_param_value(format!("%{s}%")));
     }
+    if let Some(ref st) = status {
+        let idx = bind.len() + 1;
+        where_sql.push_str(&format!(" AND u.status = ?{idx}"));
+        bind.push(crate::db::into_param_value(st.clone()));
+    }
+    if let Some(dept_id) = department_id {
+        let idx = bind.len() + 1;
+        where_sql.push_str(&format!(" AND u.department_id = ?{idx}"));
+        bind.push(crate::db::into_param_value(dept_id));
+    }
+    if let Some(cid) = center_id {
+        // Match the same membership rules as branch scope: work location,
+        // department center, or explicit user_centers assignment.
+        let wl_idx = bind.len() + 1;
+        bind.push(crate::db::into_param_value(cid.to_string()));
+        let dept_idx = bind.len() + 1;
+        bind.push(crate::db::into_param_value(cid));
+        let uc_idx = bind.len() + 1;
+        bind.push(crate::db::into_param_value(cid));
+        where_sql.push_str(&format!(
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                OR EXISTS (
+                    SELECT 1 FROM departments d
+                    WHERE d.id = u.department_id
+                      AND d.organization_id = u.organization_id
+                      AND d.center_id = ?{dept_idx}
+                )
+                OR EXISTS (
+                    SELECT 1 FROM user_centers uc
+                    WHERE uc.user_id = u.id
+                      AND uc.organization_id = u.organization_id
+                      AND uc.center_id = ?{uc_idx}
+                )
+            )"
+        ));
+    }
+    if let Some(rid) = role_id {
+        let idx = bind.len() + 1;
+        where_sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM role_user ru WHERE ru.user_id = u.id AND ru.role_id = ?{idx})"
+        ));
+        bind.push(crate::db::into_param_value(rid));
+    }
+    if let Some(hm) = hr_managed_filter {
+        let want = hm == "1" || hm == "true";
+        where_sql.push_str(&format!(
+            " AND COALESCE(u.hr_managed, 0) = {}",
+            if want { 1 } else { 0 }
+        ));
+    }
     append_users_branch_filter(&mut where_sql, &mut bind, &scope, "u");
+
+    let order_col = match sort_by {
+        "id" => "u.id",
+        "name" => "u.name",
+        "status" => "u.status",
+        "email" => "u.email",
+        _ => "u.created_at",
+    };
+    let order_dir = if sort_order.eq_ignore_ascii_case("asc") {
+        "ASC"
+    } else {
+        "DESC"
+    };
 
     let total: i64 = conn
         .query_row(
@@ -262,7 +376,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let limit_idx = bind.len() + 1;
     let offset_idx = bind.len() + 2;
     let sql = format!(
-        "SELECT u.* FROM users u {where_sql} ORDER BY u.created_at DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+        "SELECT u.* FROM users u {where_sql} ORDER BY {order_col} {order_dir} LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
     );
     bind.push(crate::db::into_param_value(per_page));
     bind.push(crate::db::into_param_value(offset));
@@ -270,26 +384,46 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let depts = departments_map(&conn, org_id);
     let desgs = designations_map(&conn, org_id);
 
-    let enrich_user = |user: User| -> serde_json::Value {
-        let mut summary = user.to_summary();
-        if let Some(dept_id) = summary.department_id {
-            summary.department = depts.get(&dept_id).cloned();
-        }
-        if let Some(desg_id) = summary.designation_id {
-            summary.designation = desgs.get(&desg_id).cloned();
-        }
-        serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)
-    };
-
-    let users: Vec<serde_json::Value> = conn
+    let raw_users: Vec<User> = conn
         .prepare(&sql)
-        .map(|stmt| {
-            stmt.query_map(&bind, |row| User::from_row(row))
-                .into_iter()
-                .map(enrich_user)
-                .collect()
-        })
+        .map(|stmt| stmt.query_map(&bind, User::from_row))
         .unwrap_or_default();
+
+    let users: Vec<serde_json::Value> = raw_users
+        .into_iter()
+        .map(|user| {
+            let user_id = user.id;
+            let mut summary = user.to_summary();
+            if let Some(dept_id) = summary.department_id {
+                summary.department = depts.get(&dept_id).cloned();
+            }
+            if let Some(desg_id) = summary.designation_id {
+                summary.designation = desgs.get(&desg_id).cloned();
+            }
+            if let Ok(stmt) = conn.prepare(
+                "SELECT r.* FROM roles r
+                 JOIN role_user ru ON r.id = ru.role_id
+                 WHERE ru.user_id = ?1
+                 ORDER BY
+                   CASE lower(COALESCE(r.slug, ''))
+                     WHEN 'admin' THEN 1
+                     WHEN 'administrator' THEN 1
+                     WHEN 'hr' THEN 2
+                     WHEN 'branch-admin' THEN 3
+                     WHEN 'manager' THEN 4
+                     WHEN 'doctor' THEN 5
+                     WHEN 'employee' THEN 90
+                     WHEN 'user' THEN 91
+                     ELSE 50
+                   END,
+                   r.id
+                 LIMIT 1",
+            ) {
+                summary.roles = Some(stmt.query_map([user_id], crate::models::role::Role::from_row));
+            }
+            serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)
+        })
+        .collect();
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -521,20 +655,18 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<Cr
                 email.clone()
             };
 
-            // Assign roles if provided; otherwise default to Employee.
-            let role_ids: Vec<i64> = match &body.role_ids {
-                Some(ids) if !ids.is_empty() => ids.clone(),
-                _ => crate::role_defaults::default_employee_role_id(&conn, org_id)
-                    .into_iter()
-                    .collect(),
-            };
-            for role_id in role_ids {
-                if !role_in_organization(&conn, role_id, org_id) {
-                    continue;
-                }
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                    crate::params![user_id, role_id, &now, &now],
+            // Assign exactly one role; otherwise default to Employee.
+            let role_id = body
+                .role_ids
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .copied()
+                .find(|&id| role_in_organization(&conn, id, org_id))
+                .or_else(|| crate::role_defaults::default_employee_role_id(&conn, org_id));
+            if let Some(rid) = role_id {
+                let _ = crate::role_defaults::replace_user_with_single_role(
+                    &conn, org_id, user_id, rid,
                 );
             }
             crate::role_defaults::ensure_default_employee_role(&conn, org_id, user_id);
@@ -883,8 +1015,6 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         return HttpResponse::BadRequest().json(ApiError::new("No fields to update"));
     }
 
-    let now_for_roles = now.clone();
-
     if !sets.is_empty() {
         sets.push(format!("updated_at = ?{}", idx));
         params.push(crate::db::into_param_value(now));
@@ -909,18 +1039,22 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     }
 
     if let Some(ref roles) = body.roles {
-        let _ = conn.execute(
-            "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
-            crate::params![user_id, org_id],
-        );
-        for role_id in roles {
-            if !role_in_organization(&conn, *role_id, org_id) {
-                continue;
-            }
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                crate::params![user_id, role_id, &now_for_roles, &now_for_roles],
+        if roles.len() > 1 {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "A user can only have one role. Send a single role id.",
+            ));
+        }
+        if let Some(role_id) = roles
+            .iter()
+            .copied()
+            .find(|&id| role_in_organization(&conn, id, org_id))
+        {
+            let _ = crate::role_defaults::replace_user_with_single_role(
+                &conn, org_id, user_id, role_id,
             );
+        } else if roles.is_empty() {
+            // Clearing roles → fall back to Employee so the user is never role-less.
+            crate::role_defaults::ensure_default_employee_role(&conn, org_id, user_id);
         }
     }
 
@@ -1144,10 +1278,21 @@ pub async fn update_form(
         params.push(crate::db::into_param_value(v));
         idx += 1;
     }
-    if let Some(v) = fields.get("reporting_manager_id").and_then(|s| opt_i64(s)) {
-        sets.push(format!("reporting_manager_id = ?{}", idx));
-        params.push(crate::db::into_param_value(v));
-        idx += 1;
+    if fields.contains_key("reporting_manager_id") {
+        match fields
+            .get("reporting_manager_id")
+            .and_then(|s| opt_i64(s))
+        {
+            Some(v) => {
+                sets.push(format!("reporting_manager_id = ?{}", idx));
+                params.push(crate::db::into_param_value(v));
+                idx += 1;
+            }
+            None => {
+                // Empty value clears Reports to (person becomes a chart root).
+                sets.push("reporting_manager_id = NULL".to_string());
+            }
+        }
     }
     if let Some(v) = fields.get("is_external") {
         let is_ext = v == "true" || v == "1";
@@ -1284,7 +1429,6 @@ pub async fn update_form(
 
     if !sets.is_empty() {
         sets.push(format!("updated_at = ?{}", idx));
-        let now_for_roles = now.clone();
         params.push(crate::db::into_param_value(now.clone()));
         idx += 1;
         params.push(crate::db::into_param_value(user_id));
@@ -1296,14 +1440,14 @@ pub async fn update_form(
         }
 
         if !roles.is_empty() {
-            let _ = conn.execute(
-                "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
-                crate::params![user_id, org_id],
-            );
-            for role_id in &roles {
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                    crate::params![user_id, role_id, &now_for_roles, &now_for_roles],
+            if roles.len() > 1 {
+                return HttpResponse::BadRequest().json(ApiError::new(
+                    "A user can only have one role. Send a single role id.",
+                ));
+            }
+            if let Some(&role_id) = roles.first() {
+                let _ = crate::role_defaults::replace_user_with_single_role(
+                    &conn, org_id, user_id, role_id,
                 );
             }
         }
@@ -1312,14 +1456,14 @@ pub async fn update_form(
             crate::chat_department_channels::sync_user_department_channel(&conn, org_id, user_id);
         }
     } else if !roles.is_empty() {
-        let _ = conn.execute(
-            "DELETE FROM role_user WHERE user_id = ?1 AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
-            crate::params![user_id, org_id],
-        );
-        for role_id in &roles {
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                crate::params![user_id, role_id, &now, &now],
+        if roles.len() > 1 {
+            return HttpResponse::BadRequest().json(ApiError::new(
+                "A user can only have one role. Send a single role id.",
+            ));
+        }
+        if let Some(&role_id) = roles.first() {
+            let _ = crate::role_defaults::replace_user_with_single_role(
+                &conn, org_id, user_id, role_id,
             );
         }
     }
@@ -1410,16 +1554,43 @@ pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
             |r| r.get_idx::<i64>(0),
         )
         .unwrap_or(0);
+    let suspended: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql} AND u.status = 'suspended'"),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    let hr_managed: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) FROM users u {where_sql} AND COALESCE(u.hr_managed, 0) = 1"
+            ),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
+    let inactive: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM users u {where_sql} AND u.status = 'inactive'"),
+            &bind,
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "total": total,
         "active": active,
         "on_leave": on_leave,
-        "inactive": total - active - on_leave,
+        "inactive": inactive,
+        "suspended": suspended,
+        "hr_managed": hr_managed,
+        "app_users": total - hr_managed,
     })))
 }
 
 /// GET /api/admin/users/list (simple list for dropdowns)
+/// Optional query: `center_id` — restrict to employees of that branch.
 pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
     let claims = match get_claims_from_request(&req) {
         Ok(c) => c,
@@ -1432,10 +1603,52 @@ pub async fn list(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
 
+    let center_id: Option<i64> = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .find_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?;
+            let val = parts.next().unwrap_or("");
+            if key == "center_id" {
+                val.parse::<i64>().ok()
+            } else {
+                None
+            }
+        });
+
     let scope = actor_branch_scope(&conn, &claims);
+    if let Some(cid) = center_id {
+        if !crate::tenant::center_in_organization(&conn, cid, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = ensure_center_allowed(&scope, Some(cid)) {
+            return resp;
+        }
+    }
+
     let mut sql =
         "SELECT u.id, u.name, u.email, u.employee_id FROM users u WHERE u.deleted_at IS NULL AND u.organization_id = ?1".to_string();
     let mut bind: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if let Some(cid) = center_id {
+        let wl_idx = bind.len() + 1;
+        let dept_idx = wl_idx + 1;
+        let org_idx = wl_idx + 2;
+        sql.push_str(&format!(
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                OR u.department_id IN (
+                  SELECT d.id FROM departments d
+                  WHERE d.center_id = ?{dept_idx} AND d.organization_id = ?{org_idx}
+                )
+              )"
+        ));
+        bind.push(crate::db::into_param_value(cid.to_string()));
+        bind.push(crate::db::into_param_value(cid));
+        bind.push(crate::db::into_param_value(org_id));
+    }
     append_users_branch_filter(&mut sql, &mut bind, &scope, "u");
     // Avoid COALESCE(created_at, '') — Postgres TIMESTAMP cannot coalesce with ''.
     sql.push_str(" ORDER BY u.created_at DESC, u.id DESC");

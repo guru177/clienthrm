@@ -90,6 +90,7 @@ pub struct ShiftAssignmentRequest {
 pub struct ShiftRosterQuery {
     pub shift_id: Option<i64>,
     pub date: Option<String>,
+    pub center_id: Option<i64>,
 }
 
 pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
@@ -102,11 +103,12 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+
     let stmt = match conn.prepare(
         "SELECT st.id, st.name, st.start_time, st.end_time, st.grace_in_minutes, st.grace_out_minutes,
                 st.is_active, st.is_default, COALESCE(st.working_days_mask, 31) AS working_days_mask,
-                st.created_at, st.updated_at,
-                (SELECT COUNT(DISTINCT usa.user_id) FROM user_shift_assignments usa WHERE usa.shift_template_id = st.id) AS assigned_count
+                st.created_at, st.updated_at
          FROM shift_templates st
          WHERE st.organization_id = ?1
          ORDER BY st.is_default DESC, st.name",
@@ -114,23 +116,98 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         Ok(s) => s,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
-    let rows: Vec<serde_json::Value> = stmt
-        .query_map([org_id], |row| {
-            Ok(shift_template_json(
-                row.get_idx::<i64>(0)?,
-                row.get_idx::<String>(1)?,
-                row.get_idx::<String>(2)?,
-                row.get_idx::<String>(3)?,
-                row.get_idx::<i64>(4).unwrap_or(0),
-                row.get_idx::<i64>(5).unwrap_or(0),
-                row.get_idx::<i64>(6).unwrap_or(0) != 0,
-                row.get_idx::<i64>(7).unwrap_or(0) != 0,
-                row.get_idx::<i64>(8).unwrap_or(31),
-                row.get_idx::<Option<String>>(9)?,
-                row.get_idx::<Option<String>>(10)?,
-                row.get_idx::<i64>(11).unwrap_or(0),
-            ))
-        });
+
+    let templates: Vec<(
+        i64,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        bool,
+        bool,
+        i64,
+        Option<String>,
+        Option<String>,
+    )> = stmt.query_map([org_id], |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            row.get_idx::<String>(1)?,
+            row.get_idx::<String>(2)?,
+            row.get_idx::<String>(3)?,
+            row.get_idx::<i64>(4).unwrap_or(0),
+            row.get_idx::<i64>(5).unwrap_or(0),
+            row.get_idx::<i64>(6).unwrap_or(0) != 0,
+            row.get_idx::<i64>(7).unwrap_or(0) != 0,
+            row.get_idx::<i64>(8).unwrap_or(31),
+            row.get_idx::<Option<String>>(9)?,
+            row.get_idx::<Option<String>>(10)?,
+        ))
+    });
+
+    let mut rows = Vec::with_capacity(templates.len());
+    for (id, name, start, end, grace_in, grace_out, is_active, is_default, mask, created, updated) in
+        templates
+    {
+        let mut count_sql = String::from(
+            "SELECT COUNT(DISTINCT usa.user_id)
+             FROM user_shift_assignments usa
+             JOIN users u ON u.id = usa.user_id
+             WHERE usa.shift_template_id = ?1
+               AND u.deleted_at IS NULL
+               AND u.organization_id = ?2",
+        );
+        let mut count_params: Vec<crate::db::ParamValue> = vec![
+            crate::db::into_param_value(id),
+            crate::db::into_param_value(org_id),
+        ];
+        crate::branch_scope::append_users_branch_filter(
+            &mut count_sql,
+            &mut count_params,
+            &scope,
+            "u",
+        );
+        let assigned_count: i64 = conn
+            .query_row(&count_sql, &count_params, |r| r.get_idx::<i64>(0))
+            .unwrap_or(0);
+
+        // Org-wide count keeps delete safety when the actor only sees their branch.
+        let org_assigned_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT usa.user_id)
+                 FROM user_shift_assignments usa
+                 JOIN users u ON u.id = usa.user_id
+                 WHERE usa.shift_template_id = ?1
+                   AND u.deleted_at IS NULL
+                   AND u.organization_id = ?2",
+                crate::params![id, org_id],
+                |r| r.get_idx::<i64>(0),
+            )
+            .unwrap_or(0);
+
+        let mut json = shift_template_json(
+            id,
+            name,
+            start,
+            end,
+            grace_in,
+            grace_out,
+            is_active,
+            is_default,
+            mask,
+            created,
+            updated,
+            assigned_count,
+        );
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert(
+                "org_assigned_count".to_string(),
+                serde_json::json!(org_assigned_count),
+            );
+        }
+        rows.push(json);
+    }
+
     HttpResponse::Ok().json(ApiResponse::success(rows))
 }
 
@@ -154,6 +231,12 @@ pub async fn store(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Could not start transaction")),
     };
     if body.is_default.unwrap_or(false) {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if !scope.is_all() {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "Only organization admins can set the default shift for all branches",
+            ));
+        }
         let _ = tx.execute(
             "UPDATE shift_templates SET is_default = 0 WHERE organization_id = ?1",
             [org_id],
@@ -211,6 +294,17 @@ pub async fn update(
         Ok(t) => t,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Could not start transaction")),
     };
+    match body.is_default {
+        Some(true) | Some(false) => {
+            let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+            if !scope.is_all() {
+                return HttpResponse::Forbidden().json(ApiError::new(
+                    "Only organization admins can change the default shift for all branches",
+                ));
+            }
+        }
+        None => {}
+    }
     match body.is_default {
         Some(true) => {
             if set_default_shift(&tx, id, org_id).is_err() {
@@ -406,7 +500,7 @@ pub async fn assign_user(
                 }
             }
             HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-                "message": "Shift assigned to user",
+                "message": "Shift assigned — Attendance uses this for late/early and working-day checks",
                 "id": conn.last_insert_rowid(),
             })))
         }
@@ -432,6 +526,10 @@ pub async fn user_assignment(
 
     if !crate::tenant::user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found in organization"));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope) {
+        return resp;
     }
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -518,10 +616,37 @@ pub async fn roster(
 
     let mut all_users: Vec<(i64, String, Option<String>, Option<String>)> = {
         let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if let Some(center_id) = query.center_id {
+            if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+                return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+            }
+            if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+                return resp;
+            }
+        }
         let mut sql = String::from(
-            "SELECT u.id, u.name, u.email, u.employee_id FROM users u WHERE u.deleted_at IS NULL AND u.is_super_admin=0 AND u.organization_id = ?1",
+            "SELECT u.id, u.name, u.email, u.employee_id FROM users u
+             WHERE u.deleted_at IS NULL AND u.organization_id = ?1
+               AND TRIM(COALESCE(u.name, '')) != ''",
         );
         let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+        if let Some(center_id) = query.center_id {
+            let wl_idx = params.len() + 1;
+            let dept_idx = wl_idx + 1;
+            let org_idx = wl_idx + 2;
+            sql.push_str(&format!(
+                " AND (
+                    TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                    OR u.department_id IN (
+                      SELECT d.id FROM departments d
+                      WHERE d.center_id = ?{dept_idx} AND d.organization_id = ?{org_idx}
+                    )
+                  )"
+            ));
+            params.push(crate::db::into_param_value(center_id.to_string()));
+            params.push(crate::db::into_param_value(center_id));
+            params.push(crate::db::into_param_value(org_id));
+        }
         crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
         sql.push_str(" ORDER BY u.name");
         match conn.prepare(&sql) {
@@ -602,6 +727,7 @@ pub struct DailyRosterQuery {
     pub week_start: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub center_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -660,6 +786,58 @@ pub async fn daily_roster_show(
     let from_s = start.format("%Y-%m-%d").to_string();
     let to_s = end.format("%Y-%m-%d").to_string();
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Some(center_id) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
+    }
+
+    let mut user_sql = String::from(
+        "SELECT u.id, u.name, u.employee_id FROM users u
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?1
+           AND TRIM(COALESCE(u.name, '')) != ''",
+    );
+    let mut user_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if let Some(center_id) = query.center_id {
+        let wl_idx = user_params.len() + 1;
+        let dept_idx = wl_idx + 1;
+        let org_idx = wl_idx + 2;
+        user_sql.push_str(&format!(
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                OR u.department_id IN (
+                  SELECT d.id FROM departments d
+                  WHERE d.center_id = ?{dept_idx} AND d.organization_id = ?{org_idx}
+                )
+              )"
+        ));
+        user_params.push(crate::db::into_param_value(center_id.to_string()));
+        user_params.push(crate::db::into_param_value(center_id));
+        user_params.push(crate::db::into_param_value(org_id));
+    }
+    crate::branch_scope::append_users_branch_filter(&mut user_sql, &mut user_params, &scope, "u");
+    user_sql.push_str(" ORDER BY u.name");
+
+    let users: Vec<(i64, String, Option<String>)> = match conn.prepare(&user_sql) {
+        Ok(stmt) => stmt.query_map(&user_params, |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<Option<String>>(2)?,
+            ))
+        }),
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}")));
+        }
+    };
+
+    let scoped_user_ids: std::collections::HashSet<i64> =
+        users.iter().map(|(id, _, _)| *id).collect();
+
     let mut overrides: std::collections::HashMap<(i64, String), (Option<i64>, bool, Option<String>)> =
         std::collections::HashMap::new();
     if let Ok(stmt) = conn.prepare(
@@ -679,22 +857,11 @@ pub async fn daily_roster_show(
             ))
         });
         for r in rows {
-            overrides.insert((r.0, r.1), (r.2, r.3, r.4));
+            if scoped_user_ids.contains(&r.0) {
+                overrides.insert((r.0, r.1), (r.2, r.3, r.4));
+            }
         }
     }
-
-    let users: Vec<(i64, String, Option<String>)> = conn
-        .prepare("SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL AND is_super_admin=0 AND organization_id = ?1 ORDER BY name")
-        .map(|stmt| {
-            stmt.query_map([org_id], |row| {
-                Ok((
-                    row.get_idx::<i64>(0)?,
-                    row.get_idx::<String>(1)?,
-                    row.get_idx::<Option<String>>(2)?,
-                ))
-            })
-        })
-        .unwrap_or_default();
 
     let mut employees = Vec::new();
     for (user_id, name, employee_id) in users {
@@ -754,6 +921,7 @@ pub async fn daily_roster_store(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("Database error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     let tx = match conn.unchecked_transaction() {
         Ok(t) => t,
@@ -766,6 +934,11 @@ pub async fn daily_roster_store(
         }
         if !crate::tenant::user_in_organization(&conn, entry.user_id, org_id) {
             return HttpResponse::BadRequest().json(ApiError::new("User not found in organization"));
+        }
+        if let Err(resp) =
+            crate::branch_scope::require_user_in_scope(&conn, entry.user_id, org_id, &scope)
+        {
+            return resp;
         }
         if let Some(shift_id) = entry.shift_template_id {
             let shift_ok = tx
@@ -793,7 +966,7 @@ pub async fn daily_roster_store(
 
     match tx.commit() {
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-            "message": "Daily roster updated",
+            "message": "Daily roster updated — Attendance uses these shifts for late/early and working-day checks",
             "count": body.entries.len(),
         }))),
         Err(e) => HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),

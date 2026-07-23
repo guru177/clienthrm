@@ -16,17 +16,24 @@ export function PermissionRoute({
     permission,
     permissions,
     module,
+    modules,
     children,
 }: {
     permission?: string;
     permissions?: string[];
     module?: string;
+    modules?: string[];
     children: ReactNode;
 }) {
     const { user, loading, hasPermission, planModules } = useAuth();
     if (loading) return <PageLoader />;
     if (!user) return <Navigate to="/login" replace />;
-    if (module && !isModuleAllowed(planModules, module)) {
+    const moduleAllowed = module
+        ? isModuleAllowed(planModules, module)
+        : modules && modules.length > 0
+          ? modules.some((m) => isModuleAllowed(planModules, m))
+          : true;
+    if (!moduleAllowed) {
         return <Navigate to="/unauthorized" replace />;
     }
     const allowed = permission

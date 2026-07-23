@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import DOMPurify from 'dompurify';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-    Hash, Lock, Plus, Search, Send, Smile, Paperclip, Pin, Star, MessageSquare,
+    ArrowLeft, Hash, Lock, Plus, Search, Send, Smile, Paperclip, Pin, Star, MessageSquare,
     MoreHorizontal, X, Users, Bold, Italic, Code, AtSign, Loader2, MessagesSquare,
     Download, FileText, Film, Music, File, Building2,
 } from 'lucide-react';
@@ -27,7 +27,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import { isMobileViewport } from '@/lib/default-route';
 import { handleApiError } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 import { cn } from '@/lib/utils';
 import { ChatNotificationStack } from '@/components/chat/chat-notification-stack';
 
@@ -616,6 +618,7 @@ export default function TeamChatPage() {
     const { spaceId: spaceIdParam } = useParams();
     const navigate = useNavigate();
     const { user } = useAuth();
+    const confirm = useConfirm();
     const currentUserId = user?.id ?? 0;
 
     const [spaces, setSpaces] = useState<ChatSpace[]>([]);
@@ -642,6 +645,23 @@ export default function TeamChatPage() {
     const [previewAttachment, setPreviewAttachment] = useState<ChatAttachment | null>(null);
     const [showStarred, setShowStarred] = useState(false);
     const [starredMessages, setStarredMessages] = useState<ChatMessage[]>([]);
+
+    const deleteMessageWithConfirm = async (id: number) => {
+        if (
+            !(await confirm({
+                title: 'Delete message',
+                description: 'Delete this message? This cannot be undone.',
+                confirmText: 'Delete',
+            }))
+        ) {
+            return;
+        }
+        try {
+            await chatApi.deleteMessage(id);
+        } catch (e) {
+            handleApiError(e);
+        }
+    };
     const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
     const [editContent, setEditContent] = useState('');
     const [peopleFilter, setPeopleFilter] = useState('');
@@ -650,8 +670,11 @@ export default function TeamChatPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const composerRef = useRef<HTMLTextAreaElement>(null);
 
-    const activeSpaceId = spaceIdParam ? Number(spaceIdParam) : spaces[0]?.id;
-    const activeSpace = spaces.find((s) => s.id === activeSpaceId);
+    const activeSpaceId = spaceIdParam ? Number(spaceIdParam) : undefined;
+    const activeSpace = activeSpaceId
+        ? spaces.find((s) => s.id === activeSpaceId)
+        : undefined;
+    const conversationOpen = Boolean(activeSpaceId);
 
     const channels = useMemo(
         () => spaces.filter((s) => s.kind === 'channel' && !s.department_id),
@@ -675,7 +698,8 @@ export default function TeamChatPage() {
         try {
             const res = await chatApi.spaces();
             setSpaces(res.data);
-            if (!spaceIdParam && res.data.length > 0) {
+            // Desktop: land in a default channel. Mobile: stay on the list until tapped.
+            if (!spaceIdParam && res.data.length > 0 && !isMobileViewport()) {
                 const general = res.data.find((s) => s.slug === 'general') || res.data[0];
                 navigate(`/admin/chat/${general.id}`, { replace: true });
             }
@@ -989,9 +1013,16 @@ export default function TeamChatPage() {
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <div className="-mx-4 md:-mx-6 -mt-2 flex h-[calc(100vh-7.5rem)] min-h-[520px] overflow-hidden rounded-2xl border border-white/40 bg-white/60 shadow-xl backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/60">
-                {/* Chat sidebar — matches HRM light-blue / navy theme */}
-                <aside className="flex w-[272px] shrink-0 flex-col border-r border-[#071b3a]/10 bg-gradient-to-b from-[#e8f2fd] via-[#dceaf8] to-[#d0e4f8] dark:from-[#0d1e33] dark:via-[#0a1828] dark:to-[#071220]">
+            <div className="-mx-4 md:-mx-6 -mt-2 flex h-[calc(100dvh-7.5rem)] md:min-h-[520px] overflow-hidden rounded-2xl border border-white/40 bg-white/60 shadow-xl backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/60">
+                {/* Chat sidebar — full width on mobile list; hidden when a space is open */}
+                <aside
+                    className={cn(
+                        'shrink-0 flex-col border-r border-[#071b3a]/10 bg-gradient-to-b from-[#e8f2fd] via-[#dceaf8] to-[#d0e4f8] dark:from-[#0d1e33] dark:via-[#0a1828] dark:to-[#071220]',
+                        conversationOpen
+                            ? 'hidden md:flex md:w-[272px]'
+                            : 'flex w-full md:w-[272px]',
+                    )}
+                >
                     <div className="flex items-center justify-between border-b border-[#071b3a]/10 px-4 py-3">
                         <div className="flex items-center gap-3">
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#071b3a]/15 bg-[#071b3a]/10 shadow-inner dark:border-white/10 dark:bg-white/10">
@@ -1166,14 +1197,29 @@ export default function TeamChatPage() {
                     </div>
                 </aside>
 
-                {/* Main chat area */}
-                <main className="relative flex min-w-0 flex-1 flex-col bg-white/50 dark:bg-slate-950/30">
+                {/* Main chat area — hidden on mobile until a space is selected */}
+                <main
+                    className={cn(
+                        'relative min-w-0 flex-1 flex-col bg-white/50 dark:bg-slate-950/30',
+                        conversationOpen ? 'flex' : 'hidden md:flex',
+                    )}
+                >
                     <ChatNotificationStack spaces={spaces} currentUserId={currentUserId} />
                     {activeSpace ? (
                         <>
                             <header className="flex items-center justify-between border-b border-[#071b3a]/10 bg-gradient-to-r from-[#e8f2fd]/90 via-[#dceaf8]/50 to-transparent px-4 py-3 dark:from-[#0d1e33]/90">
                                 <div className="min-w-0">
                                     <div className="flex items-center gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 shrink-0 md:hidden"
+                                            aria-label="Back to conversations"
+                                            onClick={() => navigate('/admin/chat')}
+                                        >
+                                            <ArrowLeft className="h-4 w-4" />
+                                        </Button>
                                         <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#071b3a]/15 bg-[#071b3a]/10 dark:border-white/10 dark:bg-white/10">
                                             {activeSpace.kind === 'channel' ? (
                                                 activeSpace.is_private ? (
@@ -1297,9 +1343,7 @@ export default function TeamChatPage() {
                                             }}
                                             onReply={(m) => openThread(m)}
                                             onEdit={(m) => { setEditingMessage(m); setEditContent(m.content); }}
-                                            onDelete={async (id) => {
-                                                try { await chatApi.deleteMessage(id); } catch (e) { handleApiError(e); }
-                                            }}
+                                            onDelete={deleteMessageWithConfirm}
                                             onPin={(id) => void handlePin(id)}
                                             onStar={async (id) => {
                                                 try { await chatApi.star(id); } catch (e) { handleApiError(e); }
@@ -1412,7 +1456,7 @@ export default function TeamChatPage() {
                                 onReact={async (id, emoji) => { try { await chatApi.react(id, emoji); } catch (e) { handleApiError(e); } }}
                                 onReply={() => {}}
                                 onEdit={(m) => { setEditingMessage(m); setEditContent(m.content); }}
-                                onDelete={async (id) => { try { await chatApi.deleteMessage(id); } catch (e) { handleApiError(e); } }}
+                                onDelete={deleteMessageWithConfirm}
                                 onPin={(id) => void handlePin(id)}
                                 onStar={async (id) => { try { await chatApi.star(id); } catch (e) { handleApiError(e); } }}
                                 onOpenThread={() => {}}
@@ -1427,7 +1471,7 @@ export default function TeamChatPage() {
                                     onReact={async (id, emoji) => { try { await chatApi.react(id, emoji); } catch (e) { handleApiError(e); } }}
                                     onReply={() => {}}
                                     onEdit={(m) => { setEditingMessage(m); setEditContent(m.content); }}
-                                    onDelete={async (id) => { try { await chatApi.deleteMessage(id); } catch (e) { handleApiError(e); } }}
+                                    onDelete={deleteMessageWithConfirm}
                                     onPin={(id) => void handlePin(id)}
                                     onStar={async (id) => { try { await chatApi.star(id); } catch (e) { handleApiError(e); } }}
                                     onOpenThread={() => {}}

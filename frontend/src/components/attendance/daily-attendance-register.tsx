@@ -31,6 +31,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { handleApiError } from '@/lib/toast';
+import { formatAttendanceWallTime, localTodayISO } from '@/lib/datetime';
 
 interface NamedOption {
     id: number;
@@ -59,7 +60,16 @@ interface DailyRow {
     is_late: boolean;
     is_early_exit: boolean;
     has_open_session: boolean;
-    attendance_status: 'present' | 'open' | 'absent' | 'scheduled_off';
+    attendance_status:
+        | 'present'
+        | 'open'
+        | 'absent'
+        | 'scheduled_off'
+        | 'on_leave'
+        | 'holiday'
+        | 'extra_work'
+        | 'half_day'
+        | '';
     sessions?: SessionRow[];
     sources?: string[];
     source_summary?: { biometric: number; app: number; manual?: number };
@@ -77,14 +87,7 @@ interface DailyPayload {
 }
 
 function formatTime(value?: string | null) {
-    if (!value) return '--:--';
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return '--:--';
-    return d.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-    });
+    return formatAttendanceWallTime(value);
 }
 
 function formatDuration(minutes: number) {
@@ -97,8 +100,14 @@ function formatDuration(minutes: number) {
 function statusBadge(status: DailyRow['attendance_status']) {
     if (status === 'present') return <Badge>Present</Badge>;
     if (status === 'open') return <Badge variant="secondary">Open session</Badge>;
-    if (status === 'scheduled_off') return <Badge variant="outline">Scheduled off</Badge>;
-    return <Badge variant="outline">Absent</Badge>;
+    if (status === 'scheduled_off') return <Badge variant="outline">Off</Badge>;
+    if (status === 'on_leave') return <Badge variant="outline">Leave</Badge>;
+    if (status === 'holiday') return <Badge variant="outline">Holiday</Badge>;
+    if (status === 'extra_work') return <Badge variant="secondary">Extra work</Badge>;
+    if (status === 'half_day') return <Badge variant="secondary">Half day</Badge>;
+    if (status === 'absent') return <Badge variant="destructive">Absent</Badge>;
+    if (!status) return <Badge variant="outline">—</Badge>;
+    return <Badge variant="outline">{status}</Badge>;
 }
 
 function SourceBadges({ row }: { row: DailyRow }) {
@@ -122,11 +131,11 @@ function SourceBadges({ row }: { row: DailyRow }) {
 }
 
 export default function DailyAttendanceRegister() {
-    const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+    const [date, setDate] = useState(localTodayISO());
     const [branchId, setBranchId] = useState('all');
-    const [designationId, setDesignationId] = useState('all');
+    const [departmentId, setDepartmentId] = useState('all');
     const [branches, setBranches] = useState<NamedOption[]>([]);
-    const [designations, setDesignations] = useState<NamedOption[]>([]);
+    const [departments, setDepartments] = useState<NamedOption[]>([]);
     const [data, setData] = useState<DailyPayload | null>(null);
     const [loading, setLoading] = useState(true);
     const [expanded, setExpanded] = useState<number | null>(null);
@@ -135,21 +144,21 @@ export default function DailyAttendanceRegister() {
         let cancelled = false;
         (async () => {
             try {
-                const [centersRes, desgRes] = await Promise.all([
+                const [centersRes, deptRes] = await Promise.all([
                     axios.get('/admin/settings/centers', { params: { compact: 1 } }),
-                    axios.get('/admin/designations/list', { params: { compact: 1 } }),
+                    axios.get('/admin/departments/list', { params: { compact: 1 } }),
                 ]);
                 if (cancelled) return;
                 const centerList = centersRes.data?.data ?? centersRes.data ?? [];
-                const desgList = desgRes.data?.data ?? desgRes.data ?? [];
+                const deptList = deptRes.data?.data ?? deptRes.data ?? [];
                 setBranches(
                     (Array.isArray(centerList) ? centerList : []).map((c: NamedOption) => ({
                         id: Number(c.id),
                         name: c.name,
                     })),
                 );
-                setDesignations(
-                    (Array.isArray(desgList) ? desgList : []).map((d: NamedOption) => ({
+                setDepartments(
+                    (Array.isArray(deptList) ? deptList : []).map((d: NamedOption) => ({
                         id: Number(d.id),
                         name: d.name,
                     })),
@@ -170,7 +179,7 @@ export default function DailyAttendanceRegister() {
                 params: {
                     date,
                     center_id: branchId !== 'all' ? Number(branchId) : undefined,
-                    designation_id: designationId !== 'all' ? Number(designationId) : undefined,
+                    department_id: departmentId !== 'all' ? Number(departmentId) : undefined,
                 },
             });
             setData(res.data.data ?? null);
@@ -180,7 +189,7 @@ export default function DailyAttendanceRegister() {
         } finally {
             setLoading(false);
         }
-    }, [date, branchId, designationId]);
+    }, [date, branchId, departmentId]);
 
     useEffect(() => {
         void load();
@@ -235,14 +244,14 @@ export default function DailyAttendanceRegister() {
                             </Select>
                         </div>
                         <div className="space-y-1">
-                            <Label>Designation</Label>
-                            <Select value={designationId} onValueChange={setDesignationId}>
+                            <Label>Department</Label>
+                            <Select value={departmentId} onValueChange={setDepartmentId}>
                                 <SelectTrigger className="w-full sm:w-[180px]">
-                                    <SelectValue placeholder="All designations" />
+                                    <SelectValue placeholder="All departments" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="all">All designations</SelectItem>
-                                    {designations.map((d) => (
+                                    <SelectItem value="all">All departments</SelectItem>
+                                    {departments.map((d) => (
                                         <SelectItem key={d.id} value={String(d.id)}>
                                             {d.name}
                                         </SelectItem>

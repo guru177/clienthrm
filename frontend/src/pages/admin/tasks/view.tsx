@@ -107,9 +107,9 @@ export default function View({ task = {} as Task }: Props) {
 
     const handleDelete = async () => {
         if (
-            !confirm(
-                `Are you sure you want to delete "${task.title}"? This action cannot be undone.`,
-            )
+            !(await confirm({
+                description: `Are you sure you want to delete "${task.title}"? This action cannot be undone.`,
+            }))
         ) {
             return;
         }

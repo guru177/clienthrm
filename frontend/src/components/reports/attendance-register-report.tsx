@@ -75,9 +75,11 @@ function dayHeader(dateStr: string): { dayNum: number; weekday: string } {
 const CODE_STYLES: Record<string, string> = {
     P: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
     A: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
+    HD: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300',
     L: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
     O: 'bg-muted text-muted-foreground',
     H: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+    EW: 'bg-cyan-100 text-cyan-900 dark:bg-cyan-950 dark:text-cyan-300',
     '•': 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300',
 };
 
@@ -149,9 +151,11 @@ export default function AttendanceRegisterReport() {
     const legend = data?.legend ?? {
         P: 'Present',
         A: 'Absent',
+        HD: 'Half day',
         L: 'Leave',
         O: 'Off day',
         H: 'Holiday',
+        EW: 'Extra work',
         '•': 'Open session',
     };
 

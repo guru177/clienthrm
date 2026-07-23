@@ -1,6 +1,6 @@
 import axios from '@/lib/axios';
-import { Shield } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Search, Shield } from 'lucide-react';
+import { useMemo, useState, useEffect } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,6 +52,7 @@ export default function RoleForm({
     const [livePermissions, setLivePermissions] = useState<Permission[]>(allPermissions);
     const [liveModules, setLiveModules] = useState<PermissionModule[]>(permissionModules);
     const [loadingPermissions, setLoadingPermissions] = useState(false);
+    const [permissionSearch, setPermissionSearch] = useState('');
 
     useEffect(() => {
         if (!open) return;
@@ -91,6 +92,7 @@ export default function RoleForm({
             setSelectedPermissions([]);
         }
         setErrors({});
+        setPermissionSearch('');
     }, [role, open]);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -153,17 +155,59 @@ export default function RoleForm({
         return groupPermissions.every((id) => selectedPermissions.includes(id));
     };
 
-    const groupedPermissions =
-        liveModules.length > 0
-            ? liveModules
-            : Object.entries(
-                  livePermissions.reduce((acc, permission) => {
-                      const group = permission.group || 'Other';
-                      if (!acc[group]) acc[group] = [];
-                      acc[group].push(permission);
-                      return acc;
-                  }, {} as Record<string, Permission[]>),
-              ).map(([label, permissions]) => ({ key: label, label, permissions }));
+    const groupedPermissions = useMemo(
+        () =>
+            liveModules.length > 0
+                ? liveModules
+                : Object.entries(
+                      livePermissions.reduce((acc, permission) => {
+                          const group = permission.group || 'Other';
+                          if (!acc[group]) acc[group] = [];
+                          acc[group].push(permission);
+                          return acc;
+                      }, {} as Record<string, Permission[]>),
+                  ).map(([label, permissions]) => ({ key: label, label, permissions })),
+        [liveModules, livePermissions],
+    );
+
+    const filteredGroupedPermissions = useMemo(() => {
+        const q = permissionSearch.trim().toLowerCase();
+        if (!q) return groupedPermissions;
+        return groupedPermissions
+            .map((module) => {
+                const moduleMatches = module.label.toLowerCase().includes(q);
+                const permissions = moduleMatches
+                    ? module.permissions
+                    : module.permissions.filter(
+                          (p) =>
+                              p.name.toLowerCase().includes(q) ||
+                              (p.slug && p.slug.toLowerCase().includes(q)),
+                      );
+                return { ...module, permissions };
+            })
+            .filter((module) => module.permissions.length > 0 || module.label.toLowerCase().includes(q));
+    }, [groupedPermissions, permissionSearch]);
+
+    const visiblePermissionIds = useMemo(
+        () => filteredGroupedPermissions.flatMap((m) => m.permissions.map((p) => p.id)),
+        [filteredGroupedPermissions],
+    );
+
+    const allVisibleSelected =
+        visiblePermissionIds.length > 0 &&
+        visiblePermissionIds.every((id) => selectedPermissions.includes(id));
+
+    const toggleSelectVisible = () => {
+        if (allVisibleSelected) {
+            setSelectedPermissions((prev) =>
+                prev.filter((id) => !visiblePermissionIds.includes(id)),
+            );
+        } else {
+            setSelectedPermissions((prev) => [
+                ...new Set([...prev, ...visiblePermissionIds]),
+            ]);
+        }
+    };
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -219,7 +263,7 @@ export default function RoleForm({
                             )}
                         </div>
 
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <Label>Module Permissions</Label>
                             <Badge variant="secondary">
                                 {selectedPermissions.length} of{' '}
@@ -227,14 +271,41 @@ export default function RoleForm({
                                 {loadingPermissions ? ' · refreshing…' : ''}
                             </Badge>
                         </div>
+
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <div className="relative flex-1">
+                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    value={permissionSearch}
+                                    onChange={(e) => setPermissionSearch(e.target.value)}
+                                    placeholder="Search permissions…"
+                                    className="pl-8"
+                                    disabled={loading || loadingPermissions}
+                                />
+                            </div>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={toggleSelectVisible}
+                                disabled={loading || visiblePermissionIds.length === 0}
+                            >
+                                {allVisibleSelected ? 'Clear visible' : 'Select visible'}
+                            </Button>
+                        </div>
                     </div>
 
                     <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border p-4">
                         <div className="space-y-6">
-                            {loadingPermissions && groupedPermissions.length === 0 ? (
+                            {loadingPermissions && filteredGroupedPermissions.length === 0 ? (
                                 <p className="text-sm text-muted-foreground">Loading permissions…</p>
                             ) : null}
-                            {groupedPermissions.map((module) => (
+                            {!loadingPermissions && filteredGroupedPermissions.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">
+                                    No permissions match “{permissionSearch.trim()}”.
+                                </p>
+                            ) : null}
+                            {filteredGroupedPermissions.map((module) => (
                                 <div key={module.key} className="space-y-3">
                                     <div className="flex items-center gap-2 border-b pb-2">
                                         <Checkbox

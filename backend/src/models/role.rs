@@ -27,10 +27,10 @@ impl Role {
             id: row.get("id")?,
             name: row.get("name")?,
             slug: row.get("slug")?,
-            description: row.get("description")?,
-            is_default: row.get::<Option<bool>>("is_default")?.unwrap_or(false),
-            created_at: row.get("created_at")?,
-            updated_at: row.get("updated_at")?,
+            description: row.get("description").unwrap_or(None),
+            is_default: row.get_boolish("is_default").unwrap_or(false),
+            created_at: row.get("created_at").unwrap_or(None),
+            updated_at: row.get("updated_at").unwrap_or(None),
         })
     }
 }

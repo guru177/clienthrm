@@ -50,6 +50,57 @@ fn permission_satisfied(permissions: &[String], slug: &str) -> bool {
         return has_permission(permissions, "manage-attendance")
             || has_permission(permissions, "mark-attendance");
     }
+    if slug == "clock-inout" {
+        return has_permission(permissions, "clock-inout")
+            || has_permission(permissions, "manage-attendance")
+            || has_permission(permissions, "view-attendance");
+    }
+    if slug == "view-my-attendance" {
+        return has_permission(permissions, "view-my-attendance")
+            || has_permission(permissions, "view-attendance")
+            || has_permission(permissions, "manage-attendance");
+    }
+    if slug == "view-attendance" {
+        return has_permission(permissions, "view-attendance")
+            || has_permission(permissions, "view-my-attendance")
+            || has_permission(permissions, "manage-attendance");
+    }
+    // Self-service "my-*" is satisfied by the matching admin view permission.
+    if slug == "view-my-doctor-reports" {
+        return has_permission(permissions, "view-doctor-reports");
+    }
+    if slug == "view-my-grocery-benefits" {
+        return has_permission(permissions, "view-grocery-benefits")
+            || has_permission(permissions, "manage-grocery-benefits");
+    }
+    if slug == "view-my-assets" {
+        return has_permission(permissions, "view-assets")
+            || has_permission(permissions, "manage-assets");
+    }
+    if slug == "view-grocery-benefits" {
+        return has_permission(permissions, "manage-grocery-benefits");
+    }
+    if slug == "view-assets" {
+        return has_permission(permissions, "manage-assets");
+    }
+    // Catalog perms that were previously unused by route checks.
+    if slug == "create-tasks" || slug == "edit-tasks" {
+        return has_permission(permissions, "assign-tasks");
+    }
+    if slug == "update-task-status" {
+        return has_permission(permissions, "edit-tasks")
+            || has_permission(permissions, "assign-tasks");
+    }
+    if slug == "edit-projects" {
+        return has_permission(permissions, "manage-project-status");
+    }
+    if slug == "view-payroll" {
+        return has_permission(permissions, "manage-payroll")
+            || has_permission(permissions, "export-payroll");
+    }
+    if slug == "manage-payroll" {
+        return has_permission(permissions, "approve-payroll");
+    }
     false
 }
 
@@ -132,6 +183,9 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.starts_with("/api/admin/dashboard") {
         return Some("view-dashboard");
     }
+    if path.starts_with("/api/admin/org-chart") {
+        return Some("view-users");
+    }
     if path == "/api/admin/users/list" && method == Method::GET {
         return Some("view-users");
     }
@@ -143,8 +197,18 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.contains("/payslips/") && path.ends_with("/unlock") && method == Method::POST {
         return Some("manage-payroll");
     }
-    if path.contains("/salary-structure") && method != Method::GET {
-        return Some("manage-payroll");
+    // Compensation APIs live under /users/{id}/… — require payroll perms, not user CRUD.
+    if path.contains("/salary-structure")
+        || path.contains("/ctc-profile")
+        || path.contains("/advances")
+        || path.contains("/payroll-hold")
+        || path.contains("/tax-declaration")
+    {
+        return Some(if *method == Method::GET {
+            "view-payroll"
+        } else {
+            "manage-payroll"
+        });
     }
     if path.starts_with("/api/admin/roles") {
         return Some(crud_perm(
@@ -191,22 +255,6 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
             "delete-designations",
         ));
     }
-    if path.starts_with("/api/admin/careers") {
-        return Some(crud_perm(
-            method,
-            "view-jobs",
-            "create-jobs",
-            "edit-jobs",
-            "delete-jobs",
-        ));
-    }
-    if path.starts_with("/api/admin/job-applications") {
-        return Some(if *method == Method::GET {
-            "view-jobs"
-        } else {
-            "edit-jobs"
-        });
-    }
     if path.starts_with("/api/admin/integrations/") {
         return Some("manage-settings");
     }
@@ -224,6 +272,7 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     }
     if path.starts_with("/api/admin/attendance/clock-in")
         || path.starts_with("/api/admin/attendance/clock-out")
+        || path.starts_with("/api/admin/attendance/today")
     {
         return Some("clock-inout");
     }
@@ -241,10 +290,10 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
         return Some("view-attendance");
     }
     if path.starts_with("/api/admin/attendance") {
-        // Admin writes (manual entry, edit, delete) require manage-attendance;
-        // reads stay on view-attendance. Self-service clock-in/out is handled above.
+        // Self-service history uses view-my-attendance; org tools use view-attendance
+        // (permission_satisfied accepts either). Writes still need manage-attendance.
         return Some(if *method == Method::GET {
-            "view-attendance"
+            "view-my-attendance"
         } else {
             "manage-attendance"
         });
@@ -268,6 +317,16 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path == "/api/admin/me/doctor-reports" && *method == Method::GET {
         return Some("view-my-doctor-reports");
     }
+    // Single report GET — handler ACL (admin/doctor or own published).
+    if *method == Method::GET
+        && path.starts_with("/api/admin/doctor-reports/")
+        && !path.contains("/prescription")
+    {
+        let rest = path.trim_start_matches("/api/admin/doctor-reports/");
+        if !rest.is_empty() && !rest.contains('/') {
+            return None;
+        }
+    }
     if path.starts_with("/api/admin/doctor-reports") {
         return Some(crud_perm(
             method,
@@ -276,6 +335,59 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
             "edit-doctor-reports",
             "delete-doctor-reports",
         ));
+    }
+    if path == "/api/admin/grocery-benefits/my-status" && *method == Method::GET {
+        return Some("view-my-grocery-benefits");
+    }
+    if path.starts_with("/api/admin/grocery-claims/") && path.ends_with("/review") {
+        return Some("manage-grocery-benefits");
+    }
+    if path == "/api/admin/grocery-claims" && *method == Method::POST {
+        return Some("view-my-grocery-benefits");
+    }
+    if path.starts_with("/api/admin/grocery-claims") {
+        return Some(if *method == Method::GET {
+            "view-grocery-benefits"
+        } else {
+            "manage-grocery-benefits"
+        });
+    }
+    if path.starts_with("/api/admin/grocery-benefits") {
+        return Some(if *method == Method::GET {
+            "view-grocery-benefits"
+        } else {
+            "manage-grocery-benefits"
+        });
+    }
+    if path.starts_with("/api/admin/my-assets") {
+        return Some("view-my-assets");
+    }
+    if path.starts_with("/api/admin/asset-allocations/") && path.ends_with("/return") {
+        return Some("manage-assets");
+    }
+    if path.starts_with("/api/admin/asset-expenses/") && path.ends_with("/review") {
+        return Some("manage-assets");
+    }
+    if path.starts_with("/api/admin/asset-allocations") {
+        return Some(if *method == Method::GET {
+            "view-assets"
+        } else {
+            "manage-assets"
+        });
+    }
+    if path.starts_with("/api/admin/asset-expenses") {
+        return Some(if *method == Method::GET {
+            "view-assets"
+        } else {
+            "manage-assets"
+        });
+    }
+    if path.starts_with("/api/admin/assets") {
+        return Some(if *method == Method::GET {
+            "view-assets"
+        } else {
+            "manage-assets"
+        });
     }
     if path.starts_with("/api/admin/me/") {
         return None;
@@ -347,15 +459,6 @@ pub fn required_permission(method: &Method, path: &str) -> Option<&'static str> 
     if path.starts_with("/api/admin/chat") {
         return Some("view-chat");
     }
-    // `/api/admin/assets*`, `/api/admin/asset-allocations`, `/api/admin/asset-expenses`,
-    // `/api/admin/my-assets*`, `/api/admin/grocery-benefits*`, `/api/admin/grocery-claims*`
-    // deliberately return `None` here. These prefixes mix admin management with employee
-    // self-service (`grocery-claims` POST is an employee action; `grocery-claims/{id}/review`
-    // POST is admin; `my-assets/expenses` POST is employee). Gating them by method at the
-    // middleware would either lock out employees or under-gate admins. Each handler
-    // enforces the correct slug (`view-assets`/`manage-assets`,
-    // `view-grocery-benefits`/`manage-grocery-benefits`/`view-my-grocery-benefits`)
-    // before touching data, and those checks were verified in the QA sweep.
     None
 }
 

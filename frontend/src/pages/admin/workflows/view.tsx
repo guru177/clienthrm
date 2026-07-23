@@ -168,9 +168,9 @@ export default function View() {
     const handleDelete = async () => {
         if (!workflow) return;
         if (
-            !confirm(
-                `Are you sure you want to delete "${workflow.name}"? This action cannot be undone.`,
-            )
+            !(await confirm({
+                description: `Are you sure you want to delete "${workflow.name}"? This action cannot be undone.`,
+            }))
         ) {
             return;
         }

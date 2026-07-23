@@ -276,6 +276,41 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
         result
     };
 
+    let recent_employees: Vec<serde_json::Value> = {
+        let mut result = Vec::new();
+        if let Ok(stmt) = conn.prepare(
+            "SELECT u.id, u.name,
+                    COALESCE(d.name, 'Unassigned') AS department,
+                    COALESCE(
+                        NULLIF(substr(u.date_of_joining, 1, 10), ''),
+                        substr(u.created_at, 1, 10)
+                    ) AS joined_at
+             FROM users u
+             LEFT JOIN departments d
+               ON d.id = u.department_id AND d.organization_id = u.organization_id
+             WHERE u.organization_id = ?1
+               AND u.deleted_at IS NULL
+               AND u.is_super_admin = 0
+             ORDER BY COALESCE(
+                 NULLIF(substr(u.date_of_joining, 1, 10), ''),
+                 substr(u.created_at, 1, 10),
+                 ''
+             ) DESC, u.id DESC
+             LIMIT 6",
+        ) {
+            let rows = stmt.query_map([org_id], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get_idx::<i64>(0)?,
+                    "name": row.get_idx::<String>(1)?,
+                    "department": row.get_idx::<String>(2)?,
+                    "joinedAt": row.get_idx::<Option<String>>(3)?.unwrap_or_default(),
+                }))
+            });
+            result.extend(rows);
+        }
+        result
+    };
+
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "metrics": {
             "totalEmployees": total_employees,
@@ -304,6 +339,7 @@ pub async fn hr_dashboard(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResp
             },
             "celebrations": celebrations,
             "recentWorkflows": recent_workflows,
+            "recentEmployees": recent_employees,
         }
     })))
 }

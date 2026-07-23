@@ -64,7 +64,7 @@ export default function MyAssetsPage() {
                 amount: parseFloat(expenseForm.amount)
             };
             const res = await axios.post('/admin/my-assets/expenses', payload);
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setExpenseOpen(false);
             setExpenseForm({ ...expenseForm, amount: '', description: '' });
             fetchMyAssets();

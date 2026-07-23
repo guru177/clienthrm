@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/table';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/use-permissions';
+import { formatAttendanceWallTime, localTodayISO } from '@/lib/datetime';
 import { handleApiError } from '@/lib/toast';
 
 interface EmployeeOption {
@@ -57,12 +58,7 @@ function monthStartIso() {
 }
 
 function formatTime(value?: string) {
-    if (!value) return '--:--';
-    return new Date(value).toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-    });
+    return formatAttendanceWallTime(value);
 }
 
 function formatDuration(minutes?: number) {
@@ -78,7 +74,7 @@ export default function EmployeeAttendanceLog() {
     const [employees, setEmployees] = useState<EmployeeOption[]>([]);
     const [userId, setUserId] = useState<string>('');
     const [startDate, setStartDate] = useState(monthStartIso());
-    const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+    const [endDate, setEndDate] = useState(localTodayISO());
     const [page, setPage] = useState(1);
     const [lastPage, setLastPage] = useState(1);
     const [loading, setLoading] = useState(false);

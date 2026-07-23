@@ -181,6 +181,7 @@ export default function DepartmentsIndex() {
                     onEdit={handleEdit}
                     onRefresh={handleFormSuccess}
                     refreshTrigger={refreshTrigger}
+                    onCreateClick={handleCreate}
                 />
 
                 {/* Department Form Modal */}

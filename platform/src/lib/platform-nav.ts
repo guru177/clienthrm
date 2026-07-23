@@ -30,7 +30,7 @@ export const platformNavItems: PlatformNavItem[] = [
         description: 'Platform overview and key metrics',
     },
     {
-        title: 'Users',
+        title: 'Organizations',
         href: '/users',
         icon: Users,
         description: 'Manage organizations and tenant access',

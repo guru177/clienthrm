@@ -81,7 +81,7 @@ export default function MyGroceryBenefitsPage() {
                 amount,
                 description: claimDescription || undefined,
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setClaimDialogOpen(false);
             setClaimAmount('');
             setClaimDescription('');

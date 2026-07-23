@@ -15,6 +15,12 @@ pub struct LeaveListQuery {
     pub per_page: Option<i64>,
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
+    pub center_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LeaveStatsQuery {
+    pub center_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,24 +96,50 @@ fn leave_dates_outside_employment(
     false
 }
 
-fn sync_user_on_leave_status(
-    conn: &crate::db::Connection,
-    user_id: i64,
-    on_leave: bool,
+fn refresh_user_on_leave_status(conn: &crate::db::Connection, user_id: i64) {
+    crate::attendance_logic::refresh_user_on_leave_status(conn, user_id);
+}
+
+fn can_manage_leave_access(permissions: &[String]) -> bool {
+    crate::middleware::rbac::has_permission(permissions, "manage-leave-requests")
+        || crate::middleware::rbac::has_permission(permissions, "approve-leave-requests")
+        || crate::middleware::rbac::has_permission(permissions, "reject-leave-requests")
+}
+
+fn push_users_center_condition_qmark(
+    conditions: &mut Vec<String>,
+    params: &mut Vec<crate::db::ParamValue>,
+    center_id: i64,
+    user_alias: &str,
 ) {
-    let status = if on_leave { "on-leave" } else { "active" };
-    let _ = conn.execute(
-        "UPDATE users SET status = ?1, updated_at = datetime('now')
-         WHERE id = ?2 AND deleted_at IS NULL AND status != 'inactive'",
-        crate::params![status, user_id],
-    );
+    params.push(crate::db::into_param_value(center_id.to_string()));
+    params.push(crate::db::into_param_value(center_id));
+    params.push(crate::db::into_param_value(center_id));
+    conditions.push(format!(
+        "(
+            TRIM(COALESCE({user_alias}.work_location, '')) = ?
+            OR {user_alias}.department_id IN (
+              SELECT d.id FROM departments d
+              WHERE d.organization_id = {user_alias}.organization_id
+                AND d.center_id = ?
+            )
+            OR EXISTS (
+              SELECT 1 FROM user_centers uc
+              WHERE uc.user_id = {user_alias}.id
+                AND uc.organization_id = {user_alias}.organization_id
+                AND uc.center_id = ?
+            )
+          )"
+    ));
 }
 
 fn leave_days_between(conn: &crate::db::Connection, user_id: i64, start: &str, end: &str) -> i64 {
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d").ok();
     match (start_date, end_date) {
-        (Some(s), Some(e)) => crate::payroll_logic::working_days_between_for_user(conn, user_id, s, e),
+        (Some(s), Some(e)) => {
+            crate::payroll_logic::leave_countable_days_between(conn, user_id, s, e)
+        }
         _ => 1,
     }
 }
@@ -177,6 +209,8 @@ fn fetch_leave_list(
     if let Some(uid) = user_id {
         conditions.push("lr.user_id = ?".to_string());
         params.push(crate::db::into_param_value(uid));
+    } else if let Some(cid) = query.center_id {
+        push_users_center_condition_qmark(&mut conditions, &mut params, cid, "u");
     } else if let Some(scope) = branch_scope {
         crate::branch_scope::push_users_branch_condition_qmark(
             &mut conditions,
@@ -677,38 +711,65 @@ pub async fn destroy(
         Some(r) => r,
         None => return HttpResponse::NotFound().json(ApiError::new("Leave request not found")),
     };
-    if status != "pending" {
-        let is_super_admin =
-            crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
-        let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
-        if !is_super_admin
-            && !crate::middleware::rbac::has_permission(&perms, "manage-leave-requests")
-        {
-            return HttpResponse::Conflict().json(ApiError::new(
-                "Only pending leave requests can be deleted",
-            ));
-        }
+    if status != "pending" && status != "approved" {
+        return HttpResponse::Conflict().json(ApiError::new(
+            "Only pending or approved leave requests can be cancelled",
+        ));
     }
+
     let is_super_admin = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
-    if owner != claims.sub && !is_super_admin {
-        let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
-        if !crate::middleware::rbac::has_permission(&perms, "manage-leave-requests") {
-            return HttpResponse::Forbidden().json(ApiError::new("Not allowed to delete this leave request"));
+    let is_owner = owner == claims.sub;
+    let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, false);
+    let can_manage = is_super_admin || can_manage_leave_access(&perms);
+
+    if !is_owner && !can_manage {
+        return HttpResponse::Forbidden().json(ApiError::new(
+            "Not allowed to cancel this leave request",
+        ));
+    }
+    if !is_owner {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if let Err(resp) =
+            crate::branch_scope::require_user_in_scope(&conn, owner, org_id, &scope)
+        {
+            return resp;
         }
     }
     if status == "approved" {
         if leave_overlaps_generated_payslip(&conn, owner, &start_date, &end_date) {
             return HttpResponse::Conflict().json(ApiError::new(
-                "Cannot delete approved leave covered by a generated payslip — unlock and regenerate payroll first",
+                "Cannot cancel approved leave covered by a generated payslip — unlock and regenerate payroll first",
             ));
         }
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let _ = conn.execute(
-        "UPDATE leave_requests SET deleted_at=?1 WHERE id=?2",
+    let updated = conn.execute(
+        "UPDATE leave_requests SET deleted_at=?1, updated_at=?1 WHERE id=?2 AND deleted_at IS NULL",
         crate::params![&now, leave_id],
     );
-    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"})))
+    if updated.unwrap_or(0) == 0 {
+        return HttpResponse::NotFound().json(ApiError::new("Leave request not found"));
+    }
+    if status == "approved" {
+        refresh_user_on_leave_status(&conn, owner);
+    }
+
+    crate::workflow_logic::trigger(
+        &conn,
+        org_id,
+        "leave_request_cancelled",
+        &serde_json::json!({
+            "leave_id": leave_id,
+            "user_id": owner,
+            "start_date": start_date,
+            "end_date": end_date,
+            "status_was": status,
+            "cancelled_by": claims.sub,
+            "organization_id": org_id,
+        }),
+    );
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Cancelled"})))
 }
 
 pub async fn stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
@@ -747,6 +808,14 @@ pub async fn manage(
     let scope = crate::branch_scope::resolve_branch_scope(
         &conn, _c.sub, org_id, &permissions, is_sa,
     );
+    if let Some(center_id) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Invalid branch"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
+    }
     let data = fetch_leave_list(&conn, &query, org_id, None, Some(&scope));
     HttpResponse::Ok().json(ApiResponse::success(data))
 }
@@ -759,7 +828,11 @@ pub async fn list_all(
     manage(pool, req, query).await
 }
 
-pub async fn admin_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+pub async fn admin_stats(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    query: web::Query<LeaveStatsQuery>,
+) -> HttpResponse {
     let _c = match get_claims_from_request(&req) {
         Ok(c) => c,
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
@@ -769,42 +842,49 @@ pub async fn admin_stats(pool: web::Data<DbPool>, req: HttpRequest) -> HttpRespo
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let pending: i64 = conn
-        .query_row(
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &_c);
+    if let Some(center_id) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Invalid branch"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
+    }
+
+    let mut conditions = vec!["lr.deleted_at IS NULL".to_string()];
+    let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if let Some(center_id) = query.center_id {
+        push_users_center_condition_qmark(&mut conditions, &mut params, center_id, "u");
+    } else {
+        crate::branch_scope::push_users_branch_condition_qmark(
+            &mut conditions,
+            &mut params,
+            &scope,
+            "u",
+        );
+    }
+    let where_clause = conditions.join(" AND ");
+    let count_for = |status: Option<&str>| -> i64 {
+        let mut sql = format!(
             "SELECT COUNT(*) FROM leave_requests lr
-             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
-             WHERE lr.status='pending' AND lr.deleted_at IS NULL",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
-        .unwrap_or(0);
-    let approved: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM leave_requests lr
-             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
-             WHERE lr.status='approved' AND lr.deleted_at IS NULL",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
-        .unwrap_or(0);
-    let rejected: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM leave_requests lr
-             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
-             WHERE lr.status='rejected' AND lr.deleted_at IS NULL",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
-        .unwrap_or(0);
-    let total: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM leave_requests lr
-             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?1
-             WHERE lr.deleted_at IS NULL",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
-        .unwrap_or(0);
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?
+             WHERE {}",
+            where_clause
+        );
+        let mut p = params.clone();
+        if let Some(st) = status {
+            sql.push_str(" AND lr.status = ?");
+            p.push(crate::db::into_param_value(st.to_string()));
+        }
+        conn.query_row(&sql, &p, |r| r.get_idx::<i64>(0))
+            .unwrap_or(0)
+    };
+
+    let pending = count_for(Some("pending"));
+    let approved = count_for(Some("approved"));
+    let rejected = count_for(Some("rejected"));
+    let total = count_for(None);
 
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "pending": pending,
@@ -866,6 +946,12 @@ pub async fn approve(
         return HttpResponse::Conflict().json(ApiError::new(
             "Leave request not found or already processed",
         ));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
     }
     // Block self-approval unless the actor is a super-admin. A user with both
     // create-leave-requests and approve-leave-requests should not be able to
@@ -935,7 +1021,12 @@ pub async fn approve(
         ));
     }
 
-    sync_user_on_leave_status(&conn, user_id, true);
+    crate::attendance_logic::sync_attendance_after_leave_approved(
+        &conn,
+        user_id,
+        &start_date,
+        &end_date,
+    );
 
     let leave_approved_ctx = serde_json::json!({
         "leave_id": leave_id,
@@ -1023,12 +1114,18 @@ pub async fn reject(
             "Leave request not found or already processed",
         ));
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     // Prevent self-rejection: users must cancel their own pending request via delete/withdraw, not reject.
     if user_id == claims.sub {
         let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
         if !is_super {
             return HttpResponse::Forbidden().json(ApiError::new(
-                "You cannot reject your own leave request. Delete or withdraw it instead.",
+                "You cannot reject your own leave request. Cancel it instead.",
             ));
         }
     }
@@ -1111,6 +1208,24 @@ pub async fn update_remarks(
     };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let leave_id = path.into_inner();
+    let owner: Option<i64> = conn
+        .query_row(
+            "SELECT lr.user_id FROM leave_requests lr
+             INNER JOIN users u ON u.id = lr.user_id AND u.organization_id = ?2
+             WHERE lr.id = ?1 AND lr.deleted_at IS NULL",
+            crate::params![leave_id, org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .ok();
+    let Some(user_id) = owner else {
+        return HttpResponse::NotFound().json(ApiError::new("Leave request not found"));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let updated = conn.execute(
         "UPDATE leave_requests SET remarks=?1, updated_at=?2
          WHERE id=?3 AND deleted_at IS NULL

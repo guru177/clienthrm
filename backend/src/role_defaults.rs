@@ -475,6 +475,7 @@ pub fn sync_role_defaults(conn: &Connection) {
             crate::params![org_id, &sync_now],
         );
 
+        // Super admins with no role get Admin (do not stack on top of an existing role).
         let _ = conn.execute(
             "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at)
              SELECT u.id, r.id, ?2, ?2
@@ -483,9 +484,7 @@ pub fn sync_role_defaults(conn: &Connection) {
              WHERE u.organization_id = ?1
                AND u.deleted_at IS NULL
                AND u.is_super_admin = 1
-               AND NOT EXISTS (
-                 SELECT 1 FROM role_user ru WHERE ru.user_id = u.id AND ru.role_id = r.id
-               )",
+               AND NOT EXISTS (SELECT 1 FROM role_user ru WHERE ru.user_id = u.id)",
             crate::params![org_id, &sync_now],
         );
     }
@@ -506,11 +505,29 @@ pub fn ensure_default_employee_role(conn: &Connection, org_id: i64, user_id: i64
     let Some(role_id) = default_employee_role_id(conn, org_id) else {
         return;
     };
+    let _ = replace_user_with_single_role(conn, org_id, user_id, role_id);
+}
+
+/// Replace all org role memberships for a user with exactly one role.
+pub fn replace_user_with_single_role(
+    conn: &Connection,
+    org_id: i64,
+    user_id: i64,
+    role_id: i64,
+) -> bool {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let _ = conn.execute(
-        "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-        crate::params![user_id, role_id, &now, &now],
+        "DELETE FROM role_user
+         WHERE user_id = ?1
+           AND role_id IN (SELECT id FROM roles WHERE organization_id = ?2)",
+        crate::params![user_id, org_id],
     );
+    conn.execute(
+        "INSERT OR IGNORE INTO role_user (user_id, role_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        crate::params![user_id, role_id, &now, &now],
+    )
+    .is_ok()
 }
 
 /// Resolve the default Employee role id for an organization (falls back to legacy `user`).

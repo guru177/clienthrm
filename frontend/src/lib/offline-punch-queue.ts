@@ -7,6 +7,9 @@ export type OfflinePunchItem = {
     type: OfflinePunchType;
     ts: string;
     payload: Record<string, unknown>;
+    /** Set when sync failed for a non-network reason; punch stays queued for retry. */
+    lastError?: string;
+    failedAt?: string;
 };
 
 function readQueue(): OfflinePunchItem[] {
@@ -57,6 +60,20 @@ export function clearOfflinePunchQueue() {
 
 export function removeOfflinePunch(id: string) {
     writeQueue(readQueue().filter((item) => item.id !== id));
+}
+
+export function markOfflinePunchFailed(id: string, errorMessage: string) {
+    writeQueue(
+        readQueue().map((item) =>
+            item.id === id
+                ? {
+                      ...item,
+                      lastError: errorMessage,
+                      failedAt: new Date().toISOString(),
+                  }
+                : item,
+        ),
+    );
 }
 
 export function isNetworkError(error: unknown): boolean {

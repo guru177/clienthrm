@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike, Weekday};
 use crate::db::Connection;
 
@@ -218,6 +220,118 @@ pub fn user_is_scheduled_working_day(conn: &Connection, user_id: i64, date: &str
     }
     let mask = resolve_shift_for_user_readonly(conn, user_id, date).working_days_mask;
     is_working_day(mask, d)
+}
+
+/// Preloaded schedule facts for bulk reports (avoids N×days shift DB lookups).
+pub struct WorkingDayLookup {
+    /// Explicit roster override: true = must work, false = day off.
+    roster: HashMap<(i64, String), bool>,
+    /// Per-user assignment windows: (effective_from, effective_to, working_days_mask), newest first.
+    assignments: HashMap<i64, Vec<(String, Option<String>, u8)>>,
+}
+
+impl WorkingDayLookup {
+    pub fn load(
+        conn: &Connection,
+        user_ids: &[i64],
+        start_date: &str,
+        end_date: &str,
+    ) -> Self {
+        let mut lookup = Self {
+            roster: HashMap::new(),
+            assignments: HashMap::new(),
+        };
+        if user_ids.is_empty() {
+            return lookup;
+        }
+
+        let placeholders: String = user_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut roster_params: Vec<crate::db::ParamValue> =
+            vec![crate::db::into_param_value(start_date), crate::db::into_param_value(end_date)];
+        for id in user_ids {
+            roster_params.push(crate::db::into_param_value(*id));
+        }
+
+        let roster_sql = format!(
+            "SELECT user_id, roster_date, COALESCE(is_day_off, 0), shift_template_id
+             FROM shift_daily_roster
+             WHERE roster_date >= ?1 AND roster_date <= ?2
+               AND user_id IN ({placeholders})"
+        );
+        if let Ok(rows) = conn.query_map_result(&roster_sql, &roster_params, |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<i64>(2).unwrap_or(0),
+                row.get_idx::<Option<i64>>(3).ok().flatten(),
+            ))
+        }) {
+            for (uid, date, is_off, shift_id) in rows {
+                if is_off != 0 {
+                    lookup.roster.insert((uid, date), false);
+                } else if shift_id.is_some() {
+                    lookup.roster.insert((uid, date), true);
+                }
+            }
+        }
+
+        let mut assign_params: Vec<crate::db::ParamValue> =
+            vec![crate::db::into_param_value(end_date), crate::db::into_param_value(start_date)];
+        for id in user_ids {
+            assign_params.push(crate::db::into_param_value(*id));
+        }
+        let assign_sql = format!(
+            "SELECT usa.user_id, usa.effective_from, usa.effective_to,
+                    COALESCE(st.working_days_mask, {DEFAULT_WORKING_DAYS_MASK}) AS working_days_mask
+             FROM user_shift_assignments usa
+             JOIN shift_templates st ON st.id = usa.shift_template_id
+             WHERE usa.effective_from <= ?1
+               AND (usa.effective_to IS NULL OR usa.effective_to >= ?2)
+               AND usa.user_id IN ({placeholders})
+             ORDER BY usa.user_id, usa.effective_from DESC, usa.id DESC"
+        );
+        if let Ok(rows) = conn.query_map_result(&assign_sql, &assign_params, |row| {
+            Ok((
+                row.get_idx::<i64>(0)?,
+                row.get_idx::<String>(1)?,
+                row.get_idx::<Option<String>>(2).ok().flatten(),
+                normalize_working_days_mask(row.get_idx::<i64>(3).unwrap_or(DEFAULT_WORKING_DAYS_MASK as i64)),
+            ))
+        }) {
+            for (uid, from, to, mask) in rows {
+                lookup
+                    .assignments
+                    .entry(uid)
+                    .or_default()
+                    .push((from, to, mask));
+            }
+        }
+
+        lookup
+    }
+
+    pub fn is_working_day(&self, user_id: i64, date: &str, d: NaiveDate) -> bool {
+        if let Some(forced) = self.roster.get(&(user_id, date.to_string())) {
+            return *forced;
+        }
+        let mask = self
+            .assignments
+            .get(&user_id)
+            .and_then(|windows| {
+                windows.iter().find(|(from, to, _)| {
+                    from.as_str() <= date && to.as_deref().map(|t| t >= date).unwrap_or(true)
+                })
+            })
+            .map(|(_, _, mask)| *mask)
+            .unwrap_or(DEFAULT_WORKING_DAYS_MASK);
+        is_working_day(mask, d)
+    }
 }
 
 pub fn upsert_daily_roster(
@@ -603,14 +717,25 @@ pub fn close_open_sessions(
     let rows: Vec<(i64, String)> = stmt
         .query_map(crate::params![user_id, date], |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)));
 
+    let org_id = crate::tenant::org_id_for_user(conn, user_id);
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+    let extra = day
+        .map(|d| crate::attendance_logic::is_extra_work_day(conn, user_id, org_id, date, d))
+        .unwrap_or(false)
+        || shift.is_day_off;
+
     for (att_id, clock_in) in rows {
         let duration = calc_duration_minutes(&clock_in, clock_out_time);
-        let early_exit = is_early_departure(
-            clock_out_time,
-            &shift.start_time,
-            &shift.end_time,
-            shift.grace_out_minutes,
-        );
+        let early_exit = if extra {
+            false
+        } else {
+            is_early_departure(
+                clock_out_time,
+                &shift.start_time,
+                &shift.end_time,
+                shift.grace_out_minutes,
+            )
+        };
         let _ = conn.execute(
             "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
             crate::params![

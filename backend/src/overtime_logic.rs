@@ -86,17 +86,14 @@ pub fn overtime_for_user_month(
         };
         let is_holiday: bool = conn
             .query_row(
-                "SELECT 1 FROM holidays WHERE organization_id = ?1 AND date = ?2 AND is_paid = 1",
+                "SELECT 1 FROM holidays WHERE organization_id = ?1 AND date = ?2",
                 crate::params![org_id, &date_str],
                 |_| Ok(()),
             )
             .is_ok();
-        if !crate::payroll_logic::is_working_day_for_user(conn, user_id, d) && !is_holiday {
-            continue;
-        }
-
-        let shift_end = shift_end_time_for_user(conn, user_id, &date_str, d);
-        let Some(shift_end) = shift_end else { continue };
+        let is_working = crate::payroll_logic::is_working_day_for_user(conn, user_id, d);
+        // Extra work on week-off or holiday still counts toward OT.
+        let is_extra_day = is_holiday || !is_working;
 
         let Some(ci) = parse_time(&clock_in) else { continue };
         let Some(co) = parse_time(&clock_out) else { continue };
@@ -106,18 +103,27 @@ pub fn overtime_for_user_month(
         if co_dt < ci_dt {
             co_dt += chrono::Duration::days(1);
         }
-        let shift_end_dt = NaiveDateTime::new(d, shift_end);
-        if co_dt <= shift_end_dt {
-            continue;
-        }
 
-        let ot_mins = (co_dt - shift_end_dt).num_minutes() as f64;
+        let (ot_mins, mult) = if is_extra_day {
+            // Whole worked duration on holiday / week-off is overtime.
+            let mins = (co_dt - ci_dt).num_minutes() as f64;
+            (mins, holiday_mult)
+        } else {
+            let Some(shift_end) = shift_end_time_for_user(conn, user_id, &date_str, d) else {
+                continue;
+            };
+            let shift_end_dt = NaiveDateTime::new(d, shift_end);
+            if co_dt <= shift_end_dt {
+                continue;
+            }
+            ((co_dt - shift_end_dt).num_minutes() as f64, rate_mult)
+        };
+
         if ot_mins <= 0.0 {
             continue;
         }
 
         total_minutes += ot_mins;
-        let mult = if is_holiday { holiday_mult } else { rate_mult };
         total_amount += (ot_mins / 60.0) * hourly * mult;
         days_with_ot += 1;
     }

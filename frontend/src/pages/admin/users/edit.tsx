@@ -58,6 +58,22 @@ interface Role {
     description: string | null;
 }
 
+/** Prefer the most specific system role when legacy data had multiple. */
+function preferredRoleId(roles?: Role[]): number | '' {
+    if (!roles?.length) return '';
+    const rank = (slug?: string) => {
+        const s = (slug || '').toLowerCase();
+        if (s === 'admin' || s === 'administrator') return 1;
+        if (s === 'hr') return 2;
+        if (s === 'branch-admin') return 3;
+        if (s === 'manager') return 4;
+        if (s === 'doctor') return 5;
+        if (s === 'employee' || s === 'user') return 90;
+        return 50;
+    };
+    return [...roles].sort((a, b) => rank(a.slug) - rank(b.slug) || a.id - b.id)[0].id;
+}
+
 interface Department {
     id: number;
     name: string;
@@ -162,7 +178,7 @@ export default function EditUserPage() {
         department_id: '' as string | number,
         designation_id: '' as string | number,
         status: 'active',
-        roles: [] as number[],
+        role_id: '' as number | '',
         employment_type: '',
         date_of_joining: '',
         date_of_exit: '',
@@ -296,7 +312,7 @@ export default function EditUserPage() {
                     department_id: userData.department_id || '',
                     designation_id: userData.designation_id || '',
                     status: userData.status || 'active',
-                    roles: userData.roles?.map((r: Role) => r.id) || [],
+                    role_id: preferredRoleId(userData.roles),
                     employment_type: userData.employment_type || '',
                     date_of_joining: toDateInput(userData.date_of_joining),
                     date_of_exit: toDateInput(userData.date_of_exit),
@@ -516,7 +532,7 @@ export default function EditUserPage() {
                 fd.append('account_number', formData.account_number);
                 fd.append('ifsc_code', formData.ifsc_code);
                 fd.append('account_type', formData.account_type);
-                fd.append('roles', JSON.stringify(formData.roles));
+                fd.append('roles', JSON.stringify(formData.role_id ? [formData.role_id] : []));
                 for (const cid of managedCenterIds) {
                     fd.append('managed_center_ids[]', String(cid));
                 }
@@ -556,7 +572,7 @@ export default function EditUserPage() {
                     account_number: formData.account_number,
                     ifsc_code: formData.ifsc_code,
                     account_type: formData.account_type,
-                    roles: formData.roles,
+                    roles: formData.role_id ? [formData.role_id] : [],
                     managed_center_ids: managedCenterIds,
                     ...extendedFields,
                 };
@@ -614,15 +630,6 @@ export default function EditUserPage() {
         }
     };
 
-    const handleRoleToggle = (roleId: number) => {
-        setFormData((prev) => ({
-            ...prev,
-            roles: prev.roles.includes(roleId)
-                ? prev.roles.filter((id) => id !== roleId)
-                : [...prev.roles, roleId],
-        }));
-    };
-
     if (loading) {
         return (
             <AppLayout breadcrumbs={[{ label: 'Users', href: '/admin/users' }, { label: 'Loading...' }]}>
@@ -671,15 +678,24 @@ export default function EditUserPage() {
                                     Edit User
                                 </h1>
                                 <p className="text-muted-foreground">
-                                    Update user information and assign roles
+                                    {formData.hr_managed
+                                        ? 'HR-managed — no app login; attendance & leave handled by HR'
+                                        : 'App user — can sign in with email and password'}
                                 </p>
                             </div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                         {formData.hr_managed ? (
-                            <Badge variant="outline">HR-managed</Badge>
-                        ) : null}
+                            <Badge
+                                variant="outline"
+                                className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                            >
+                                HR-managed
+                            </Badge>
+                        ) : (
+                            <Badge variant="secondary">App user</Badge>
+                        )}
                         <Badge variant={formData.status === 'active' ? 'default' : 'secondary'}>
                             {formData.status}
                         </Badge>
@@ -1532,47 +1548,55 @@ export default function EditUserPage() {
                         </CardContent>
                     </Card>
 
-                    {/* Roles Assignment — admin only */}
+                    {/* Role Assignment — admin only */}
                     {canEditAdminFields && <Card>
                         <CardHeader>
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between gap-3">
                                 <div>
-                                    <CardTitle>Assign Roles</CardTitle>
+                                    <CardTitle>Assigned role</CardTitle>
                                     <CardDescription>
-                                        Select roles for this user
+                                        Each person has exactly one role
                                     </CardDescription>
                                 </div>
-                                <Badge variant="outline">
-                                    {formData.roles.length} role
-                                    {formData.roles.length !== 1 ? 's' : ''} assigned
-                                </Badge>
+                                {formData.role_id ? (
+                                    <Badge variant="outline">
+                                        {roles.find((r) => r.id === formData.role_id)?.name || 'Selected'}
+                                    </Badge>
+                                ) : (
+                                    <Badge variant="secondary">No role</Badge>
+                                )}
                             </div>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                                {roles.map((role) => (
-                                    <div key={role.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-muted/50 transition-colors">
-                                        <Checkbox
-                                            id={`role-${role.id}`}
-                                            checked={formData.roles.includes(role.id)}
-                                            onCheckedChange={() => handleRoleToggle(role.id)}
-                                            className="mt-1"
-                                        />
-                                        <div className="flex-1 min-w-0">
-                                            <Label
-                                                htmlFor={`role-${role.id}`}
-                                                className="font-medium cursor-pointer"
-                                            >
-                                                {role.name}
-                                            </Label>
-                                            {role.description && (
-                                                <p className="text-xs text-muted-foreground line-clamp-2">
-                                                    {role.description}
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
+                            <div className="space-y-2 max-w-md">
+                                <Label htmlFor="role_id">Role</Label>
+                                <Select
+                                    value={formData.role_id ? String(formData.role_id) : undefined}
+                                    onValueChange={(value) =>
+                                        setFormData({
+                                            ...formData,
+                                            role_id: Number(value),
+                                        })
+                                    }
+                                >
+                                    <SelectTrigger id="role_id">
+                                        <SelectValue placeholder="Select a role" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {roles.map((role) => (
+                                            <SelectItem key={role.id} value={String(role.id)}>
+                                                <div className="flex flex-col items-start">
+                                                    <span>{role.name}</span>
+                                                    {role.description ? (
+                                                        <span className="text-xs text-muted-foreground line-clamp-1">
+                                                            {role.description}
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             </div>
                             <div className="flex items-center space-x-2 pt-4">
                                 <Checkbox

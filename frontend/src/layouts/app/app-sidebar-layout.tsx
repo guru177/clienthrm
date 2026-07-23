@@ -39,7 +39,10 @@ export default function AppSidebarLayout({
     const { plan } = useAuth();
     const isMobile = useIsMobile();
     const isViewportLocked =
-        location.pathname === '/admin/support' || location.pathname === '/admin/live-locations';
+        location.pathname === '/admin/support' ||
+        location.pathname === '/admin/live-locations' ||
+        location.pathname === '/admin/holidays' ||
+        location.pathname === '/admin/org-chart';
     const [pendingPunches, setPendingPunches] = useState(0);
 
     useEffect(() => {

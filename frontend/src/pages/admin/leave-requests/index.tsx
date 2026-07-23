@@ -50,7 +50,6 @@ export default function LeaveRequestsPage() {
     };
 
     const breadcrumbs = [
-        { label: 'Attendance', href: '/admin/attendance' },
         { label: 'Leave Requests', href: '/admin/leave-requests' },
     ];
 
@@ -153,13 +152,18 @@ export default function LeaveRequestsPage() {
                         setRefreshKey((prev) => prev + 1);
                         loadStats();
                     }}
+                    onCreateClick={
+                        hasPermission('create-leave-requests')
+                            ? () => setShowForm(true)
+                            : undefined
+                    }
                 />
             </div>
 
             {/* New Request Dialog */}
             {hasPermission('create-leave-requests') && (
             <Dialog open={showForm} onOpenChange={setShowForm}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
                     <DialogHeader>
                         <DialogTitle>New Leave Request</DialogTitle>
                         <DialogDescription>

@@ -151,8 +151,10 @@ pub fn ensure_postgres_schema(pool: &DbPool) {
     super::migrations::migrate_user_hr_managed(&conn);
     super::migrations::migrate_users_unique_org_email(&conn);
     super::migrations::migrate_role_user_unique(&conn);
+    super::migrations::migrate_one_role_per_user(&conn);
     super::migrations::migrate_payslips_unique(&conn);
     super::migrations::migrate_biometric_ingest_keys(&conn);
+    super::migrations::migrate_view_my_attendance(&conn);
     crate::tenant_webhooks::migrate_tenant_webhooks(&conn);
 
     if let Err(e) = conn.execute_batch(&adapt_sql(

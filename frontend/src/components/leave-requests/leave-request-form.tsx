@@ -20,6 +20,22 @@ interface LeaveRequestFormProps {
     onCancel: () => void;
 }
 
+type LeaveBalance = {
+    quota_used?: number;
+    quota_pending?: number;
+    quota_effective?: number | null;
+    quota_year?: number;
+    total_leave_days?: number;
+};
+
+type LeaveTypeDetail = {
+    slug: string;
+    name: string;
+    quota_days?: number | null;
+    counts_toward_quota?: boolean;
+    payment_type_label?: string;
+};
+
 export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFormProps) {
     const [formData, setFormData] = useState({
         leave_type: '',
@@ -30,12 +46,34 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [loading, setLoading] = useState(false);
     const [leaveTypes, setLeaveTypes] = useState<{ value: string; label: string }[]>([]);
+    const [typeDetails, setTypeDetails] = useState<LeaveTypeDetail[]>([]);
+    const [balance, setBalance] = useState<LeaveBalance | null>(null);
 
     useEffect(() => {
         fetchLeaveTypeOptions()
             .then(setLeaveTypes)
             .catch(() => setLeaveTypes([]));
+
+        axios
+            .get('/admin/leave-types')
+            .then((res) => {
+                if (res.data.success) setTypeDetails(res.data.data || []);
+            })
+            .catch(() => setTypeDetails([]));
+
+        axios
+            .get('/admin/leave-requests/stats')
+            .then((res) => {
+                if (res.data.success) setBalance(res.data.data);
+            })
+            .catch(() => setBalance(null));
     }, []);
+
+    const selectedType = typeDetails.find((t) => t.slug === formData.leave_type);
+    const remaining =
+        balance?.quota_effective != null && balance.quota_used != null
+            ? Math.max(0, balance.quota_effective - balance.quota_used)
+            : null;
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -46,6 +84,13 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
         if (!formData.leave_type) nextErrors.leave_type = ['Leave type is required'];
         if (!formData.start_date) nextErrors.start_date = ['Start date is required'];
         if (!formData.end_date) nextErrors.end_date = ['End date is required'];
+        if (
+            formData.start_date &&
+            formData.end_date &&
+            formData.end_date < formData.start_date
+        ) {
+            nextErrors.end_date = ['End date must be on or after the start date'];
+        }
         if (!formData.reason.trim()) nextErrors.reason = ['Reason is required'];
         else if (formData.reason.trim().length < 10) {
             nextErrors.reason = ['Reason must be at least 10 characters'];
@@ -72,6 +117,30 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
 
     return (
         <form onSubmit={handleSubmit} className="space-y-4">
+            {(balance?.quota_effective != null || selectedType?.quota_days != null) && (
+                <div className="rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                    {balance?.quota_effective != null ? (
+                        <p>
+                            Leave balance ({balance.quota_year ?? 'this year'}):{' '}
+                            <span className="font-semibold">{remaining ?? '—'}</span> of{' '}
+                            <span className="font-semibold">{balance.quota_effective}</span> business
+                            days remaining
+                            {balance.quota_pending ? (
+                                <span className="text-muted-foreground">
+                                    {' '}
+                                    ({balance.quota_pending} pending)
+                                </span>
+                            ) : null}
+                        </p>
+                    ) : null}
+                    {selectedType?.counts_toward_quota && selectedType.quota_days != null && (
+                        <p className="text-muted-foreground">
+                            {selectedType.name} allowance: {selectedType.quota_days} days / year
+                        </p>
+                    )}
+                </div>
+            )}
+
             <div className="space-y-2">
                 <Label htmlFor="leave_type">
                     Leave Type <span className="text-destructive">*</span>
@@ -124,6 +193,7 @@ export default function LeaveRequestForm({ onSuccess, onCancel }: LeaveRequestFo
                         id="end_date"
                         type="date"
                         value={formData.end_date}
+                        min={formData.start_date || undefined}
                         onChange={(e) =>
                             setFormData({ ...formData, end_date: e.target.value })
                         }

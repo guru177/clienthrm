@@ -63,8 +63,6 @@ const MODULES = [
   { name: 'Salary Employees', path: '/admin/salaries/employees' },
   { name: 'Payroll', path: '/admin/payroll' },
   { name: 'My Payslips', path: '/admin/my-payslips' },
-  { name: 'Job Postings', path: '/admin/careers' },
-  { name: 'Applications', path: '/admin/job-applications' },
   { name: 'Team Chat', path: '/admin/chat' },
   { name: 'Doctor Reports', path: '/admin/doctor-reports' },
   { name: 'My Doctor Reports', path: '/admin/my-doctor-reports' },

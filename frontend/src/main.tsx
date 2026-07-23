@@ -95,21 +95,19 @@ const ForgotPassword = lazy(() => import('@/pages/auth/forgot-password'));
 const ResetPassword = lazy(() => import('@/pages/auth/reset-password'));
 const Signup = lazy(() => import('@/pages/auth/signup'));
 const Register = lazy(() => import('@/pages/auth/register'));
-const PublicCareers = lazy(() => import('@/pages/auth/public-careers'));
 const TwoFactorChallenge = lazy(() => import('@/pages/auth/two-factor-challenge'));
 const VerifyEmail = lazy(() => import('@/pages/auth/verify-email'));
 const ConfirmPassword = lazy(() => import('@/pages/auth/confirm-password'));
 const ImpersonateCallback = lazy(() => import('@/pages/auth/impersonate'));
 const Dashboard = lazy(() => import('@/pages/admin/dashboard'));
+const OrgChart = lazy(() => import('@/pages/admin/org-chart/index'));
 const UsersIndex = lazy(() => import('@/pages/admin/users/index'));
 const UsersView = lazy(() => import('@/pages/admin/users/view'));
 const UsersEdit = lazy(() => import('@/pages/admin/users/edit'));
-const DepartmentsIndex = lazy(() => import('@/pages/admin/departments/index'));
-const DesignationsIndex = lazy(() => import('@/pages/admin/designations/index'));
 const CentersIndex = lazy(() => import('@/pages/admin/centers/index'));
-const JobApplicationsIndex = lazy(() => import('@/pages/admin/careers/applications'));
 const AttendanceIndex = lazy(() => import('@/pages/admin/attendance/index'));
 const LiveLocationsIndex = lazy(() => import('@/pages/admin/live-locations/index'));
+const MyAttendanceIndex = lazy(() => import('@/pages/admin/my-attendance/index'));
 const ManualAttendanceIndex = lazy(() => import('@/pages/admin/manual-attendance/index'));
 const ShiftsIndex = lazy(() => import('@/pages/admin/shifts/index'));
 const ShiftRoster = lazy(() => import('@/pages/admin/shifts/roster'));
@@ -153,7 +151,6 @@ const SettingsPassword = lazy(() => import('@/pages/admin/settings/password'));
 const SettingsAppearance = lazy(() => import('@/pages/admin/settings/appearance'));
 const TwoFactorSettings = lazy(() => import('@/pages/admin/settings/two-factor'));
 const WorkLocationsSettings = lazy(() => import('@/pages/admin/settings/work-locations'));
-const CareersIndex = lazy(() => import('@/pages/admin/careers/index'));
 const EmployeePayslipsRoute = lazy(() => import('@/pages/admin/salaries/payslips-route'));
 const Unauthorized = lazy(() => import('@/pages/unauthorized'));
 const NotFound = lazy(() => import('@/pages/not-found'));
@@ -231,29 +228,41 @@ function App() {
             <Route path="/auth/verify-email" element={<GuestRoute><Suspense fallback={<PageLoader />}><VerifyEmail /></Suspense></GuestRoute>} />
             <Route path="/auth/confirm-password" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><ConfirmPassword /></Suspense></ProtectedRoute>} />
             <Route path="/auth/impersonate" element={<Suspense fallback={<PageLoader />}><ImpersonateCallback /></Suspense>} />
-            <Route path="/careers" element={<Suspense fallback={<PageLoader />}><PublicCareers /></Suspense>} />
 
             {/* Dashboard */}
             <Route element={<AdminLayout />}>
                 <Route path="/admin/dashboard" element={<PermissionRoute permission="view-dashboard" module="dashboard"><Dashboard /></PermissionRoute>} />
+                <Route path="/admin/org-chart" element={<PermissionRoute permission="view-users" module="users"><OrgChart /></PermissionRoute>} />
 
-                {/* Users & Roles */}
-                <Route path="/admin/users" element={<PermissionRoute permission="view-users" module="users"><UsersIndex /></PermissionRoute>} />
+                {/* People hub (staff, departments, designations, roles) */}
+                <Route
+                    path="/admin/users"
+                    element={
+                        <PermissionRoute
+                            permissions={[
+                                'view-users',
+                                'view-departments',
+                                'view-designations',
+                                'create-roles',
+                                'edit-roles',
+                            ]}
+                        >
+                            <UsersIndex />
+                        </PermissionRoute>
+                    }
+                />
                 <Route path="/admin/users/:id" element={<PermissionRoute permission="view-users" module="users"><UsersView /></PermissionRoute>} />
                 <Route path="/admin/users/:id/edit" element={<PermissionRoute permission="edit-users" module="users"><UsersEdit /></PermissionRoute>} />
                 <Route path="/admin/roles/:id/edit" element={<PermissionRoute permission="edit-roles" module="users"><RolesEdit /></PermissionRoute>} />
 
-                {/* Organization */}
-                <Route path="/admin/departments" element={<PermissionRoute permission="view-departments" module="departments"><DepartmentsIndex /></PermissionRoute>} />
-                <Route path="/admin/designations" element={<PermissionRoute permission="view-designations" module="designations"><DesignationsIndex /></PermissionRoute>} />
+                {/* Organization — legacy paths redirect into People hub */}
+                <Route path="/admin/departments" element={<Navigate to="/admin/users?tab=departments" replace />} />
+                <Route path="/admin/designations" element={<Navigate to="/admin/users?tab=designations" replace />} />
                 <Route path="/admin/centers" element={<PermissionRoute permission="manage-settings" module="centers"><CentersIndex /></PermissionRoute>} />
 
-                {/* Careers & Applications */}
-                <Route path="/admin/careers" element={<PermissionRoute permission="view-jobs" module="careers"><CareersIndex /></PermissionRoute>} />
-                <Route path="/admin/job-applications" element={<PermissionRoute permission="view-jobs" module="job_applications"><JobApplicationsIndex /></PermissionRoute>} />
-
                 {/* Attendance & Leave */}
-                <Route path="/admin/attendance" element={<PermissionRoute permission="view-attendance" module="attendance"><AttendanceIndex /></PermissionRoute>} />
+                <Route path="/admin/attendance" element={<PermissionRoute permissions={['clock-inout', 'view-attendance', 'manage-attendance']} module="attendance"><AttendanceIndex /></PermissionRoute>} />
+                <Route path="/admin/my-attendance" element={<PermissionRoute permissions={['view-my-attendance', 'view-attendance', 'manage-attendance']} module="attendance"><MyAttendanceIndex /></PermissionRoute>} />
                 <Route path="/admin/live-locations" element={<PermissionRoute permission="view-attendance" module="attendance"><LiveLocationsIndex /></PermissionRoute>} />
                 <Route path="/admin/manual-attendance" element={<PermissionRoute permissions={['mark-attendance', 'manage-attendance']} module="manual_attendance"><ManualAttendanceIndex /></PermissionRoute>} />
                 <Route path="/admin/my-payslips" element={<PermissionRoute permission="view-my-payslips" module="my_payslips"><MyPayslips /></PermissionRoute>} />
@@ -261,9 +270,10 @@ function App() {
                 {/* Doctor Reports */}
                 <Route path="/admin/doctor-reports" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsIndex /></PermissionRoute>} />
                 <Route path="/admin/doctor-reports/create" element={<PermissionRoute permission="create-doctor-reports" module="doctor_reports"><DoctorReportsCreate /></PermissionRoute>} />
-                <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permission="view-doctor-reports" module="doctor_reports"><DoctorReportsView /></PermissionRoute>} />
+                <Route path="/admin/doctor-reports/:id" element={<PermissionRoute permissions={['view-doctor-reports', 'view-my-doctor-reports']} modules={['doctor_reports', 'my_doctor_reports']}><DoctorReportsView /></PermissionRoute>} />
                 <Route path="/admin/doctor-reports/:id/edit" element={<PermissionRoute permission="edit-doctor-reports" module="doctor_reports"><DoctorReportsEdit /></PermissionRoute>} />
                 <Route path="/admin/my-doctor-reports" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><MyDoctorReports /></PermissionRoute>} />
+                <Route path="/admin/my-doctor-reports/:id" element={<PermissionRoute permission="view-my-doctor-reports" module="my_doctor_reports"><DoctorReportsView /></PermissionRoute>} />
 
                 {/* Grocery Benefits */}
                 <Route path="/admin/grocery-benefits" element={<PermissionRoute permission="view-grocery-benefits" module="grocery_benefits"><GroceryBenefitsAdminPage /></PermissionRoute>} />

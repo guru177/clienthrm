@@ -1,6 +1,8 @@
 use actix_web::{web, HttpRequest, HttpResponse};
-use crate::db::DbPool; use crate::middleware::auth::get_claims_from_request;
-use crate::models::{ApiError, ApiResponse}; use crate::models::project::Project;
+use crate::db::DbPool;
+use crate::middleware::auth::get_claims_from_request;
+use crate::models::{ApiError, ApiResponse};
+use crate::models::project::Project;
 use crate::tenant::org_id_from_claims;
 use serde::Deserialize;
 
@@ -12,6 +14,32 @@ pub struct ProjectListQuery {
     pub sort_order: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+}
+
+fn require_project_in_scope(
+    conn: &crate::db::Connection,
+    claims: &crate::models::user::JwtClaims,
+    org_id: i64,
+    project_id: i64,
+) -> Result<i64, HttpResponse> {
+    let created_by: Option<i64> = conn
+        .query_row(
+            "SELECT created_by FROM projects WHERE id = ?1 AND organization_id = ?2",
+            crate::params![project_id, org_id],
+            |r| r.get_idx::<Option<i64>>(0),
+        )
+        .ok()
+        .flatten();
+    let Some(created_by) = created_by else {
+        return Err(HttpResponse::NotFound().json(ApiError::new("Not found")));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(conn, claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(conn, created_by, org_id, &scope)
+    {
+        return Err(resp);
+    }
+    Ok(created_by)
 }
 
 pub async fn index(
@@ -29,17 +57,29 @@ pub async fn index(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
-    let mut sql = String::from("SELECT * FROM projects WHERE organization_id = ?1");
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
+        "SELECT p.* FROM projects p
+         LEFT JOIN users u ON u.id = p.created_by
+         WHERE p.organization_id = ?",
+    );
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(
+        &mut conditions,
+        &mut params,
+        &scope,
+        "u",
+    );
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
 
     if let Some(ref search) = query.search {
         let trimmed = search.trim();
         if !trimmed.is_empty() {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(
-                " AND (name LIKE ?{idx} OR COALESCE(description, '') LIKE ?{})",
-                idx + 1
-            ));
+            sql.push_str(" AND (p.name LIKE ? OR COALESCE(p.description, '') LIKE ?)");
             let pattern = format!("%{trimmed}%");
             params.push(crate::db::into_param_value(pattern.clone()));
             params.push(crate::db::into_param_value(pattern));
@@ -48,18 +88,17 @@ pub async fn index(
     if let Some(ref status) = query.status {
         let trimmed = status.trim();
         if !trimmed.is_empty() && trimmed != "all" {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND status = ?{idx}"));
+            sql.push_str(" AND p.status = ?");
             params.push(crate::db::into_param_value(trimmed));
         }
     }
 
     let sort_col = match query.sort_by.as_deref() {
-        Some("name") => "name",
-        Some("status") => "status",
-        Some("priority") => "priority",
-        Some("updated_at") => "updated_at",
-        _ => "created_at",
+        Some("name") => "p.name",
+        Some("status") => "p.status",
+        Some("priority") => "p.priority",
+        Some("updated_at") => "p.updated_at",
+        _ => "p.created_at",
     };
     let sort_dir = if query.sort_order.as_deref() == Some("asc") {
         "ASC"
@@ -72,7 +111,7 @@ pub async fn index(
     let per_page = query.per_page.unwrap_or(15).clamp(1, 100);
     let count_sql = {
         let base = sql.split(" ORDER BY ").next().unwrap_or(&sql);
-        base.replacen("SELECT *", "SELECT COUNT(*)", 1)
+        base.replacen("SELECT p.*", "SELECT COUNT(*)", 1)
     };
     let total: i64 = conn
         .query_row(&count_sql, &params, |row| row.get_idx::<i64>(0))
@@ -107,21 +146,43 @@ pub async fn index(
 }
 
 pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let project_id = path.into_inner();
+    if let Err(resp) = require_project_in_scope(&conn, &claims, org_id, project_id) {
+        return resp;
+    }
     match conn.query_row(
         "SELECT * FROM projects WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![project_id, org_id],
         Project::from_row,
     ) {
-        Ok(p)=>HttpResponse::Ok().json(ApiResponse::success(p)), Err(_)=>HttpResponse::NotFound().json(ApiError::new("Not found"))
+        Ok(p) => HttpResponse::Ok().json(ApiResponse::success(p)),
+        Err(_) => HttpResponse::NotFound().json(ApiError::new("Not found")),
     }
 }
-pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<crate::models::project::CreateProjectRequest>) -> HttpResponse {
-    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+
+pub async fn store(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    body: web::Json<crate::models::project::CreateProjectRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
         Ok(n) => n,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
@@ -129,16 +190,44 @@ pub async fn store(pool: web::Data<DbPool>, req: HttpRequest, body: web::Json<cr
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     match conn.execute(
         "INSERT INTO projects (name,description,status,priority,start_date,end_date,created_by,organization_id,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        crate::params![name, body.description, body.status.as_deref().unwrap_or("planning"), body.priority, body.start_date, body.end_date, claims.sub, org_id, &now, &now],
+        crate::params![
+            name,
+            body.description,
+            body.status.as_deref().unwrap_or("planning"),
+            body.priority,
+            body.start_date,
+            body.end_date,
+            claims.sub,
+            org_id,
+            &now,
+            &now
+        ],
     ) {
-        Ok(_)=>HttpResponse::Created().json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
-        Err(e)=>HttpResponse::BadRequest().json(ApiError::new(&format!("{}",e)))
+        Ok(_) => HttpResponse::Created()
+            .json(ApiResponse::success(serde_json::json!({"id": conn.last_insert_rowid()}))),
+        Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
-pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>, body: web::Json<crate::models::project::CreateProjectRequest>) -> HttpResponse {
-    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+
+pub async fn update(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    body: web::Json<crate::models::project::CreateProjectRequest>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let project_id = path.into_inner();
+    if let Err(resp) = require_project_in_scope(&conn, &claims, org_id, project_id) {
+        return resp;
+    }
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
         Ok(n) => n,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
@@ -146,20 +235,45 @@ pub async fn update(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     match conn.execute(
         "UPDATE projects SET name=?1,description=?2,status=?3,priority=?4,start_date=?5,end_date=?6,updated_at=?7 WHERE id=?8 AND organization_id=?9",
-        crate::params![name, body.description, body.status, body.priority, body.start_date, body.end_date, &now, path.into_inner(), org_id],
+        crate::params![
+            name,
+            body.description,
+            body.status,
+            body.priority,
+            body.start_date,
+            body.end_date,
+            &now,
+            project_id,
+            org_id
+        ],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Updated"}))),
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),
     }
 }
-pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64>) -> HttpResponse {
-    let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
+
+pub async fn destroy(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> HttpResponse {
+    let claims = match get_claims_from_request(&req) {
+        Ok(c) => c,
+        Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
+    };
     let org_id = org_id_from_claims(&claims);
-    let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    let project_id = path.into_inner();
+    if let Err(resp) = require_project_in_scope(&conn, &claims, org_id, project_id) {
+        return resp;
+    }
     match conn.execute(
         "DELETE FROM projects WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![project_id, org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),

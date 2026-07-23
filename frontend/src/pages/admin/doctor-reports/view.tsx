@@ -99,7 +99,7 @@ export default function DoctorReportsView() {
                 { title: `Report #${report.id}`, href: '#' },
             ]}
         >
-            <div className="space-y-6 max-w-4xl">
+            <div className="w-full space-y-6">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <FileText className="h-8 w-8 text-primary" />

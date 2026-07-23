@@ -9,6 +9,7 @@ pub fn touch_registered_device(
     ip: Option<&str>,
     now: &str,
 ) -> Option<i64> {
+    let serial = serial.trim();
     let org_id: i64 = conn
         .query_row(
             "SELECT organization_id FROM biometric_devices WHERE serial_number = ?1",
@@ -31,6 +32,10 @@ pub fn touch_registered_device(
 }
 
 pub fn is_device_registered(conn: &Connection, serial: &str) -> bool {
+    let serial = serial.trim();
+    if serial.is_empty() {
+        return false;
+    }
     conn.query_row(
         "SELECT 1 FROM biometric_devices WHERE serial_number = ?1",
         [serial],

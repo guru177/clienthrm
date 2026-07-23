@@ -1,4 +1,11 @@
-import { ChevronRight, KeyRound, MoreHorizontal, Settings, UserRound } from 'lucide-react';
+import {
+    ChevronRight,
+    KeyRound,
+    LogOut,
+    MoreHorizontal,
+    Palette,
+    UserRound,
+} from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -28,7 +35,7 @@ type PendingBadgeProps = {
 export function MobileBottomNav({ pendingPunches = 0 }: PendingBadgeProps) {
     const isMobile = useIsMobile();
     const location = useLocation();
-    const { user, permissions, planModules } = useAuth();
+    const { user, permissions, planModules, logout } = useAuth();
     const getInitials = useInitials();
     const photoSrc = useStorageSrc(user?.photo || user?.avatar);
     const [moreOpen, setMoreOpen] = useState(false);
@@ -48,10 +55,16 @@ export function MobileBottomNav({ pendingPunches = 0 }: PendingBadgeProps) {
     const isActive = (href: string) =>
         location.pathname === href || location.pathname.startsWith(`${href}/`);
 
+    const handleLogout = () => {
+        setMoreOpen(false);
+        void logout();
+    };
+
     return (
         <>
             <nav
                 data-testid="mobile-bottom-nav"
+                aria-label="Primary"
                 className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden"
                 style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
             >
@@ -88,6 +101,8 @@ export function MobileBottomNav({ pendingPunches = 0 }: PendingBadgeProps) {
                         <button
                             type="button"
                             data-testid="mobile-tab-more"
+                            aria-expanded={moreOpen}
+                            aria-haspopup="dialog"
                             onClick={() => setMoreOpen(true)}
                             className={cn(
                                 'flex h-full min-h-11 w-full flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-medium',
@@ -142,12 +157,12 @@ export function MobileBottomNav({ pendingPunches = 0 }: PendingBadgeProps) {
 
                         <div className="grid grid-cols-2 gap-2">
                             <Link
-                                to="/admin/settings/profile"
+                                to="/admin/settings/appearance"
                                 onClick={() => setMoreOpen(false)}
                                 className="flex min-h-11 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-muted"
                             >
-                                <Settings className="h-4 w-4 shrink-0" />
-                                Profile
+                                <Palette className="h-4 w-4 shrink-0" />
+                                Appearance
                             </Link>
                             <Link
                                 to="/admin/settings/password"
@@ -183,6 +198,16 @@ export function MobileBottomNav({ pendingPunches = 0 }: PendingBadgeProps) {
                                 );
                             })}
                         </div>
+
+                        <button
+                            type="button"
+                            data-testid="mobile-more-logout"
+                            onClick={handleLogout}
+                            className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm font-semibold text-destructive hover:bg-destructive/10"
+                        >
+                            <LogOut className="h-4 w-4" />
+                            Log out
+                        </button>
                     </div>
                 </SheetContent>
             </Sheet>

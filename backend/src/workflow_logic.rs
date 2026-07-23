@@ -48,6 +48,12 @@ fn trigger_type_variants(trigger_type: &str) -> Vec<String> {
                 "leave_submitted".to_string(),
             ]
         }
+        "leave_request_cancelled" | "leave_cancelled" => {
+            vec![
+                "leave_request_cancelled".to_string(),
+                "leave_cancelled".to_string(),
+            ]
+        }
         "user_created" | "user_joined" => {
             vec!["user_created".to_string(), "user_joined".to_string()]
         }
@@ -409,9 +415,11 @@ pub const SUPPORTED_TRIGGER_TYPES: &[&str] = &[
     "leave_request_submitted",
     "leave_request_approved",
     "leave_request_rejected",
+    "leave_request_cancelled",
     "leave_submitted",
     "leave_approved",
     "leave_rejected",
+    "leave_cancelled",
     "attendance_clock_in",
     "attendance_late",
     "attendance_absent",

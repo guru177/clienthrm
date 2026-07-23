@@ -22,6 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, Plus, PenSquare, ArrowLeftRight, Check, X, Trash2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useConfirm } from '@/lib/confirm';
+import { localTodayISO } from '@/lib/datetime';
 
 export default function AssetsAdminPage() {
     const [assets, setAssets] = useState<any[]>([]);
@@ -95,7 +96,7 @@ export default function AssetsAdminPage() {
         if (!(await confirm({ title: 'Delete Asset', description: 'Are you sure you want to delete this asset?' }))) return;
         try {
             const res = await axios.delete(`/admin/assets/${id}`);
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             fetchData();
         } catch (error) {
             handleApiError(error);
@@ -115,7 +116,7 @@ export default function AssetsAdminPage() {
             } else {
                 res = await axios.post('/admin/assets', payload);
             }
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setAddAssetOpen(false);
             setAssetForm({ name: '', asset_type: 'Vehicle', identifier: '', purchase_cost: '' });
             setEditingAssetId(null);
@@ -133,10 +134,10 @@ export default function AssetsAdminPage() {
             const res = await axios.post('/admin/asset-allocations', {
                 asset_id: parseInt(allocateForm.asset_id),
                 user_id: parseInt(allocateForm.user_id),
-                allocated_date: new Date().toISOString().split('T')[0],
+                allocated_date: localTodayISO(),
                 allocation_condition: allocateForm.allocation_condition || undefined
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             setAllocateOpen(false);
             setAllocateForm({ asset_id: '', user_id: '', allocation_condition: '' });
             fetchData();
@@ -151,10 +152,10 @@ export default function AssetsAdminPage() {
         if (!(await confirm({ title: 'Return Asset', description: 'Mark this asset as returned?' }))) return;
         try {
             const res = await axios.post(`/admin/asset-allocations/${allocationId}/return`, {
-                return_date: new Date().toISOString().split('T')[0],
+                return_date: localTodayISO(),
                 return_condition: 'Good'
             });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             fetchData();
         } catch (error) {
             handleApiError(error);
@@ -165,7 +166,7 @@ export default function AssetsAdminPage() {
         if (!(await confirm({ title: 'Review Expense', description: `Are you sure you want to ${status} this expense?` }))) return;
         try {
             const res = await axios.post(`/admin/asset-expenses/${expenseId}/review`, { status });
-            handleApiResponse(res.data);
+            handleApiResponse(res);
             fetchData();
         } catch (error) {
             handleApiError(error);

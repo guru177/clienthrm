@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Lock, Mail } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -13,9 +13,14 @@ import { defaultAdminRouteForViewport } from '@/lib/default-route';
 
 const REMEMBER_EMAIL_KEY = 'hrm_remember_email';
 
+type LoginLocationState = {
+    message?: string;
+};
+
 export default function Login() {
     const { login } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
     const [searchParams] = useSearchParams();
     const [email, setEmail] = useState(() => searchParams.get('email') ?? '');
     const [password, setPassword] = useState('');
@@ -24,6 +29,9 @@ export default function Login() {
     const [rememberMe, setRememberMe] = useState(false);
     const [processing, setProcessing] = useState(false);
     const [error, setError] = useState('');
+    const [successMessage, setSuccessMessage] = useState(
+        () => (location.state as LoginLocationState | null)?.message ?? '',
+    );
 
     useEffect(() => {
         const savedEmail = localStorage.getItem(REMEMBER_EMAIL_KEY);
@@ -45,6 +53,7 @@ export default function Login() {
         e.preventDefault();
         setProcessing(true);
         setError('');
+        setSuccessMessage('');
 
         try {
             const result = await login(email, password, orgSlug.trim() || undefined);
@@ -81,8 +90,14 @@ export default function Login() {
         >
             <title>Log in — HR Daddy</title>
 
+            {successMessage && (
+                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+                    {successMessage}
+                </div>
+            )}
+
             {error && (
-                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
                     {error}
                 </div>
             )}
@@ -90,7 +105,7 @@ export default function Login() {
             <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-4">
                     <div className="space-y-2">
-                        <Label htmlFor="email" className="text-sm font-semibold text-slate-700">
+                        <Label htmlFor="email" className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                             Email address
                         </Label>
                         <div className="relative">
@@ -105,14 +120,14 @@ export default function Login() {
                                 tabIndex={1}
                                 autoComplete="email"
                                 placeholder="name@company.com"
-                                className="h-11 rounded-xl border-[#e2e8f0] bg-white pl-11 text-[15px] shadow-none focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/20"
+                                className="h-11 rounded-xl border-[#e2e8f0] bg-white pl-11 text-[15px] shadow-none focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/20 dark:border-slate-700 dark:bg-slate-900"
                             />
                         </div>
                     </div>
 
                     <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                            <Label htmlFor="password" className="text-sm font-semibold text-slate-700">
+                            <Label htmlFor="password" className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                                 Password
                             </Label>
                             <Link
@@ -133,7 +148,7 @@ export default function Login() {
                                 tabIndex={2}
                                 autoComplete="current-password"
                                 placeholder="••••••••"
-                                className="h-11 rounded-xl border-[#e2e8f0] bg-white pl-11 text-[15px] shadow-none focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/20"
+                                className="h-11 rounded-xl border-[#e2e8f0] bg-white pl-11 text-[15px] shadow-none focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/20 dark:border-slate-700 dark:bg-slate-900"
                             />
                         </div>
                     </div>
@@ -148,9 +163,9 @@ export default function Login() {
                                 onChange={(e) => setOrgSlug(e.target.value)}
                                 autoComplete="organization"
                                 placeholder="your-company"
-                                className="h-11 rounded-xl border-[#e2e8f0] bg-white"
+                                className="h-11 rounded-xl border-[#e2e8f0] bg-white dark:border-slate-700 dark:bg-slate-900"
                             />
-                            <p className="text-xs text-slate-500">
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
                                 Your email is registered with multiple companies. Enter your organization slug.
                             </p>
                         </div>
@@ -163,7 +178,7 @@ export default function Login() {
                             onCheckedChange={(checked) => setRememberMe(checked === true)}
                             className="border-[#cbd5e1] data-[state=checked]:border-[#3b82f6] data-[state=checked]:bg-[#3b82f6]"
                         />
-                        <Label htmlFor="remember_me" className="cursor-pointer text-sm font-normal text-slate-600">
+                        <Label htmlFor="remember_me" className="cursor-pointer text-sm font-normal text-slate-600 dark:text-slate-300">
                             Remember me
                         </Label>
                     </div>
@@ -181,7 +196,7 @@ export default function Login() {
                     {processing ? 'Signing in...' : 'Sign in'}
                 </Button>
 
-                <p className="pt-2 text-center text-sm text-slate-500">
+                <p className="pt-2 text-center text-sm text-slate-500 dark:text-slate-400">
                     New company?{' '}
                     <Link to="/signup" className="font-semibold text-[#3b82f6] hover:underline">
                         Create an organization

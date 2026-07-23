@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
+import { useAuth } from '@/contexts/AuthContext';
 import { handleApiError, handleApiResponse, showToast } from '@/lib/toast';
 import { useConfirm } from '@/lib/confirm';
 
@@ -47,6 +48,7 @@ interface ShiftTemplate {
     is_active: boolean;
     is_default?: boolean;
     assigned_count?: number;
+    org_assigned_count?: number;
     working_days?: string[];
     working_days_label?: string;
 }
@@ -67,6 +69,11 @@ interface UserOption {
     id: number;
     name: string;
     email?: string;
+}
+
+interface BranchOption {
+    id: number;
+    name: string;
 }
 
 interface UserAssignment {
@@ -124,8 +131,12 @@ function toApiTime(value: string) {
 
 export default function ShiftsPage() {
     const confirm = useConfirm();
+    const { canAccessAllCenters, branchScope, canAccessCenter } = useAuth();
+    const allCenters = canAccessAllCenters();
     const [templates, setTemplates] = useState<ShiftTemplate[]>([]);
     const [users, setUsers] = useState<UserOption[]>([]);
+    const [branches, setBranches] = useState<BranchOption[]>([]);
+    const [assignBranchId, setAssignBranchId] = useState('all');
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [dialogOpen, setDialogOpen] = useState(false);
@@ -144,6 +155,20 @@ export default function ShiftsPage() {
     }, []);
 
     useEffect(() => {
+        if (allCenters) return;
+        const ids = branchScope.center_ids;
+        if (ids.length === 0) return;
+        setAssignBranchId((prev) => {
+            if (prev !== 'all' && ids.includes(Number(prev))) return prev;
+            return String(ids[0]);
+        });
+    }, [allCenters, branchScope.center_ids]);
+
+    useEffect(() => {
+        void loadUsers();
+    }, [assignBranchId]);
+
+    useEffect(() => {
         if (assignUserId) {
             void loadUserAssignment(Number(assignUserId));
         } else {
@@ -154,16 +179,42 @@ export default function ShiftsPage() {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [shiftsRes, usersRes] = await Promise.all([
+            const [shiftsRes, centersRes] = await Promise.all([
                 axios.get('/admin/shifts'),
-                axios.get('/admin/users/list'),
+                axios.get('/admin/settings/centers', { params: { compact: 1 } }),
             ]);
             setTemplates(shiftsRes.data.data || []);
-            setUsers(usersRes.data.data || []);
+            const centerList = centersRes.data?.data ?? centersRes.data ?? [];
+            setBranches(
+                (Array.isArray(centerList) ? centerList : [])
+                    .map((c: { id: number; name: string }) => ({
+                        id: Number(c.id),
+                        name: c.name,
+                    }))
+                    .filter((c: BranchOption) => allCenters || canAccessCenter(c.id)),
+            );
         } catch (error) {
             handleApiError(error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const loadUsers = async () => {
+        try {
+            const res = await axios.get('/admin/users/list', {
+                params: {
+                    center_id: assignBranchId !== 'all' ? Number(assignBranchId) : undefined,
+                },
+            });
+            const list: UserOption[] = res.data.data || [];
+            setUsers(list);
+            if (assignUserId && !list.some((u) => String(u.id) === assignUserId)) {
+                setAssignUserId('');
+            }
+        } catch (error) {
+            handleApiError(error);
+            setUsers([]);
         }
     };
 
@@ -203,7 +254,7 @@ export default function ShiftsPage() {
     };
 
     const deleteTemplate = async (template: ShiftTemplate) => {
-        const count = template.assigned_count ?? 0;
+        const count = template.org_assigned_count ?? template.assigned_count ?? 0;
         if (count > 0) {
             showToast({
                 type: 'warning',
@@ -212,9 +263,9 @@ export default function ShiftsPage() {
             return;
         }
         if (
-            !confirm(
-                `Delete shift "${template.name}"?\n\nThis cannot be undone.`,
-            )
+            !(await confirm({
+                description: `Delete shift "${template.name}"? This cannot be undone.`,
+            }))
         ) {
             return;
         }
@@ -237,8 +288,8 @@ export default function ShiftsPage() {
                 grace_in_minutes: form.grace_in_minutes,
                 grace_out_minutes: form.grace_out_minutes,
                 is_active: form.is_active,
-                is_default: form.is_default,
                 working_days: form.working_days,
+                ...(allCenters ? { is_default: form.is_default } : form.id ? {} : { is_default: false }),
             };
             const response = form.id
                 ? await axios.put(`/admin/shifts/${form.id}`, payload)
@@ -288,7 +339,7 @@ export default function ShiftsPage() {
                                     Shift Management
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                    Define work times, weekly working days, and assign shifts to employees
+                                    Branch-scoped templates and assignments — synced with Attendance late/early rules
                                 </p>
                             </div>
                         </div>
@@ -395,11 +446,11 @@ export default function ShiftsPage() {
                                                                     className="text-destructive hover:text-destructive"
                                                                     onClick={() => deleteTemplate(t)}
                                                                     title={
-                                                                        (t.assigned_count ?? 0) > 0
-                                                                            ? `${t.assigned_count} employee(s) assigned — reassign first`
+                                                                        (t.org_assigned_count ?? t.assigned_count ?? 0) > 0
+                                                                            ? `${t.org_assigned_count ?? t.assigned_count} employee(s) assigned — reassign first`
                                                                             : 'Delete shift'
                                                                     }
-                                                                    disabled={(t.assigned_count ?? 0) > 0}
+                                                                    disabled={(t.org_assigned_count ?? t.assigned_count ?? 0) > 0}
                                                                 >
                                                                     <Trash2 className="h-4 w-4" />
                                                                 </Button>
@@ -423,11 +474,38 @@ export default function ShiftsPage() {
                                     Assign Shift to Employee
                                 </CardTitle>
                                 <CardDescription>
-                                    Assign a shift template with an effective date range
+                                    Assignments apply by branch scope and sync with Attendance late/early checks
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="grid gap-4 sm:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label>Branch</Label>
+                                        <Select
+                                            value={assignBranchId}
+                                            onValueChange={(v) => {
+                                                setAssignBranchId(v);
+                                                setAssignUserId('');
+                                            }}
+                                            disabled={!allCenters && branches.length <= 1}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue
+                                                    placeholder={allCenters ? 'All branches' : 'Your branch'}
+                                                />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {allCenters && (
+                                                    <SelectItem value="all">All branches</SelectItem>
+                                                )}
+                                                {branches.map((b) => (
+                                                    <SelectItem key={b.id} value={String(b.id)}>
+                                                        {b.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                     <div className="space-y-2">
                                         <Label>Employee</Label>
                                         <Select value={assignUserId} onValueChange={setAssignUserId}>
@@ -576,10 +654,12 @@ export default function ShiftsPage() {
                             </div>
                         </div>
                         <div className="space-y-2">
-                            <Label>Working days</Label>
+                            <Label>Working days (week-off setup)</Label>
                             <p className="text-xs text-muted-foreground">
-                                Checked days are scheduled work days. Unchecked days are weekly off (no LOP).
-                                Assign different shifts to employees for different week-offs.
+                                Check the days employees on this shift work. Unchecked days are weekly offs
+                                (shown as O on attendance — no absent/LOP). Examples: Mon–Fri = Sat+Sun off;
+                                uncheck Friday for Friday week-off; leave only Sunday unchecked for Sunday-only
+                                off. For one-off offs use Daily Schedule. Holidays come from Holidays module.
                             </p>
                             <div className="flex flex-wrap gap-2">
                                 {WEEKDAYS.map(({ key, label }) => {
@@ -621,18 +701,20 @@ export default function ShiftsPage() {
                                 onCheckedChange={(checked) => setForm({ ...form, is_active: checked })}
                             />
                         </div>
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div>
-                                <p className="text-sm font-medium">Default shift</p>
-                                <p className="text-xs text-muted-foreground">
-                                    Auto-assigned to employees without a shift. You can rename times and grace freely.
-                                </p>
+                        {allCenters && (
+                            <div className="flex items-center justify-between rounded-lg border p-3">
+                                <div>
+                                    <p className="text-sm font-medium">Default shift</p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Auto-assigned to employees without a shift. You can rename times and grace freely.
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={form.is_default}
+                                    onCheckedChange={(checked) => setForm({ ...form, is_default: checked })}
+                                />
                             </div>
-                            <Switch
-                                checked={form.is_default}
-                                onCheckedChange={(checked) => setForm({ ...form, is_default: checked })}
-                            />
-                        </div>
+                        )}
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>

@@ -21,7 +21,6 @@ const MOBILE_ROUTES: [string, string][] = [
     ['view-my-payslips', '/admin/my-payslips'],
     ['view-my-doctor-reports', '/admin/my-doctor-reports'],
     ['view-doctor-reports', '/admin/doctor-reports'],
-    ['view-jobs', '/admin/careers'],
     ['view-dashboard', '/admin/dashboard'],
     ['view-chat', '/admin/chat'],
     ['view-users', '/admin/users'],

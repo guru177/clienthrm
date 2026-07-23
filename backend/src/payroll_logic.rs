@@ -14,6 +14,20 @@ pub fn is_working_day_for_user(
     crate::shift_logic::user_is_scheduled_working_day(conn, user_id, &date_str, d)
 }
 
+/// Scheduled working day that is not an organization holiday (leave day counting).
+pub fn is_leave_countable_day(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    d: NaiveDate,
+) -> bool {
+    if !is_working_day_for_user(conn, user_id, d) {
+        return false;
+    }
+    let org_id = org_id_for_user(conn, user_id);
+    let date_str = d.format("%Y-%m-%d").to_string();
+    !crate::attendance_logic::org_date_is_holiday(conn, org_id, &date_str)
+}
+
 pub fn month_bounds(month: i32, year: i32) -> (NaiveDate, NaiveDate) {
     // Clamp to a valid calendar range so attacker-controlled month/year cannot panic.
     let m = month.clamp(1, 12) as u32;
@@ -52,6 +66,27 @@ pub fn working_days_between_for_user(
     count
 }
 
+/// Leave / quota day count: scheduled working days excluding org holidays.
+pub fn leave_countable_days_between(
+    conn: &crate::db::Connection,
+    user_id: i64,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> i64 {
+    if end < start {
+        return 0;
+    }
+    let mut count = 0i64;
+    let mut d = start;
+    while d <= end {
+        if is_leave_countable_day(conn, user_id, d) {
+            count += 1;
+        }
+        d += chrono::Duration::days(1);
+    }
+    count
+}
+
 fn working_dates_between_for_user(
     conn: &crate::db::Connection,
     user_id: i64,
@@ -64,7 +99,7 @@ fn working_dates_between_for_user(
     }
     let mut d = start;
     while d <= end {
-        if is_working_day_for_user(conn, user_id, d) {
+        if is_leave_countable_day(conn, user_id, d) {
             dates.insert(d);
         }
         d += chrono::Duration::days(1);
@@ -578,30 +613,38 @@ pub fn approved_leave_business_days_in_month(
     org_id: i64,
     month: i32,
     year: i32,
+    scope: &crate::branch_scope::BranchScope,
 ) -> i64 {
     let (month_start, month_end) = month_bounds(month, year);
     let end_str = month_end.format("%Y-%m-%d").to_string();
     let start_str = month_start.format("%Y-%m-%d").to_string();
 
-    let stmt = match conn.prepare(
+    let mut sql = String::from(
         "SELECT lr.user_id, lr.start_date, lr.end_date FROM leave_requests lr
          JOIN users u ON u.id = lr.user_id
-         WHERE u.organization_id = ?3
+         WHERE u.organization_id = ?1
            AND lr.status='approved' AND lr.deleted_at IS NULL
-           AND lr.start_date <= ?1 AND lr.end_date >= ?2",
-    ) {
+           AND lr.start_date <= ?2 AND lr.end_date >= ?3",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(end_str),
+        crate::db::into_param_value(start_str),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, scope, "u");
+
+    let stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return 0,
     };
 
-    let rows: Vec<(i64, String, String)> = stmt
-        .query_map(crate::params![&end_str, &start_str, org_id], |row| {
-            Ok((
-                row.get_idx::<i64>(0)?,
-                row.get_idx::<String>(1)?,
-                row.get_idx::<String>(2)?,
-            ))
-        });
+    let rows: Vec<(i64, String, String)> = stmt.query_map(&params, |row| {
+        Ok((
+            row.get_idx::<i64>(0)?,
+            row.get_idx::<String>(1)?,
+            row.get_idx::<String>(2)?,
+        ))
+    });
 
     let mut dates = HashSet::new();
     for (user_id, start, end) in rows {

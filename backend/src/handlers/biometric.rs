@@ -563,27 +563,36 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
     let time = if timestamp.len() >= 19 { &timestamp[11..19] } else { return false; };
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let shift = resolve_shift_for_user(conn, user_id, date);
+    let org_id: i64 = conn
+        .query_row(
+            "SELECT organization_id FROM users WHERE id = ?1",
+            crate::params![user_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .unwrap_or(0);
 
     // Active session: same-day first, then any open session (overnight / night shift)
     let active_session = find_open_attendance_session(conn, user_id, date);
 
-    let insert_clock_in = |is_late: bool| {
+    let insert_clock_in = |is_late: bool, status: &str| {
+        // Clear same-day absent-only markers so the punch shows as check-in on Attendance.
+        let _ = conn.execute(
+            "UPDATE attendance
+             SET deleted_at = ?1, updated_at = ?1
+             WHERE user_id = ?2 AND date = ?3 AND deleted_at IS NULL
+               AND LOWER(TRIM(COALESCE(status, ''))) = 'absent'
+               AND clock_in IS NULL",
+            crate::params![&now, user_id, date],
+        );
         let ok = conn
             .execute(
-                "INSERT INTO attendance (user_id, date, clock_in, status, is_late, source, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'present', ?4, 'biometric', ?5, ?5)",
-                crate::params![user_id, date, time, if is_late { 1 } else { 0 }, &now],
+                "INSERT INTO attendance (user_id, organization_id, date, clock_in, status, is_late, source, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'biometric', ?7, ?7)",
+                crate::params![user_id, org_id, date, time, status, if is_late { 1 } else { 0 }, &now],
             )
             .is_ok();
         if ok {
             let attendance_id = conn.last_insert_rowid();
-            let org_id: i64 = conn
-                .query_row(
-                    "SELECT organization_id FROM users WHERE id = ?1",
-                    crate::params![user_id],
-                    |r| r.get_idx::<i64>(0),
-                )
-                .unwrap_or(0);
             if org_id > 0 {
                 let ctx = serde_json::json!({
                     "attendance_id": attendance_id,
@@ -591,6 +600,7 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
                     "date": date,
                     "clock_in": time,
                     "is_late": is_late,
+                    "status": status,
                     "source": "biometric",
                     "organization_id": org_id,
                     "created_by": user_id,
@@ -603,6 +613,29 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
         }
     };
 
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+    let (punch_status, punch_is_late) = if let Some(d) = day {
+        crate::attendance_logic::punch_status_and_lateness(
+            conn, user_id, org_id, date, d, &shift, time,
+        )
+    } else {
+        (
+            "present".to_string(),
+            late_for_shift(&shift, time),
+        )
+    };
+
+    // Same leave gate as app/manual — approved leave days must not create attendance punches.
+    let is_clock_in_intent = status == 0 || active_session.is_none();
+    if is_clock_in_intent && crate::attendance_logic::user_on_approved_leave(conn, user_id, date) {
+        log::info!(
+            "Biometric punch skipped: user {} on approved leave for {}",
+            user_id,
+            date
+        );
+        return false;
+    }
+
     let clock_out_session = |att_id: i64, session_date: &str| {
         let session_shift = resolve_shift_for_user(conn, user_id, session_date);
         let clock_in: String = conn
@@ -613,7 +646,17 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
             )
             .unwrap_or_default();
         let duration = calc_duration_minutes(&clock_in, time);
-        let early = early_for_shift(&session_shift, time);
+        let session_day = chrono::NaiveDate::parse_from_str(session_date, "%Y-%m-%d").ok();
+        let early = if session_day
+            .map(|d| {
+                crate::attendance_logic::is_extra_work_day(conn, user_id, org_id, session_date, d)
+            })
+            .unwrap_or(false)
+        {
+            false
+        } else {
+            early_for_shift(&session_shift, time)
+        };
         let _ = conn.execute(
             "UPDATE attendance SET clock_out=?1, duration_minutes=?2, is_early_exit=?3, updated_at=?4 WHERE id=?5",
             crate::params![time, duration, if early { 1 } else { 0 }, &now, att_id],
@@ -634,22 +677,26 @@ fn resolve_punch_to_attendance(conn: &crate::db::Connection, user_id: i64, times
         // Check-in with open session from prior day — close it, then start new session
         (0, Some((att_id, _, _))) => {
             close_open_session_before_clock_in(conn, user_id, date, time, &now, &shift);
-            let is_late = late_for_shift(&shift, time);
-            insert_clock_in(is_late);
+            insert_clock_in(punch_is_late, &punch_status);
             log::info!(
-                "  ✅ Clock-IN (new session) for user_id={} at {} closed={} shift={:?} late={}",
+                "  ✅ Clock-IN (new session) for user_id={} at {} closed={} shift={:?} late={} status={}",
                 user_id,
                 timestamp,
                 att_id,
                 shift.template_name,
-                is_late
+                punch_is_late,
+                punch_status
             );
             true
         }
         (0, None) => {
-            let is_late = late_for_shift(&shift, time);
-            insert_clock_in(is_late);
-            log::info!("  ✅ Clock-IN created for user_id={} at {}", user_id, timestamp);
+            insert_clock_in(punch_is_late, &punch_status);
+            log::info!(
+                "  ✅ Clock-IN created for user_id={} at {} status={}",
+                user_id,
+                timestamp,
+                punch_status
+            );
             true
         }
         // Explicit check-out with an open session (including overnight from prior day)
@@ -1251,8 +1298,16 @@ fn handle_adms_ws_message(
         }
     };
 
-    let cmd = msg.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-    let sn = msg.get("sn").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let cmd = msg
+        .get("cmd")
+        .and_then(|v| v.as_str())
+        .or_else(|| msg.get("ret").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let sn = msg
+        .get("sn")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .trim();
 
     let conn = match pool.get() {
         Ok(c) => c,
@@ -1264,8 +1319,6 @@ fn handle_adms_ws_message(
     match cmd {
         // ── Device Registration ──────────────────────────────────
         "reg" => {
-            log::info!("✅ [ADMS-WS] Device registered: SN={} IP={}", sn, ip);
-
             let devinfo = msg.get("devinfo");
             let model = devinfo.and_then(|d| d.get("modelname")).and_then(|v| v.as_str()).unwrap_or("BIO-PARK");
             let firmware = devinfo.and_then(|d| d.get("firmware")).and_then(|v| v.as_str()).unwrap_or("");
@@ -1274,7 +1327,14 @@ fn handle_adms_ws_message(
 
             let name = format!("{} ({})", model, firmware);
 
-            if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+            // Prefer touch (UPDATE) — if it returns None the SN is not in biometric_devices.
+            let Some(org_id) = crate::biometric_device_logic::touch_registered_device(
+                &conn,
+                sn,
+                Some(&name),
+                Some(ip),
+                &now,
+            ) else {
                 log::warn!(
                     "⛔ [ADMS-WS] Device SN={} not pre-registered — register in Admin → Biometric first",
                     sn
@@ -1285,29 +1345,22 @@ fn handle_adms_ws_message(
                     "reason": "not_registered",
                 })
                 .to_string()];
-            }
+            };
 
-            if let Some(org_id) = crate::biometric_device_logic::touch_registered_device(
-                &conn,
-                sn,
-                Some(&name),
-                Some(ip),
-                &now,
-            ) {
-                events.emit(
-                    "device_online",
-                    serde_json::json!({
-                        "organization_id": org_id,
-                        "serial_number": sn,
-                        "ip_address": ip,
-                        "model": model,
-                        "firmware": firmware,
-                        "mac": mac,
-                        "new_logs": new_logs,
-                        "last_heartbeat": now,
-                    }),
-                );
-            }
+            log::info!("✅ [ADMS-WS] Device online: SN={} IP={} org={}", sn, ip, org_id);
+            events.emit(
+                "device_online",
+                serde_json::json!({
+                    "organization_id": org_id,
+                    "serial_number": sn,
+                    "ip_address": ip,
+                    "model": model,
+                    "firmware": firmware,
+                    "mac": mac,
+                    "new_logs": new_logs,
+                    "last_heartbeat": now,
+                }),
+            );
 
             // Build response: ACK the registration with options.
             // cloudtime must match device timezone (UTC+5:30 IST)
@@ -1338,14 +1391,15 @@ fn handle_adms_ws_message(
             responses
         }
 
-        // ── Attendance Log Push ──────────────────────────────────
-        "sendlog" => {
-            if !crate::biometric_device_logic::is_device_registered(&conn, &sn) {
+        // ── Attendance Log Push (realtime sendlog OR getalllog reply) ──
+        "sendlog" | "getalllog" => {
+            if !crate::biometric_device_logic::is_device_registered(&conn, sn) {
                 log::warn!(
-                    "⛔ [ADMS-WS] Ignoring sendlog from unregistered SN={}",
+                    "⛔ [ADMS-WS] Ignoring {} from unregistered SN={}",
+                    cmd,
                     sn
                 );
-                return vec![serde_json::json!({"ret": "sendlog", "result": false}).to_string()];
+                return vec![serde_json::json!({"ret": cmd, "result": false}).to_string()];
             }
 
             // record can be a single object OR an array of objects
@@ -1378,6 +1432,7 @@ fn handle_adms_ws_message(
                     .get("type")
                     .and_then(|v| v.as_i64())
                     .or_else(|| rec.get("verify").and_then(|v| v.as_i64()))
+                    .or_else(|| rec.get("mode").and_then(|v| v.as_i64()))
                     .unwrap_or(0);
                 let inout: i64 = rec.get("inout").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -1404,6 +1459,7 @@ fn handle_adms_ws_message(
 
             if stored > 0 {
                 log::info!("✅ [ADMS-WS] Stored {}/{} punches from SN={}", stored, total, sn);
+                record_device_touch(&conn, events, sn, ip, "device_heartbeat");
                 events.emit(
                     "punches_received",
                     serde_json::json!({
@@ -1413,8 +1469,31 @@ fn handle_adms_ws_message(
                 );
             }
 
-            // ACK — count must match what the device sent
-            vec![serde_json::json!({"ret":"sendlog","result":true,"count":total,"logindex":0}).to_string()]
+            let mut responses = vec![serde_json::json!({
+                "ret": cmd,
+                "result": true,
+                "count": total,
+                "logindex": 0
+            })
+            .to_string()];
+
+            // getalllog is paged — ask for the next chunk until we have all records.
+            if cmd == "getalllog" {
+                let count = msg.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                let to = msg.get("to").and_then(|v| v.as_i64()).unwrap_or(0);
+                if count > 0 && to > 0 && to < count {
+                    responses.push(
+                        serde_json::json!({
+                            "cmd": "getalllog",
+                            "stn": false,
+                            "from": to,
+                        })
+                        .to_string(),
+                    );
+                }
+            }
+
+            responses
         }
 
         // ── User data from device ────────────────────────────────

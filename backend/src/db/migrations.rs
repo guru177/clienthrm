@@ -379,7 +379,7 @@ fn migrate_subscription_plans(conn: &rusqlite::Connection) {
             "₹7,999",
             "month",
             200,
-            r#"["dashboard","users","settings","centers","departments","designations","careers","job_applications","chat","attendance","shifts","biometric","leave","leave_manage","holidays","payroll","my_payslips","workflows","tasks","projects","reports","subscription","notifications","support"]"#,
+            r#"["dashboard","users","settings","centers","departments","designations","chat","attendance","shifts","biometric","leave","leave_manage","holidays","payroll","my_payslips","workflows","tasks","projects","reports","subscription","notifications","support"]"#,
             r#"["Up to 200 users","Payroll & workflows","Priority support"]"#,
             3,
         ),
@@ -1828,6 +1828,51 @@ pub fn migrate_role_user_unique(conn: &crate::db::Connection) {
     }
 }
 
+/// Enforce one role per user: keep the most privileged membership, drop the rest,
+/// then unique-index `role_user(user_id)`.
+pub fn migrate_one_role_per_user(conn: &crate::db::Connection) {
+    if conn.backend() != crate::db::dialect::Backend::Postgres {
+        return;
+    }
+    let dedupe = conn.execute_batch(
+        "DELETE FROM role_user
+         WHERE id IN (
+           SELECT id FROM (
+             SELECT ru.id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY ru.user_id
+                      ORDER BY
+                        CASE lower(COALESCE(r.slug, ''))
+                          WHEN 'admin' THEN 1
+                          WHEN 'administrator' THEN 1
+                          WHEN 'hr' THEN 2
+                          WHEN 'branch-admin' THEN 3
+                          WHEN 'manager' THEN 4
+                          WHEN 'doctor' THEN 5
+                          WHEN 'employee' THEN 90
+                          WHEN 'user' THEN 91
+                          ELSE 50
+                        END,
+                        ru.id
+                    ) AS rn
+             FROM role_user ru
+             LEFT JOIN roles r ON r.id = ru.role_id
+           ) ranked
+           WHERE rn > 1
+         )",
+    );
+    match dedupe {
+        Ok(()) => log::info!("role_user reduced to one role per user"),
+        Err(e) => log::warn!("role_user one-role dedupe skipped: {e}"),
+    }
+    match conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_role_user_one_per_user ON role_user(user_id)",
+    ) {
+        Ok(()) => log::info!("role_user unique (user_id) index ready"),
+        Err(e) => log::warn!("role_user one-per-user index skipped: {e}"),
+    }
+}
+
 /// Remove duplicate `payslips` rows for the same (user_id, month, year) and
 /// enforce a unique index so regeneration cannot create parallel payslips.
 /// Keeps the row with the highest `updated_at` (most recently generated).
@@ -1934,4 +1979,47 @@ pub fn migrate_biometric_ingest_keys(conn: &crate::db::Connection) {
     } else {
         log::info!("biometric_ingest_keys table ready");
     }
+}
+
+/// Self-service attendance history permission (RBAC-assignable per role).
+pub fn migrate_view_my_attendance(conn: &crate::db::Connection) {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = conn.execute(
+        "INSERT INTO permissions (name, slug, description, \"group\", created_at, updated_at)
+         SELECT 'View My Attendance', 'view-my-attendance',
+                'View own attendance history (clock-in/out and manual records)',
+                'Attendance', ?1, ?1
+         WHERE NOT EXISTS (SELECT 1 FROM permissions WHERE slug = 'view-my-attendance')",
+        crate::params![&now],
+    );
+
+    // Grant to admins and default employee roles.
+    let _ = conn.execute(
+        "INSERT INTO permission_role (permission_id, role_id, created_at, updated_at)
+         SELECT p.id, r.id, ?1, ?1
+         FROM permissions p
+         CROSS JOIN roles r
+         WHERE p.slug = 'view-my-attendance'
+           AND lower(r.slug) IN ('admin', 'administrator', 'employee', 'user', 'hr')
+           AND NOT EXISTS (
+             SELECT 1 FROM permission_role pr2
+             WHERE pr2.permission_id = p.id AND pr2.role_id = r.id
+           )",
+        crate::params![&now],
+    );
+
+    // Anyone already able to view org attendance also gets self-view.
+    let _ = conn.execute(
+        "INSERT INTO permission_role (permission_id, role_id, created_at, updated_at)
+         SELECT myp.id, pr.role_id, ?1, ?1
+         FROM permission_role pr
+         INNER JOIN permissions vp ON vp.id = pr.permission_id AND vp.slug = 'view-attendance'
+         CROSS JOIN permissions myp
+         WHERE myp.slug = 'view-my-attendance'
+           AND NOT EXISTS (
+             SELECT 1 FROM permission_role pr2
+             WHERE pr2.permission_id = myp.id AND pr2.role_id = pr.role_id
+           )",
+        crate::params![&now],
+    );
 }

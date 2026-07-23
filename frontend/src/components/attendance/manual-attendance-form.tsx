@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/select';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Textarea } from '@/components/ui/textarea';
+import { localTodayISO } from '@/lib/datetime';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 export const MANUAL_STATUS_OPTIONS = [
@@ -22,8 +23,10 @@ export const MANUAL_STATUS_OPTIONS = [
     'absent',
     'half_day',
     'leave',
+    'on_leave',
     'sick_leave',
     'holiday',
+    'extra_work',
 ] as const;
 
 export interface EmployeeOption {
@@ -57,7 +60,7 @@ export interface ManualEntryForm {
 
 const emptyForm = (date?: string): ManualEntryForm => ({
     user_id: '',
-    date: date ?? new Date().toISOString().slice(0, 10),
+    date: date ?? localTodayISO(),
     clock_in: '',
     clock_out: '',
     status: 'present',

@@ -44,6 +44,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/use-permissions';
 import { isModuleAllowed } from '@/lib/plan-modules';
+import { formatAttendanceWallTime } from '@/lib/datetime';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 import { useConfirm } from '@/lib/confirm';
 
@@ -72,9 +73,21 @@ interface AttendanceRecord {
     shift?: ShiftInfo | null;
     clock_in_location?: string;
     clock_out_location?: string;
+    session_count?: number;
+    group_by_day?: boolean;
+    has_open_session?: boolean;
 }
 
-const STATUS_OPTIONS = ['present', 'absent', 'half_day', 'leave', 'sick_leave', 'holiday'];
+const STATUS_OPTIONS = [
+    'present',
+    'absent',
+    'half_day',
+    'leave',
+    'on_leave',
+    'sick_leave',
+    'holiday',
+    'extra_work',
+];
 
 /** Extract an "HH:MM" value for a time input from a combined datetime or time string. */
 function toTimeInput(value?: string | null): string {
@@ -83,12 +96,13 @@ function toTimeInput(value?: string | null): string {
     return part.slice(0, 5);
 }
 
-export default function AttendanceTable() {
+export default function AttendanceTable({ selfOnly = false }: { selfOnly?: boolean }) {
     const confirm = useConfirm();
-    const { planModules } = useAuth();
+    const { user, planModules } = useAuth();
     const { hasPermission } = usePermissions();
-    const canManage = hasPermission('manage-attendance');
+    const canManage = !selfOnly && hasPermission('manage-attendance');
     const canMarkManual =
+        !selfOnly &&
         isModuleAllowed(planModules, 'manual_attendance') &&
         (hasPermission('mark-attendance') || hasPermission('manage-attendance'));
 
@@ -117,13 +131,16 @@ export default function AttendanceTable() {
         try {
             const response = await axios.get('/admin/attendance/list', {
                 params: {
-                    search,
+                    search: selfOnly ? undefined : search || undefined,
                     status: status !== 'all' ? status : undefined,
                     only_open: onlyOpen ? true : undefined,
                     date_from: dateFrom || undefined,
                     date_to: dateTo || undefined,
                     page: currentPage,
                     per_page: perPage,
+                    user_id: selfOnly && user?.id ? user.id : undefined,
+                    // My Attendance: one row per day (first in / last out / total hours)
+                    group_by_day: selfOnly ? true : undefined,
                 },
             });
 
@@ -142,7 +159,7 @@ export default function AttendanceTable() {
         } finally {
             setLoading(false);
         }
-    }, [search, status, onlyOpen, dateFrom, dateTo, currentPage, perPage]);
+    }, [search, status, onlyOpen, dateFrom, dateTo, currentPage, perPage, selfOnly, user?.id]);
 
     useEffect(() => {
         fetchRecords();
@@ -197,22 +214,18 @@ export default function AttendanceTable() {
             absent: { variant: 'destructive', label: 'Absent' },
             half_day: { variant: 'secondary', label: 'Half Day' },
             leave: { variant: 'outline', label: 'Leave' },
+            on_leave: { variant: 'outline', label: 'Leave' },
             sick_leave: { variant: 'secondary', label: 'Sick Leave' },
             holiday: { variant: 'outline', label: 'Holiday' },
+            scheduled_off: { variant: 'outline', label: 'Off' },
+            extra_work: { variant: 'secondary', label: 'Extra Work' },
         };
 
         const config = statusMap[status] || { variant: 'outline', label: status };
         return <Badge variant={config.variant}>{config.label}</Badge>;
     };
 
-    const formatTime = (time: string) => {
-        if (!time) return '--:--';
-        return new Date(time).toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: true,
-        });
-    };
+    const formatTime = (time: string) => formatAttendanceWallTime(time);
 
     const formatShiftTime = (value?: string) => {
         if (!value) return '';
@@ -248,9 +261,17 @@ export default function AttendanceTable() {
         <Card>
             <CardHeader>
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                    <CardTitle>Attendance History</CardTitle>
+                    <div>
+                        <CardTitle>Attendance History</CardTitle>
+                        {selfOnly && (
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                One row per day — first check-in, last check-out, and total hours
+                            </p>
+                        )}
+                    </div>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         {/* Search */}
+                        {!selfOnly && (
                         <div className="relative w-full sm:w-64">
                             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                             <Input
@@ -263,6 +284,7 @@ export default function AttendanceTable() {
                                 className="pl-8"
                             />
                         </div>
+                        )}
 
                         {/* Status Filter */}
                         <Select
@@ -380,8 +402,9 @@ export default function AttendanceTable() {
                                     </span>
                                 </div>
                                 <p className="text-sm text-muted-foreground">
-                                    {record.duration_minutes
-                                        ? `${Math.floor(record.duration_minutes / 60)}h ${record.duration_minutes % 60}m`
+                                    {record.duration_minutes != null &&
+                                    Number.isFinite(Number(record.duration_minutes))
+                                        ? `${Math.floor(Number(record.duration_minutes) / 60)}h ${Number(record.duration_minutes) % 60}m`
                                         : '--'}
                                     {record.is_late ? ' · Late' : ''}
                                     {record.is_early_exit ? ' · Early exit' : ''}
@@ -484,6 +507,13 @@ export default function AttendanceTable() {
                                                     {record.is_early_exit && (
                                                         <p className="text-xs text-orange-600">Early</p>
                                                     )}
+                                                    {selfOnly &&
+                                                        record.session_count != null &&
+                                                        record.session_count > 1 && (
+                                                            <p className="text-[10px] text-muted-foreground">
+                                                                {record.session_count} punches
+                                                            </p>
+                                                        )}
                                                 </div>
                                                 {renderLocation(record.clock_out_location)}
                                             </div>
@@ -504,8 +534,9 @@ export default function AttendanceTable() {
                                             )}
                                         </TableCell>
                                         <TableCell>
-                                            {record.duration_minutes
-                                                ? `${Math.floor(record.duration_minutes / 60)}h ${record.duration_minutes % 60}m`
+                                            {record.duration_minutes != null &&
+                                            Number.isFinite(Number(record.duration_minutes))
+                                                ? `${Math.floor(Number(record.duration_minutes) / 60)}h ${Number(record.duration_minutes) % 60}m`
                                                 : '--'}
                                         </TableCell>
                                         <TableCell>{getStatusBadge(record.status)}</TableCell>

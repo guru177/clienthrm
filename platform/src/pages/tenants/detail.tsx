@@ -19,6 +19,7 @@ import { defaultAdminRoute, redirectToTenantImpersonation } from '@/lib/app-urls
 import type { OrganizationDetail } from '@/components/organizations-panel';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { PlatformConfirmDialog } from '@/components/platform-dialog';
 import { usePlatformAuth } from '@/contexts/PlatformAuthContext';
 
 interface Overview {
@@ -135,6 +136,7 @@ function OverviewPanel({
     const [plan, setPlan] = useState(detail.plan);
     const [busy, setBusy] = useState('');
     const [error, setError] = useState('');
+    const [confirmAction, setConfirmAction] = useState<'status' | 'delete' | null>(null);
 
     useEffect(() => {
         platformGet<{ slug: string; name: string }[]>('/plans')
@@ -174,10 +176,10 @@ function OverviewPanel({
 
     async function toggleStatus() {
         const next = detail.status === 'active' ? 'suspended' : 'active';
-        if (!confirm(`${next === 'suspended' ? 'Suspend' : 'Activate'} ${detail.name}?`)) return;
         setBusy('status');
         try {
             await platformPatch(`/organizations/${orgId}`, { status: next });
+            setConfirmAction(null);
             onChanged();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed');
@@ -224,7 +226,6 @@ function OverviewPanel({
     }
 
     async function deleteOrg() {
-        if (!confirm(`Delete ${detail.name}? This cannot be undone.`)) return;
         setBusy('delete');
         try {
             await platformDelete(`/organizations/${orgId}`);
@@ -232,6 +233,7 @@ function OverviewPanel({
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed');
             setBusy('');
+            setConfirmAction(null);
         }
     }
 
@@ -298,7 +300,7 @@ function OverviewPanel({
                             </Button>
                         )}
                         {canAdmin && (
-                            <Button size="sm" variant="outline" disabled={!!busy} onClick={toggleStatus}>
+                            <Button size="sm" variant="outline" disabled={!!busy} onClick={() => setConfirmAction('status')}>
                                 {detail.status === 'active' ? 'Suspend org' : 'Activate org'}
                             </Button>
                         )}
@@ -361,7 +363,7 @@ function OverviewPanel({
                                 variant="outline"
                                 className="text-red-600 hover:bg-red-50"
                                 disabled={!!busy}
-                                onClick={deleteOrg}
+                                onClick={() => setConfirmAction('delete')}
                             >
                                 <Trash2 className="mr-1 h-3.5 w-3.5" />
                                 Delete organization
@@ -375,6 +377,30 @@ function OverviewPanel({
                 {overview.name} has {overview.users.total} users and {overview.devices.total}{' '}
                 biometric devices registered.
             </p>
+
+            <PlatformConfirmDialog
+                open={confirmAction === 'status'}
+                title={detail.status === 'active' ? 'Suspend organization' : 'Activate organization'}
+                message={`${detail.status === 'active' ? 'Suspend' : 'Activate'} ${detail.name}?`}
+                confirmLabel={detail.status === 'active' ? 'Suspend' : 'Activate'}
+                loading={busy === 'status'}
+                onConfirm={() => void toggleStatus()}
+                onClose={() => {
+                    if (!busy) setConfirmAction(null);
+                }}
+            />
+            <PlatformConfirmDialog
+                open={confirmAction === 'delete'}
+                title="Delete organization"
+                message={`Delete ${detail.name}? This cannot be undone.`}
+                confirmLabel="Delete"
+                destructive
+                loading={busy === 'delete'}
+                onConfirm={() => void deleteOrg()}
+                onClose={() => {
+                    if (!busy) setConfirmAction(null);
+                }}
+            />
         </div>
     );
 }

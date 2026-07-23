@@ -8,7 +8,38 @@ use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::payslip::Payslip;
 use crate::models::{ApiError, ApiResponse};
+use crate::models::user::JwtClaims;
 use crate::tenant::{org_id_from_claims, user_in_organization};
+
+fn require_payslip_user_in_scope(
+    conn: &crate::db::Connection,
+    claims: &JwtClaims,
+    org_id: i64,
+    payslip_id: i64,
+) -> Result<i64, HttpResponse> {
+    let owner_id: Option<i64> = conn
+        .query_row(
+            "SELECT p.user_id FROM payslips p
+             JOIN users u ON u.id = p.user_id
+             WHERE p.id = ?1 AND u.organization_id = ?2",
+            crate::params![payslip_id, org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .ok();
+    let Some(owner_id) = owner_id else {
+        return Err(HttpResponse::NotFound().json(ApiError::new("Payslip not found")));
+    };
+    if owner_id == claims.sub {
+        return Ok(owner_id);
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(conn, claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(conn, owner_id, org_id, &scope)
+    {
+        return Err(resp);
+    }
+    Ok(owner_id)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PayslipListQuery {
@@ -111,7 +142,22 @@ pub async fn employee_payslips_list(
         Err(e) => return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())),
     };
     let org_id = org_id_from_claims(&claims);
-    employee_payslips_list_inner(pool, path.into_inner(), org_id, query).await
+    let user_id = path.into_inner();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
+    };
+    if !user_in_organization(&conn, user_id, org_id) {
+        return HttpResponse::NotFound().json(ApiError::new("Employee not found"));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
+    drop(conn);
+    employee_payslips_list_inner(pool, user_id, org_id, query).await
 }
 
 /// POST /api/admin/payslips/{id}/send-whatsapp
@@ -130,6 +176,9 @@ pub async fn send_whatsapp(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    if let Err(resp) = require_payslip_user_in_scope(&conn, &claims, org_id, payslip_id) {
+        return resp;
+    }
 
     let row: Option<(String, Option<String>, i32, i32, f64, f64, String)> = conn
         .query_row(
@@ -259,6 +308,9 @@ pub async fn send_email(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    if let Err(resp) = require_payslip_user_in_scope(&conn, &claims, org_id, payslip_id) {
+        return resp;
+    }
 
     match actix_web::web::block(move || crate::payslip_email::send_payslip_email(&conn, org_id, payslip_id)).await {
         Ok(Ok(())) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
@@ -285,8 +337,9 @@ pub async fn bulk_send_email(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
-    let ids = collect_payslip_ids(&conn, org_id, &body);
+    let ids = collect_payslip_ids(&conn, org_id, &body, &scope, claims.sub);
     if ids.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new(
             "No generated payslips found to email",
@@ -319,22 +372,46 @@ fn collect_payslip_ids(
     conn: &crate::db::Connection,
     org_id: i64,
     body: &BulkPayslipDownloadRequest,
+    scope: &crate::branch_scope::BranchScope,
+    actor_id: i64,
 ) -> Vec<i64> {
     if let Some(ids) = &body.payslip_ids {
-        return ids.clone();
+        return ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                let Ok(owner_id) = conn.query_row(
+                    "SELECT p.user_id FROM payslips p
+                     JOIN users u ON u.id = p.user_id
+                     WHERE p.id = ?1 AND u.organization_id = ?2 AND p.status = 'generated'",
+                    crate::params![id, org_id],
+                    |r| r.get_idx::<i64>(0),
+                ) else {
+                    return false;
+                };
+                owner_id == actor_id
+                    || crate::branch_scope::user_in_branch_scope(conn, owner_id, org_id, scope)
+            })
+            .collect();
     }
     if let (Some(month), Some(year)) = (body.month, body.year) {
-        let stmt = match conn.prepare(
+        let mut sql = String::from(
             "SELECT p.id FROM payslips p
              JOIN users u ON u.id = p.user_id AND u.organization_id = ?1
-             WHERE p.month = ?2 AND p.year = ?3 AND p.status = 'generated'
-             ORDER BY u.name",
-        ) {
+             WHERE p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
+        );
+        let mut params: Vec<crate::db::ParamValue> = vec![
+            crate::db::into_param_value(org_id),
+            crate::db::into_param_value(month),
+            crate::db::into_param_value(year),
+        ];
+        crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, scope, "u");
+        sql.push_str(" ORDER BY u.name");
+        let stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        return stmt
-            .query_map(crate::params![org_id, month, year], |row| row.get_idx::<i64>(0));
+        return stmt.query_map(&params, |row| row.get_idx::<i64>(0));
     }
     Vec::new()
 }
@@ -371,6 +448,14 @@ pub async fn payslip_pdf(
         .unwrap_or((0, String::new()));
 
     let owns_payslip = owner_id == claims.sub;
+    if !owns_payslip {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if let Err(resp) =
+            crate::branch_scope::require_user_in_scope(&conn, owner_id, org_id, &scope)
+        {
+            return resp;
+        }
+    }
     let is_super_admin =
         crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
     let perms =
@@ -416,8 +501,9 @@ pub async fn bulk_download(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
-    let ids = collect_payslip_ids(&conn, org_id, &body);
+    let ids = collect_payslip_ids(&conn, org_id, &body, &scope, claims.sub);
     if ids.is_empty() {
         return HttpResponse::BadRequest().json(ApiError::new(
             "No generated payslips found for download",

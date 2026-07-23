@@ -414,18 +414,25 @@ pub async fn process_return(
     let alloc_id = path.into_inner();
     let now = chrono::Utc::now().naive_utc();
 
+    let (asset_id, alloc_user_id): (i64, i64) = match conn.query_row(
+        "SELECT asset_id, user_id FROM asset_allocations
+         WHERE id = ?1 AND organization_id = ?2 AND status = 'active'",
+        crate::params![alloc_id, org_id],
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?)),
+    ) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Active allocation not found")),
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, alloc_user_id, org_id, &scope)
+    {
+        return resp;
+    }
+
     let tx = match conn.unchecked_transaction() {
         Ok(t) => t,
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("Tx error: {e}"))),
-    };
-
-    let asset_id: i64 = match tx.query_row(
-        "SELECT asset_id FROM asset_allocations WHERE id = ?1 AND organization_id = ?2 AND status = 'active'",
-        crate::params![alloc_id, org_id],
-        |row| row.get("asset_id")
-    ) {
-        Ok(id) => id,
-        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Active allocation not found")),
     };
 
     match tx.execute(
@@ -532,6 +539,21 @@ pub async fn expenses_review(
 
     if body.status != "approved" && body.status != "rejected" {
         return HttpResponse::BadRequest().json(ApiError::new("Status must be 'approved' or 'rejected'"));
+    }
+
+    let expense_user_id: i64 = match conn.query_row(
+        "SELECT user_id FROM asset_expenses WHERE id = ?1 AND organization_id = ?2",
+        crate::params![expense_id, org_id],
+        |row| row.get_idx::<i64>(0),
+    ) {
+        Ok(uid) => uid,
+        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Expense not found")),
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, expense_user_id, org_id, &scope)
+    {
+        return resp;
     }
 
     let tx = match conn.unchecked_transaction() {

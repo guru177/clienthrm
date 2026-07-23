@@ -321,10 +321,14 @@ export default function PlatformSupportInbox() {
                 </div>
             </div>
 
-            {/* Split pane */}
-            <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-white shadow-sm">
+            {/* Split pane — stack list/detail on mobile */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-white shadow-sm md:flex-row">
                 {/* Case list */}
-                <div className="flex w-full max-w-md shrink-0 flex-col border-r border-border bg-slate-50/50">
+                <div
+                    className={`flex w-full shrink-0 flex-col border-border bg-slate-50/50 md:max-w-md md:border-r ${
+                        selectedId != null ? 'hidden md:flex' : 'flex'
+                    }`}
+                >
                     <div className="border-b border-border px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         {loading ? 'Loading…' : `${items.length} case${items.length === 1 ? '' : 's'}`}
                     </div>
@@ -390,7 +394,11 @@ export default function PlatformSupportInbox() {
                 </div>
 
                 {/* Case detail */}
-                <div className="flex min-w-0 flex-1 flex-col">
+                <div
+                    className={`min-w-0 flex-1 flex-col ${
+                        selectedId != null ? 'flex' : 'hidden md:flex'
+                    }`}
+                >
                     {!selected ? (
                         <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground">
                             <MessageSquare className="mb-3 h-12 w-12 opacity-30" />
@@ -400,6 +408,16 @@ export default function PlatformSupportInbox() {
                         <>
                             {/* Case header */}
                             <div className="shrink-0 border-b border-border bg-gradient-to-r from-slate-50 to-white px-3 py-4">
+                                <div className="mb-3 md:hidden">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setSelectedId(null)}
+                                    >
+                                        ← Back to cases
+                                    </Button>
+                                </div>
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                     <div className="min-w-0 flex-1">
                                         <div className="flex flex-wrap items-center gap-2">

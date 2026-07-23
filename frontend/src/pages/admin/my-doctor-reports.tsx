@@ -119,7 +119,7 @@ export default function MyDoctorReportsPage() {
                                             </TableCell>
                                             <TableCell className="text-right">
                                                 <Button variant="outline" size="sm" asChild>
-                                                    <Link to={`/admin/doctor-reports/${r.id}`}>
+                                                    <Link to={`/admin/my-doctor-reports/${r.id}`}>
                                                         <Eye className="mr-1 h-4 w-4" />
                                                         View
                                                     </Link>

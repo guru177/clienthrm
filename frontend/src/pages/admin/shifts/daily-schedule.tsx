@@ -24,6 +24,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { useAuth } from '@/contexts/AuthContext';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface ShiftTemplate {
@@ -47,6 +48,11 @@ interface RosterEmployee {
     name: string;
     employee_id?: string | null;
     days: Record<string, DayCell>;
+}
+
+interface BranchOption {
+    id: number;
+    name: string;
 }
 
 const DEFAULT_VALUE = '__default__';
@@ -76,6 +82,8 @@ function shortShiftName(name?: string | null, max = 12) {
 }
 
 export default function DailyShiftSchedulePage() {
+    const { canAccessAllCenters, branchScope, canAccessCenter } = useAuth();
+    const allCenters = canAccessAllCenters();
     const [weekStart, setWeekStart] = useState(() => {
         const d = new Date();
         const day = d.getDay();
@@ -84,6 +92,8 @@ export default function DailyShiftSchedulePage() {
         return d.toISOString().slice(0, 10);
     });
     const [templates, setTemplates] = useState<ShiftTemplate[]>([]);
+    const [branches, setBranches] = useState<BranchOption[]>([]);
+    const [branchId, setBranchId] = useState('all');
     const [dates, setDates] = useState<string[]>([]);
     const [employees, setEmployees] = useState<RosterEmployee[]>([]);
     const [loading, setLoading] = useState(true);
@@ -94,6 +104,23 @@ export default function DailyShiftSchedulePage() {
 
     const weekEnd = useMemo(() => (dates.length ? dates[dates.length - 1] : addDays(weekStart, 6)), [dates, weekStart]);
 
+    const loadBranches = useCallback(async () => {
+        try {
+            const res = await axios.get('/admin/settings/centers', { params: { compact: 1 } });
+            const list = res.data?.data ?? res.data ?? [];
+            setBranches(
+                (Array.isArray(list) ? list : [])
+                    .map((c: { id: number; name: string }) => ({
+                        id: Number(c.id),
+                        name: c.name,
+                    }))
+                    .filter((c: BranchOption) => allCenters || canAccessCenter(c.id)),
+            );
+        } catch {
+            setBranches([]);
+        }
+    }, [allCenters, canAccessCenter]);
+
     const loadTemplates = useCallback(async () => {
         const res = await axios.get('/admin/shifts');
         setTemplates((res.data.data || []).filter((t: ShiftTemplate) => t.is_active));
@@ -103,7 +130,10 @@ export default function DailyShiftSchedulePage() {
         setLoading(true);
         try {
             const res = await axios.get('/admin/shifts/daily-roster', {
-                params: { week_start: weekStart },
+                params: {
+                    week_start: weekStart,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
+                },
             });
             setDates(res.data.data?.dates || []);
             setEmployees(res.data.data?.employees || []);
@@ -115,11 +145,22 @@ export default function DailyShiftSchedulePage() {
         } finally {
             setLoading(false);
         }
-    }, [weekStart]);
+    }, [weekStart, branchId]);
 
     useEffect(() => {
         void loadTemplates();
-    }, [loadTemplates]);
+        void loadBranches();
+    }, [loadTemplates, loadBranches]);
+
+    useEffect(() => {
+        if (allCenters) return;
+        const ids = branchScope.center_ids;
+        if (ids.length === 0) return;
+        setBranchId((prev) => {
+            if (prev !== 'all' && ids.includes(Number(prev))) return prev;
+            return String(ids[0]);
+        });
+    }, [allCenters, branchScope.center_ids]);
 
     useEffect(() => {
         void loadSchedule();
@@ -238,7 +279,7 @@ export default function DailyShiftSchedulePage() {
                                     Daily Shift Schedule
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                    Set a different shift per employee per day — overrides the default assignment
+                                    Per-day overrides by branch — synced live with Attendance late/early rules
                                 </p>
                             </div>
                         </div>
@@ -267,6 +308,30 @@ export default function DailyShiftSchedulePage() {
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="flex flex-wrap items-end gap-3">
+                        <div className="space-y-2 min-w-[180px]">
+                            <Label>Branch</Label>
+                            <Select
+                                value={branchId}
+                                onValueChange={setBranchId}
+                                disabled={!allCenters && branches.length <= 1}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue
+                                        placeholder={allCenters ? 'All branches' : 'Your branch'}
+                                    />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {allCenters && (
+                                        <SelectItem value="all">All branches</SelectItem>
+                                    )}
+                                    {branches.map((b) => (
+                                        <SelectItem key={b.id} value={String(b.id)}>
+                                            {b.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                         <div className="space-y-2">
                             <Label>Week starting</Label>
                             <Input

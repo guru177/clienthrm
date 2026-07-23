@@ -105,6 +105,8 @@ interface User {
         level: string;
     };
     status: string;
+    is_external?: boolean;
+    hr_managed?: boolean;
     created_at: string;
     updated_at: string;
     photo?: string;
@@ -430,12 +432,25 @@ export default function ViewUser() {
                             <ArrowLeft className="h-4 w-4" />
                         </Button>
                         <div>
-                            <h1 className="text-3xl font-bold tracking-tight">
-                                {user.name?.trim() ? user.name : `User #${user.id}`}
-                            </h1>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <h1 className="text-3xl font-bold tracking-tight">
+                                    {user.name?.trim() ? user.name : `User #${user.id}`}
+                                </h1>
+                                {user.hr_managed ? (
+                                    <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                        HR-managed
+                                    </Badge>
+                                ) : (
+                                    <Badge variant="secondary">App user</Badge>
+                                )}
+                                {getStatusBadge(user.status)}
+                            </div>
                             <p className="text-muted-foreground">
                                 User #{user.id} • Created{' '}
                                 {new Date(user.created_at).toLocaleDateString()}
+                                {user.hr_managed
+                                    ? ' • Does not sign in — HR manages attendance & leave'
+                                    : ''}
                             </p>
                         </div>
                     </div>
@@ -958,7 +973,7 @@ export default function ViewUser() {
 
                                     <div className="space-y-2">
                                         <Label className="text-sm text-muted-foreground">
-                                            Reporting Manager
+                                            Reports to
                                         </Label>
                                         {isEditing ? (
                                             <Select
@@ -1374,18 +1389,44 @@ export default function ViewUser() {
                                 <CardHeader>
                                     <CardTitle className="flex items-center gap-2">
                                         <Shield className="h-5 w-5" />
-                                        Roles
+                                        Role
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent className="flex flex-wrap gap-2">
-                                    {user.roles.map((role) => (
-                                        <Badge key={role.id} variant="secondary">
-                                            {role.name}
-                                        </Badge>
-                                    ))}
+                                    <Badge variant="secondary">
+                                        {user.roles[0].name}
+                                    </Badge>
                                 </CardContent>
                             </Card>
                         )}
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Users className="h-5 w-5" />
+                                    Access type
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                {user.hr_managed ? (
+                                    <>
+                                        <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                            HR-managed
+                                        </Badge>
+                                        <p className="text-sm text-muted-foreground">
+                                            This person does not use the app. HR marks attendance and leave for them.
+                                        </p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Badge variant="secondary">App user</Badge>
+                                        <p className="text-sm text-muted-foreground">
+                                            Can sign in with email and password.
+                                        </p>
+                                    </>
+                                )}
+                            </CardContent>
+                        </Card>
 
                         {/* Status Card */}
                         <Card>

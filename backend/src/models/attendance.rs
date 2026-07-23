@@ -73,6 +73,9 @@ pub struct AttendanceListQuery {
     pub user_id: Option<i64>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
+    /// When true, one row per employee per day: first in, last out, total minutes.
+    #[serde(default)]
+    pub group_by_day: Option<bool>,
 }
 
 /// Admin edit of an existing attendance record (regularization).

@@ -38,6 +38,7 @@ import {
 } from '@/components/ui/table';
 import { bulkSendPayslipEmails, downloadBulkPayslipsZip, openPayslipPdf } from '@/lib/payslip-pdf';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
+import { useConfirm } from '@/lib/confirm';
 import { usePermissions } from '@/hooks/use-permissions';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -480,6 +481,7 @@ function PreviewPopup({
     onClose: () => void;
     canManagePayroll: boolean;
 }) {
+    const confirm = useConfirm();
     const [generating, setGenerating] = useState(false);
     const [sendEmails, setSendEmails] = useState(true);
     const [commonAdjs, setCommonAdjs] = useState<CommonAdjustment[]>([]);
@@ -515,6 +517,18 @@ function PreviewPopup({
     const total = ready.reduce((sum, p) => sum + calcAdjustedNet(p), 0);
 
     const handleGenerate = async () => {
+        const emailNote = sendEmails
+            ? ' Payslip emails will be sent to employees.'
+            : '';
+        if (
+            !(await confirm({
+                title: 'Generate payroll',
+                description: `Generate payroll for ${ready.length} employee(s) for ${month}/${year}?${emailNote} This cannot be easily undone.`,
+                confirmText: 'Generate',
+            }))
+        ) {
+            return;
+        }
         setGenerating(true);
         try {
             const validAdjs = commonAdjs

@@ -379,8 +379,46 @@ pub async fn employees_list(pool: web::Data<DbPool>, req: HttpRequest, query: we
     let page = query.page.unwrap_or(1).max(1) as i64;
     let offset = (page - 1) * per_page;
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Some(cid) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, cid, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(cid)) {
+            return resp;
+        }
+    }
+
     let mut conditions = vec!["u.deleted_at IS NULL".to_string(), "u.organization_id = ?".to_string()];
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::push_users_branch_condition_qmark(
+        &mut conditions,
+        &mut params,
+        &scope,
+        "u",
+    );
+    if let Some(cid) = query.center_id {
+        params.push(crate::db::into_param_value(cid.to_string()));
+        params.push(crate::db::into_param_value(cid));
+        params.push(crate::db::into_param_value(cid));
+        conditions.push(
+            "(
+            TRIM(COALESCE(u.work_location, '')) = ?
+            OR u.department_id IN (
+              SELECT d.id FROM departments d
+              WHERE d.organization_id = u.organization_id
+                AND d.center_id = ?
+            )
+            OR EXISTS (
+              SELECT 1 FROM user_centers uc
+              WHERE uc.user_id = u.id
+                AND uc.organization_id = u.organization_id
+                AND uc.center_id = ?
+            )
+          )"
+            .to_string(),
+        );
+    }
 
     let status = query.status.as_deref().unwrap_or("active");
     if status != "all" {
@@ -507,17 +545,53 @@ pub struct EmployeeListQuery {
     pub status: Option<String>,
     pub department_id: Option<String>,
     pub designation_id: Option<String>,
+    pub center_id: Option<i64>,
 }
 
-pub async fn employees_filter_options(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
+#[derive(Debug, Deserialize)]
+pub struct EmployeeFilterOptionsQuery {
+    pub center_id: Option<i64>,
+}
+
+pub async fn employees_filter_options(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    query: web::Query<EmployeeFilterOptionsQuery>,
+) -> HttpResponse {
     let claims = match get_claims_from_request(&req) { Ok(c)=>c, Err(e)=>return HttpResponse::Unauthorized().json(ApiError::new(&e.to_string())) };
     let org_id = org_id_from_claims(&claims);
     let conn = match pool.get() { Ok(c)=>c, Err(_)=>return HttpResponse::InternalServerError().json(ApiError::new("DB error")) };
 
-    let dept_stmt = conn.prepare("SELECT id, name FROM departments WHERE organization_id = ?1 ORDER BY name").unwrap();
-    let departments: Vec<serde_json::Value> = dept_stmt.query_map([org_id], |row| {
-        Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
-    });
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Some(cid) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, cid, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(cid)) {
+            return resp;
+        }
+    }
+
+    let mut dept_sql = String::from(
+        "SELECT id, name FROM departments WHERE organization_id = ?1",
+    );
+    let mut dept_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    if let Some(cid) = query.center_id {
+        let idx = dept_params.len() + 1;
+        dept_sql.push_str(&format!(" AND center_id = ?{idx}"));
+        dept_params.push(crate::db::into_param_value(cid));
+    } else {
+        crate::branch_scope::append_center_id_filter(&mut dept_sql, &mut dept_params, &scope, "center_id");
+    }
+    dept_sql.push_str(" ORDER BY name");
+    let departments: Vec<serde_json::Value> = conn
+        .prepare(&dept_sql)
+        .map(|stmt| {
+            stmt.query_map(&dept_params, |row| {
+                Ok(serde_json::json!({"id": row.get_idx::<i64>(0)?, "name": row.get_idx::<String>(1)?}))
+            })
+        })
+        .unwrap_or_default();
 
     let desig_stmt = conn.prepare("SELECT id, name FROM designations WHERE organization_id = ?1 ORDER BY name").unwrap();
     let designations: Vec<serde_json::Value> = desig_stmt.query_map([org_id], |row| {
@@ -754,6 +828,12 @@ pub async fn user_salary_structure_show(
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
 
     HttpResponse::Ok().json(ApiResponse::success(build_user_salary_structure(&conn, user_id, org_id)))
 }
@@ -778,6 +858,12 @@ pub async fn user_salary_structure_store(
 
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
     }
 
     if crate::salary_split::load_employee_profile(&conn, user_id, &body.effective_from).is_some() {
@@ -887,6 +973,12 @@ pub async fn user_ctc_profile_show(
     };
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
     }
     let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let profile = crate::salary_split::load_employee_profile(&conn, user_id, &as_of);
@@ -1003,6 +1095,12 @@ pub async fn user_ctc_profile_store(
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     if body.yearly_ctc <= 0.0 {
         return HttpResponse::BadRequest().json(ApiError::new("Yearly CTC must be positive"));
     }
@@ -1069,6 +1167,12 @@ pub async fn user_ctc_profile_destroy(
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let deleted = conn.execute(
         "DELETE FROM employee_salary_profiles WHERE user_id=?1",
         [user_id],
@@ -1108,6 +1212,12 @@ pub async fn advances_list(
     };
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
     }
     let stmt = match conn.prepare(
         "SELECT id, amount, balance, monthly_emi, description, is_active, created_at
@@ -1150,11 +1260,17 @@ pub async fn advances_store(
     if !user_in_organization(&conn, user_id, org_id) {
         return HttpResponse::NotFound().json(ApiError::new("User not found"));
     }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     match conn.execute(
-        "INSERT INTO employee_advances (user_id, amount, balance, monthly_emi, description, is_active, created_at, updated_at)
-         VALUES (?1,?2,?2,?3,?4,1,?5,?5)",
-        crate::params![user_id, body.amount, body.monthly_emi, body.description, &now],
+        "INSERT INTO employee_advances (user_id, organization_id, amount, balance, monthly_emi, description, is_active, created_at, updated_at)
+         VALUES (?1,?2,?3,?3,?4,?5,1,?6,?6)",
+        crate::params![user_id, org_id, body.amount, body.monthly_emi, body.description, &now],
     ) {
         Ok(_) => advances_list(pool, req, web::Path::from(user_id)).await,
         Err(e) => HttpResponse::BadRequest().json(ApiError::new(&format!("{}", e))),

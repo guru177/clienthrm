@@ -77,7 +77,7 @@ export default function LiveLocationsPage() {
 
     useEffect(() => {
         setBreadcrumbs([
-            { title: 'Attendance', href: '/admin/attendance' },
+            { title: 'Location based attendance', href: '/admin/attendance' },
             { title: 'Live Locations' },
         ]);
     }, [setBreadcrumbs]);

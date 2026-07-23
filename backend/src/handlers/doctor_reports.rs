@@ -253,8 +253,18 @@ pub async fn show(
     let perms = load_user_permissions(&conn, claims.sub, is_super);
     let has_admin_view = has_permission(&perms, "view-doctor-reports");
 
-    // ACL: admin/doctor can see all; employee sees only own published
-    if !has_admin_view {
+    // ACL: admin/doctor can see all in branch; employee sees only own published
+    if has_admin_view {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if let Err(resp) = crate::branch_scope::require_user_in_scope(
+            &conn,
+            report.employee_user_id,
+            org_id,
+            &scope,
+        ) {
+            return resp;
+        }
+    } else {
         if report.employee_user_id != claims.sub {
             return HttpResponse::Forbidden().json(ApiError::new("Not allowed"));
         }
@@ -286,14 +296,37 @@ pub async fn update(
     let report_id = path.into_inner();
 
     // Check existing report and ownership
-    let (existing_doctor, previous_status): (i64, String) = match conn.query_row(
-        "SELECT doctor_user_id, status FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
-        crate::params![report_id, org_id],
-        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<String>(1)?)),
-    ) {
+    let (existing_doctor, previous_status, existing_employee): (i64, String, i64) = match conn
+        .query_row(
+            "SELECT doctor_user_id, status, employee_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
+            crate::params![report_id, org_id],
+            |row| {
+                Ok((
+                    row.get_idx::<i64>(0)?,
+                    row.get_idx::<String>(1)?,
+                    row.get_idx::<i64>(2)?,
+                ))
+            },
+        ) {
         Ok(d) => d,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Report not found")),
     };
+
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, existing_employee, org_id, &scope)
+    {
+        return resp;
+    }
+    if !crate::tenant::user_in_organization(&conn, body.employee_user_id, org_id) {
+        return HttpResponse::BadRequest()
+            .json(ApiError::new("Employee not found in this organization"));
+    }
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, body.employee_user_id, org_id, &scope)
+    {
+        return resp;
+    }
 
     let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
     if existing_doctor != claims.sub && !is_super {
@@ -387,19 +420,31 @@ pub async fn destroy(
 
     let report_id = path.into_inner();
 
-    // Check ownership — admin or doctor author can delete
-    let existing_doctor: i64 = match conn.query_row(
-        "SELECT doctor_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
+    // Check ownership — author, delete-permission holder, or super-admin
+    let (existing_doctor, employee_user_id): (i64, i64) = match conn.query_row(
+        "SELECT doctor_user_id, employee_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
         crate::params![report_id, org_id],
-        |row| row.get_idx::<i64>(0),
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?)),
     ) {
         Ok(d) => d,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Report not found")),
     };
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, employee_user_id, org_id, &scope)
+    {
+        return resp;
+    }
+
     let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
     if existing_doctor != claims.sub && !is_super {
-        return HttpResponse::Forbidden().json(ApiError::new("Only the authoring doctor or an admin can delete this report"));
+        let perms = load_user_permissions(&conn, claims.sub, false);
+        if !has_permission(&perms, "delete-doctor-reports") {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "Only the authoring doctor or an authorized admin can delete this report",
+            ));
+        }
     }
 
     // Delete prescription file if present
@@ -441,18 +486,30 @@ pub async fn upload_prescription(
     let report_id = path.into_inner();
 
     // Verify report exists and caller is the doctor author or admin
-    let existing_doctor: i64 = match conn.query_row(
-        "SELECT doctor_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
+    let (existing_doctor, employee_user_id): (i64, i64) = match conn.query_row(
+        "SELECT doctor_user_id, employee_user_id FROM doctor_reports WHERE id = ?1 AND organization_id = ?2",
         crate::params![report_id, org_id],
-        |row| row.get_idx::<i64>(0),
+        |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<i64>(1)?)),
     ) {
         Ok(d) => d,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Report not found")),
     };
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, employee_user_id, org_id, &scope)
+    {
+        return resp;
+    }
+
     let is_super = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
     if existing_doctor != claims.sub && !is_super {
-        return HttpResponse::Forbidden().json(ApiError::new("Only the authoring doctor or an admin can upload prescriptions"));
+        let perms = load_user_permissions(&conn, claims.sub, false);
+        if !has_permission(&perms, "edit-doctor-reports") {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "Only the authoring doctor or an admin can upload prescriptions",
+            ));
+        }
     }
 
     // Parse multipart

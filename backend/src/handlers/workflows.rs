@@ -5,7 +5,7 @@ use crate::db::DbPool;
 use crate::middleware::auth::get_claims_from_request;
 use crate::models::workflow::Workflow;
 use crate::models::{ApiError, ApiResponse};
-use crate::tenant::org_id_from_claims;
+use crate::tenant::{org_id_from_claims, user_in_organization};
 use crate::workflow_logic::{normalize_workflow_actions, validate_workflow_actions, validate_workflow_trigger};
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +24,71 @@ fn actions_json(actions: Option<&serde_json::Value>) -> String {
     normalize_workflow_actions(&raw).to_string()
 }
 
+fn action_recipient_ids(actions: &serde_json::Value) -> Vec<i64> {
+    let mut ids = Vec::new();
+    let Some(arr) = actions.as_array() else {
+        return ids;
+    };
+    for action in arr {
+        for key in ["user_id", "assigned_to", "recipient_id"] {
+            if let Some(uid) = action.get(key).and_then(|v| v.as_i64()) {
+                if uid > 0 && !ids.contains(&uid) {
+                    ids.push(uid);
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn require_workflow_action_recipients_in_scope(
+    conn: &crate::db::Connection,
+    claims: &crate::models::user::JwtClaims,
+    org_id: i64,
+    actions: &serde_json::Value,
+) -> Result<(), HttpResponse> {
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(conn, claims);
+    for uid in action_recipient_ids(actions) {
+        if !user_in_organization(conn, uid, org_id) {
+            return Err(HttpResponse::BadRequest().json(ApiError::new(
+                "Workflow action recipient does not belong to this organization",
+            )));
+        }
+        if let Err(resp) =
+            crate::branch_scope::require_user_in_scope(conn, uid, org_id, &scope)
+        {
+            return Err(resp);
+        }
+    }
+    Ok(())
+}
+
+fn require_workflow_in_scope(
+    conn: &crate::db::Connection,
+    claims: &crate::models::user::JwtClaims,
+    org_id: i64,
+    workflow_id: i64,
+) -> Result<i64, HttpResponse> {
+    let created_by: Option<i64> = conn
+        .query_row(
+            "SELECT created_by FROM workflows WHERE id = ?1 AND organization_id = ?2",
+            crate::params![workflow_id, org_id],
+            |r| r.get_idx::<Option<i64>>(0),
+        )
+        .ok()
+        .flatten();
+    let Some(created_by) = created_by else {
+        return Err(HttpResponse::NotFound().json(ApiError::new("Not found")));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(conn, claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(conn, created_by, org_id, &scope)
+    {
+        return Err(resp);
+    }
+    Ok(created_by)
+}
+
 pub async fn index(
     pool: web::Data<DbPool>,
     req: HttpRequest,
@@ -39,17 +104,31 @@ pub async fn index(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
     let mut sql = String::from(
         "SELECT w.*,
                 (SELECT MAX(we.created_at) FROM workflow_executions we WHERE we.workflow_id = w.id) AS last_executed_at
-         FROM workflows w WHERE w.organization_id = ?1",
+         FROM workflows w
+         LEFT JOIN users u ON u.id = w.created_by
+         WHERE w.organization_id = ?",
     );
     let mut params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    let mut conditions = Vec::new();
+    crate::branch_scope::push_users_branch_condition_qmark(
+        &mut conditions,
+        &mut params,
+        &scope,
+        "u",
+    );
+    for c in &conditions {
+        sql.push_str(" AND ");
+        sql.push_str(c);
+    }
 
     if let Some(ref search) = query.search {
         let trimmed = search.trim();
         if !trimmed.is_empty() {
-            sql.push_str(" AND (w.name LIKE ?2 OR COALESCE(w.description, '') LIKE ?3)");
+            sql.push_str(" AND (w.name LIKE ? OR COALESCE(w.description, '') LIKE ?)");
             let pattern = format!("%{}%", trimmed);
             params.push(crate::db::into_param_value(pattern.clone()));
             params.push(crate::db::into_param_value(pattern));
@@ -67,8 +146,7 @@ pub async fn index(
     if let Some(ref trigger) = query.trigger_type {
         let trimmed = trigger.trim();
         if !trimmed.is_empty() && trimmed != "all" {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(" AND w.trigger_type = ?{idx}"));
+            sql.push_str(" AND w.trigger_type = ?");
             params.push(crate::db::into_param_value(trimmed));
         }
     }
@@ -171,6 +249,9 @@ pub async fn show(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i64
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let id = path.into_inner();
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, id) {
+        return resp;
+    }
     match conn.query_row(
         "SELECT w.*,
                 (SELECT MAX(we.created_at) FROM workflow_executions we WHERE we.workflow_id = w.id) AS last_executed_at,
@@ -239,6 +320,11 @@ pub async fn store(
     if let Err(msg) = validate_workflow_actions(actions) {
         return HttpResponse::BadRequest().json(ApiError::new(&msg));
     }
+    if let Err(resp) =
+        require_workflow_action_recipients_in_scope(&conn, &c, org_id, actions)
+    {
+        return resp;
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let actions_str = actions_json(body.actions.as_ref());
     let trigger_conditions_str = body.trigger_conditions.as_ref().map(|v| v.to_string());
@@ -280,6 +366,10 @@ pub async fn update(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let workflow_id = path.into_inner();
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, workflow_id) {
+        return resp;
+    }
     let name = match crate::validation::require_non_empty(&body.name, "Name") {
         Ok(n) => n,
         Err(msg) => return HttpResponse::BadRequest().json(ApiError::new(&msg)),
@@ -297,6 +387,11 @@ pub async fn update(
     if let Err(msg) = validate_workflow_actions(actions) {
         return HttpResponse::BadRequest().json(ApiError::new(&msg));
     }
+    if let Err(resp) =
+        require_workflow_action_recipients_in_scope(&conn, &claims, org_id, actions)
+    {
+        return resp;
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let actions_str = actions_json(body.actions.as_ref());
     let trigger_conditions_str = body.trigger_conditions.as_ref().map(|v| v.to_string());
@@ -311,7 +406,7 @@ pub async fn update(
             actions_str,
             is_active,
             &now,
-            path.into_inner(),
+            workflow_id,
             org_id
         ],
     ) {
@@ -331,9 +426,13 @@ pub async fn destroy(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let workflow_id = path.into_inner();
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, workflow_id) {
+        return resp;
+    }
     match conn.execute(
         "DELETE FROM workflows WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![workflow_id, org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
@@ -351,9 +450,13 @@ pub async fn toggle(pool: web::Data<DbPool>, req: HttpRequest, path: web::Path<i
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let workflow_id = path.into_inner();
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, workflow_id) {
+        return resp;
+    }
     match conn.execute(
         "UPDATE workflows SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id=?1 AND organization_id=?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![workflow_id, org_id],
     ) {
         Ok(0) => HttpResponse::NotFound().json(ApiError::new("Not found")),
         Ok(_) => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Toggled"}))),
@@ -372,6 +475,9 @@ pub async fn duplicate(pool: web::Data<DbPool>, req: HttpRequest, path: web::Pat
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
     let id = path.into_inner();
+    if let Err(resp) = require_workflow_in_scope(&conn, &c, org_id, id) {
+        return resp;
+    }
     let source = match conn.query_row(
         "SELECT * FROM workflows WHERE id=?1 AND organization_id=?2",
         crate::params![id, org_id],
@@ -380,6 +486,13 @@ pub async fn duplicate(pool: web::Data<DbPool>, req: HttpRequest, path: web::Pat
         Ok(w) => w,
         Err(_) => return HttpResponse::NotFound().json(ApiError::new("Not found")),
     };
+    if let Some(ref actions) = source.actions {
+        if let Err(resp) =
+            require_workflow_action_recipients_in_scope(&conn, &c, org_id, actions)
+        {
+            return resp;
+        }
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let name = format!("{} (Copy)", source.name);
     let actions_str = actions_json(source.actions.as_ref());
@@ -422,15 +535,8 @@ pub async fn executions(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM workflows WHERE id = ?1 AND organization_id = ?2",
-            crate::params![workflow_id, org_id],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if !exists {
-        return HttpResponse::NotFound().json(ApiError::new("Workflow not found"));
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, workflow_id) {
+        return resp;
     }
     let stmt = match conn.prepare(
         "SELECT id, status, trigger_type, created_at, updated_at
@@ -478,6 +584,9 @@ pub async fn test_run(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
+    if let Err(resp) = require_workflow_in_scope(&conn, &claims, org_id, workflow_id) {
+        return resp;
+    }
     let row: Option<(String, Option<String>)> = conn
         .query_row(
             "SELECT trigger_type, actions FROM workflows WHERE id = ?1 AND organization_id = ?2",
@@ -507,6 +616,23 @@ pub async fn test_run(
             .or_insert(serde_json::json!(org_id));
         obj.insert("dry_run".to_string(), serde_json::json!(true));
         obj.insert("test".to_string(), serde_json::json!(true));
+    }
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    for key in ["user_id", "employee_user_id", "assigned_to", "recipient_id"] {
+        if let Some(uid) = context.get(key).and_then(|v| v.as_i64()) {
+            if uid > 0 {
+                if !user_in_organization(&conn, uid, org_id) {
+                    return HttpResponse::BadRequest().json(ApiError::new(
+                        "Test context user does not belong to this organization",
+                    ));
+                }
+                if let Err(resp) =
+                    crate::branch_scope::require_user_in_scope(&conn, uid, org_id, &scope)
+                {
+                    return resp;
+                }
+            }
+        }
     }
 
     // Temporarily activate matching by firing the workflow's trigger type with test context.

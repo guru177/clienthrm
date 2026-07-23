@@ -4,6 +4,7 @@ import { DollarSign, Clock, TrendingUp, FileText } from 'lucide-react';
 import { platformGet, platformPost } from '@/lib/platform-api';
 import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
+import { PlatformConfirmDialog } from '@/components/platform-dialog';
 import { usePlatformAuth } from '@/contexts/PlatformAuthContext';
 
 interface RevenueSummary {
@@ -43,6 +44,7 @@ export default function PlatformRevenue() {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState<number | null>(null);
+    const [confirmPaidId, setConfirmPaidId] = useState<number | null>(null);
 
     function load() {
         setLoading(true);
@@ -67,10 +69,10 @@ export default function PlatformRevenue() {
     }, [statusFilter]);
 
     async function markPaid(id: number) {
-        if (!confirm('Mark this invoice as paid?')) return;
         setBusy(id);
         try {
             await platformPost(`/invoices/${id}/mark-paid`, {});
+            setConfirmPaidId(null);
             load();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed');
@@ -184,7 +186,7 @@ export default function PlatformRevenue() {
                                                 size="sm"
                                                 variant="outline"
                                                 disabled={busy === inv.id}
-                                                onClick={() => markPaid(inv.id)}
+                                                onClick={() => setConfirmPaidId(inv.id)}
                                             >
                                                 Mark paid
                                             </Button>
@@ -207,6 +209,20 @@ export default function PlatformRevenue() {
                     </tbody>
                 </table>
             </div>
+
+            <PlatformConfirmDialog
+                open={confirmPaidId != null}
+                title="Mark invoice paid"
+                message="Mark this invoice as paid?"
+                confirmLabel="Mark paid"
+                loading={busy != null}
+                onConfirm={() => {
+                    if (confirmPaidId != null) void markPaid(confirmPaidId);
+                }}
+                onClose={() => {
+                    if (busy == null) setConfirmPaidId(null);
+                }}
+            />
         </div>
     );
 }

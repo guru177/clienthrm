@@ -38,3 +38,5 @@ Standard CRUD table UI. `list` endpoint powers user forms and salary employee fi
 ## Related modules
 
 - [Users & Roles](users-roles.md)
+- [Org Chart](org-chart.md) — designation shown as job title on each person card
+- [Departments](departments.md)

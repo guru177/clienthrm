@@ -11,7 +11,8 @@ use crate::models::attendance::{
 use crate::attendance_logic::{close_open_session_before_clock_in, combine_clock_out_datetime, combine_datetime, find_open_attendance_session};
 use crate::shift_logic::{
     calc_duration_minutes, early_for_shift, late_for_shift,
-    resolve_shift_for_user, user_is_scheduled_working_day, ShiftConfig,
+    resolve_shift_for_user, resolve_shift_for_user_readonly, user_is_scheduled_working_day,
+    ShiftConfig,
 };
 use crate::models::user::JwtClaims;
 use crate::tenant::org_id_from_claims;
@@ -82,6 +83,7 @@ pub async fn index(pool: web::Data<DbPool>, req: HttpRequest) -> HttpResponse {
         user_id: None,
         date_from: None,
         date_to: None,
+        group_by_day: None,
     })).await
 }
 
@@ -136,26 +138,23 @@ pub async fn clock_in(
     let time = now.format("%H:%M:%S").to_string();
     let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
     let shift = resolve_shift_for_user(&conn, claims.sub, &date);
-    if !user_is_scheduled_working_day(&conn, claims.sub, &date, now.date_naive()) {
-        return HttpResponse::BadRequest().json(ApiError::new(
-            "Clock-in is not allowed on a scheduled day off",
-        ));
-    }
-    let on_approved_leave: bool = conn
-        .query_row(
-            "SELECT 1 FROM leave_requests
-             WHERE user_id = ?1 AND status = 'approved' AND deleted_at IS NULL
-               AND start_date <= ?2 AND end_date >= ?2 LIMIT 1",
-            crate::params![claims.sub, &date],
-            |_| Ok(()),
-        )
-        .is_ok();
+    // Holidays and week-offs are allowed — counted as extra work (no late penalty).
+    let (punch_status, is_late) = crate::attendance_logic::punch_status_and_lateness(
+        &conn,
+        claims.sub,
+        org_id,
+        &date,
+        now.date_naive(),
+        &shift,
+        &time,
+    );
+    let on_approved_leave =
+        crate::attendance_logic::user_on_approved_leave(&conn, claims.sub, &date);
     if on_approved_leave {
         return HttpResponse::Conflict().json(ApiError::new(
             "Cannot clock in while on approved leave for this date",
         ));
     }
-    let is_late = late_for_shift(&shift, &time);
     let face_verified = body.face_verified.unwrap_or(false);
     let location_json = body
         .location
@@ -179,13 +178,25 @@ pub async fn clock_in(
     // Close any open session (today or prior-day overnight) before starting a new one
     close_open_session_before_clock_in(&conn, claims.sub, &date, &time, &ts, &shift);
 
+    // Clear same-day absent-only markers so this punch shows as check-in on the Attendance grid.
+    let _ = conn.execute(
+        "UPDATE attendance
+         SET deleted_at = ?1, updated_at = ?1
+         WHERE user_id = ?2 AND date = ?3 AND deleted_at IS NULL
+           AND LOWER(TRIM(COALESCE(status, ''))) = 'absent'
+           AND clock_in IS NULL",
+        crate::params![&ts, claims.sub, &date],
+    );
+
     match conn.execute(
-        "INSERT INTO attendance (user_id, date, clock_in, status, is_late, clock_in_location, clock_in_face_verified, clock_in_face_match_score, source, out_of_zone, geofence_distance_m, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'present', ?4, ?5, ?6, ?7, 'app', ?8, ?9, ?10, ?10)",
+        "INSERT INTO attendance (user_id, organization_id, date, clock_in, status, is_late, clock_in_location, clock_in_face_verified, clock_in_face_match_score, source, out_of_zone, geofence_distance_m, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'app', ?10, ?11, ?12, ?12)",
         crate::params![
             claims.sub,
+            org_id,
             &date,
             &time,
+            &punch_status,
             if is_late { 1 } else { 0 },
             location_json,
             if face_verified { 1 } else { 0 },
@@ -203,6 +214,7 @@ pub async fn clock_in(
                 "date": date,
                 "clock_in": time,
                 "is_late": is_late,
+                "status": punch_status,
                 "out_of_zone": out_of_zone,
                 "geofence_distance_m": distance_m,
                 "source": "app",
@@ -224,11 +236,18 @@ pub async fn clock_in(
                 }
                 crate::tenant_webhooks::dispatch(&conn, org_id, "attendance.clock_in", &ctx_bg);
             });
+            let message = if punch_status == "extra_work" {
+                "Clocked in (extra work — holiday or week off)"
+            } else {
+                "Clocked in"
+            };
             HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
-                "message": "Clocked in",
+                "message": message,
                 "time": time,
                 "shift": shift.to_json(),
                 "is_late": is_late,
+                "status": punch_status,
+                "is_extra_work": punch_status == "extra_work",
                 "out_of_zone": out_of_zone,
                 "geofence_distance_m": distance_m,
             })))
@@ -367,6 +386,12 @@ pub async fn list(
     }
 
     let where_clause = conditions.join(" AND ");
+    let group_by_day = query.group_by_day.unwrap_or(false);
+
+    if group_by_day {
+        return list_grouped_by_day(&conn, &where_clause, &params, page, per_page, offset);
+    }
+
     let count_sql = format!(
         "SELECT COUNT(*) FROM attendance a LEFT JOIN users u ON u.id = a.user_id WHERE {}",
         where_clause
@@ -417,8 +442,8 @@ pub async fn list(
     let rows: Vec<serde_json::Value> = list_rows
         .iter()
         .map(|item| {
-            // List view uses stored late/early flags; skip per-row shift resolution (N+1).
-            let mut session = session_json(&item.att, None);
+            let shift = resolve_shift_for_user_readonly(&conn, item.att.user_id, &item.att.date);
+            let mut session = session_json(&item.att, Some(&shift));
             if let Some(obj) = session.as_object_mut() {
                 obj.insert(
                     "user".to_string(),
@@ -445,6 +470,202 @@ pub async fn list(
         "from": from,
         "to": to,
         "per_page": per_page,
+        "group_by_day": false,
+    })))
+}
+
+/// One row per (user, date): earliest clock-in, latest clock-out, sum of session durations.
+fn list_grouped_by_day(
+    conn: &crate::db::Connection,
+    where_clause: &str,
+    params: &[crate::db::ParamValue],
+    page: i64,
+    per_page: i64,
+    offset: i64,
+) -> HttpResponse {
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM (
+            SELECT a.user_id, a.date
+            FROM attendance a
+            LEFT JOIN users u ON u.id = a.user_id
+            WHERE {where_clause}
+            GROUP BY a.user_id, a.date
+         ) t"
+    );
+    let total: i64 = conn
+        .query_row(&count_sql, params, |r| r.get_idx::<i64>(0))
+        .unwrap_or(0);
+
+    // Postgres: MAX(clock_out) ignores NULLs for text; open sessions flagged separately.
+    let sql = format!(
+        "SELECT a.user_id, a.date,
+                MIN(a.id) AS id,
+                MIN(a.clock_in) AS first_clock_in,
+                MAX(a.clock_out) AS last_clock_out,
+                COALESCE(SUM(a.duration_minutes), 0) AS total_minutes,
+                MAX(CASE WHEN a.clock_in IS NOT NULL AND a.clock_out IS NULL THEN 1 ELSE 0 END) AS has_open,
+                COUNT(a.id) AS session_count,
+                MAX(CASE WHEN LOWER(TRIM(COALESCE(a.status,''))) = 'extra_work' THEN 1 ELSE 0 END) AS any_extra,
+                MAX(CASE WHEN LOWER(TRIM(COALESCE(a.status,''))) = 'half_day' THEN 1 ELSE 0 END) AS any_half,
+                MAX(CASE WHEN LOWER(TRIM(COALESCE(a.status,''))) = 'absent' THEN 1 ELSE 0 END) AS any_absent,
+                u.name AS user_name,
+                u.email AS user_email
+         FROM attendance a
+         LEFT JOIN users u ON u.id = a.user_id
+         WHERE {where_clause}
+         GROUP BY a.user_id, a.date, u.name, u.email
+         ORDER BY a.date DESC, a.user_id DESC
+         LIMIT {per_page} OFFSET {offset}"
+    );
+
+    let stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
+    };
+
+    struct DayRow {
+        user_id: i64,
+        date: String,
+        id: i64,
+        first_in: Option<String>,
+        last_out: Option<String>,
+        total_minutes: i64,
+        has_open: bool,
+        session_count: i64,
+        any_extra: bool,
+        any_half: bool,
+        any_absent: bool,
+        user_name: Option<String>,
+        user_email: Option<String>,
+    }
+
+    let day_rows: Vec<DayRow> = stmt.query_map(params, |row| {
+        Ok(DayRow {
+            user_id: row.get_idx::<i64>(0)?,
+            date: row.get_idx::<String>(1)?,
+            id: row.get_idx::<i64>(2)?,
+            first_in: row.get_idx::<Option<String>>(3)?,
+            last_out: row.get_idx::<Option<String>>(4)?,
+            total_minutes: row.get_idx::<i64>(5).unwrap_or(0),
+            has_open: row.get_idx::<i64>(6).unwrap_or(0) != 0,
+            session_count: row.get_idx::<i64>(7).unwrap_or(0),
+            any_extra: row.get_idx::<i64>(8).unwrap_or(0) != 0,
+            any_half: row.get_idx::<i64>(9).unwrap_or(0) != 0,
+            any_absent: row.get_idx::<i64>(10).unwrap_or(0) != 0,
+            user_name: row.get_idx::<Option<String>>(11)?,
+            user_email: row.get_idx::<Option<String>>(12)?,
+        })
+    });
+
+    let rows: Vec<serde_json::Value> = day_rows
+        .into_iter()
+        .map(|r| {
+            let shift = resolve_shift_for_user_readonly(conn, r.user_id, &r.date);
+            let first_in = r.first_in.as_deref();
+            let last_out = if r.has_open { None } else { r.last_out.as_deref() };
+
+            // Day summary: span from first punch-in to last punch-out (standard daily hours).
+            let duration = match (first_in, last_out) {
+                (Some(ci), Some(co)) => calc_duration_minutes(ci, co),
+                _ => r.total_minutes,
+            };
+
+            let day = chrono::NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").ok();
+            let org_id = crate::tenant::org_id_for_user(conn, r.user_id);
+            let is_extra = day
+                .map(|d| {
+                    crate::attendance_logic::is_extra_work_day(conn, r.user_id, org_id, &r.date, d)
+                })
+                .unwrap_or(false);
+
+            let is_late = if is_extra {
+                false
+            } else {
+                first_in
+                    .map(|ci| late_for_shift(&shift, ci))
+                    .unwrap_or(false)
+            };
+            let is_early = if is_extra || r.has_open {
+                false
+            } else {
+                last_out
+                    .map(|co| early_for_shift(&shift, co))
+                    .unwrap_or(false)
+            };
+
+            let status = if r.any_half {
+                "half_day"
+            } else if r.any_extra || (is_extra && first_in.is_some()) {
+                "extra_work"
+            } else if r.any_absent && first_in.is_none() {
+                "absent"
+            } else if first_in.is_some() {
+                "present"
+            } else {
+                "absent"
+            };
+
+            // Collect sources for the day
+            let sources: Vec<String> = conn
+                .prepare(
+                    "SELECT DISTINCT COALESCE(NULLIF(TRIM(source), ''), 'app')
+                     FROM attendance
+                     WHERE user_id = ?1 AND date = ?2 AND deleted_at IS NULL
+                     ORDER BY 1",
+                )
+                .map(|stmt| {
+                    stmt.query_map(crate::params![r.user_id, &r.date], |row| {
+                        row.get_idx::<String>(0)
+                    })
+                })
+                .unwrap_or_default();
+            let source_label = if sources.is_empty() {
+                "app".to_string()
+            } else if sources.len() == 1 {
+                sources[0].clone()
+            } else {
+                sources.join("+")
+            };
+
+            serde_json::json!({
+                "id": r.id,
+                "user_id": r.user_id,
+                "date": r.date,
+                "clock_in": first_in.map(|t| combine_datetime(&r.date, t)),
+                "clock_out": last_out.map(|t| {
+                    combine_clock_out_datetime(&r.date, first_in.unwrap_or("00:00:00"), t)
+                }),
+                "duration_minutes": duration,
+                "is_late": is_late,
+                "is_early_exit": is_early,
+                "status": status,
+                "source": source_label,
+                "session_count": r.session_count,
+                "has_open_session": r.has_open,
+                "group_by_day": true,
+                "shift": shift.to_json(),
+                "user": {
+                    "id": r.user_id,
+                    "name": r.user_name,
+                    "email": r.user_email,
+                },
+            })
+        })
+        .collect();
+
+    let last_page = ((total as f64) / (per_page as f64)).ceil().max(1.0) as i64;
+    let from = if total > 0 { offset + 1 } else { 0 };
+    let to = (offset + rows.len() as i64).min(total);
+
+    HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
+        "data": rows,
+        "current_page": page,
+        "last_page": last_page,
+        "total": total,
+        "from": from,
+        "to": to,
+        "per_page": per_page,
+        "group_by_day": true,
     })))
 }
 
@@ -608,7 +829,13 @@ pub async fn stats(
         let mut scheduled = 0i64;
         let mut present_scheduled = 0i64;
         for uid in &user_ids {
-            if user_is_scheduled_working_day(&conn, *uid, &today_str, today_date) {
+            if crate::attendance_logic::expects_attendance(
+                &conn,
+                *uid,
+                org_id,
+                &today_str,
+                today_date,
+            ) {
                 scheduled += 1;
                 if has_completed_on(*uid, &today_str) {
                     present_scheduled += 1;
@@ -626,7 +853,7 @@ pub async fn stats(
         };
         while d <= today_date {
             let ds = d.format("%Y-%m-%d").to_string();
-            if user_is_scheduled_working_day(&conn, claims.sub, &ds, d) {
+            if crate::attendance_logic::expects_attendance(&conn, claims.sub, org_id, &ds, d) {
                 working += 1;
                 if has_completed_on(claims.sub, &ds) {
                     present_scheduled += 1;
@@ -643,7 +870,13 @@ pub async fn stats(
         } else {
             0
         };
-        let scheduled_today = if user_is_scheduled_working_day(&conn, claims.sub, &today_str, today_date) {
+        let scheduled_today = if crate::attendance_logic::expects_attendance(
+            &conn,
+            claims.sub,
+            org_id,
+            &today_str,
+            today_date,
+        ) {
             1
         } else {
             0
@@ -710,18 +943,31 @@ fn normalize_time(value: Option<&str>) -> Option<String> {
 fn recompute_flags(
     conn: &crate::db::Connection,
     user_id: i64,
+    org_id: i64,
     date: &str,
     clock_in: Option<&str>,
     clock_out: Option<&str>,
 ) -> (Option<i64>, bool, bool) {
     let shift = resolve_shift_for_user(conn, user_id, date);
-    let is_late = clock_in
-        .map(|ci| late_for_shift(&shift, ci))
+    let day = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").ok();
+    let extra = day
+        .map(|d| crate::attendance_logic::is_extra_work_day(conn, user_id, org_id, date, d))
         .unwrap_or(false);
+    let is_late = if extra {
+        false
+    } else {
+        clock_in
+            .map(|ci| late_for_shift(&shift, ci))
+            .unwrap_or(false)
+    };
     let (duration, early) = match (clock_in, clock_out) {
         (Some(ci), Some(co)) => (
             Some(calc_duration_minutes(ci, co)),
-            early_for_shift(&shift, co),
+            if extra {
+                false
+            } else {
+                early_for_shift(&shift, co)
+            },
         ),
         _ => (None, false),
     };
@@ -763,6 +1009,23 @@ fn insert_manual_record(
         return Err("Cannot set a clock-out without a clock-in".to_string());
     }
 
+    // Keep leave / attendance in sync: no punch times on approved leave days.
+    // Explicit leave/absent markers without clock times remain allowed.
+    let status_lc = status.trim().to_lowercase();
+    let leave_marker = matches!(
+        status_lc.as_str(),
+        "leave" | "on_leave" | "on-leave" | "sick_leave" | "absent"
+    );
+    if clock_in.is_some()
+        && !leave_marker
+        && crate::attendance_logic::user_on_approved_leave(conn, user_id, date)
+    {
+        return Err(
+            "Cannot add attendance punches on an approved leave day — cancel the leave first"
+                .to_string(),
+        );
+    }
+
     if clock_in.is_some() {
         let shift = resolve_shift_for_user(conn, user_id, date);
         let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -777,23 +1040,38 @@ fn insert_manual_record(
     }
 
     let (duration, is_late, is_early) =
-        recompute_flags(conn, user_id, date, clock_in.as_deref(), clock_out.as_deref());
+        recompute_flags(conn, user_id, org_id, date, clock_in.as_deref(), clock_out.as_deref());
+
+    let resolved_status = {
+        let trimmed = status.trim().to_lowercase();
+        if clock_in.is_some()
+            && (trimmed.is_empty() || trimmed == "present")
+            && crate::attendance_logic::is_extra_work_day(conn, user_id, org_id, date, parsed_date)
+        {
+            "extra_work".to_string()
+        } else if trimmed.is_empty() {
+            "present".to_string()
+        } else {
+            status
+        }
+    };
 
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
         "INSERT INTO attendance
-            (user_id, date, clock_in, clock_out, duration_minutes, is_late, is_early_exit,
+            (user_id, organization_id, date, clock_in, clock_out, duration_minutes, is_late, is_early_exit,
              status, notes, source, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'manual', ?10, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'manual', ?11, ?11)",
         crate::params![
             user_id,
+            org_id,
             date,
             clock_in,
             clock_out,
             duration,
             if is_late { 1 } else { 0 },
             if is_early { 1 } else { 0 },
-            status,
+            resolved_status,
             notes,
             &now
         ],
@@ -868,6 +1146,7 @@ pub async fn update(
     let (duration, is_late, is_early) = recompute_flags(
         &conn,
         existing.user_id,
+        org_id,
         &existing.date,
         clock_in.as_deref(),
         clock_out.as_deref(),

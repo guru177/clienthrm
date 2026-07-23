@@ -10,7 +10,7 @@ use crate::middleware::auth::get_claims_from_request;
 use crate::models::attendance::Attendance;
 use crate::models::{ApiError, ApiResponse};
 use crate::models::user::JwtClaims;
-use crate::shift_logic::{resolve_shift_for_user_readonly, user_is_scheduled_working_day};
+use crate::shift_logic::{resolve_shift_for_user_readonly, user_is_scheduled_working_day, WorkingDayLookup};
 use crate::tenant::org_id_from_claims;
 
 #[derive(Debug, Deserialize)]
@@ -24,7 +24,7 @@ pub struct DailyAttendanceQuery {
     pub date: Option<String>,
     pub search: Option<String>,
     pub center_id: Option<i64>,
-    pub designation_id: Option<i64>,
+    pub department_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +45,8 @@ pub struct AttendanceRegisterQuery {
     /// Alias for end_date (legacy / alternate clients).
     pub to_date: Option<String>,
     pub department_id: Option<i64>,
+    /// Optional branch (center) filter — also enforced against actor branch scope.
+    pub center_id: Option<i64>,
     pub search: Option<String>,
 }
 
@@ -70,19 +72,27 @@ fn day_attendance_status(
     on_leave: bool,
     is_holiday: bool,
     is_scheduled_working_day: bool,
+    // True for calendar days after today — do not mark as absent yet.
+    is_future: bool,
 ) -> &'static str {
     if session_count == 0 {
-        if on_leave {
-            "on_leave"
-        } else if is_holiday {
+        // Holiday / week-off / leave stay aligned with shift + leave calendars.
+        if is_holiday {
             "holiday"
+        } else if on_leave {
+            "on_leave"
         } else if !is_scheduled_working_day {
             "scheduled_off"
+        } else if is_future {
+            ""
         } else {
             "absent"
         }
     } else if open_sessions > 0 {
         "open"
+    } else if is_holiday || !is_scheduled_working_day {
+        // Worked on a holiday or week-off → extra work (not a normal present day).
+        "extra_work"
     } else {
         "present"
     }
@@ -92,9 +102,11 @@ fn status_to_register_code(status: &str) -> &'static str {
     match status {
         "present" => "P",
         "absent" => "A",
+        "half_day" => "HD",
         "on_leave" => "L",
         "scheduled_off" => "O",
         "holiday" => "H",
+        "extra_work" => "EW",
         "open" => "•",
         _ => "",
     }
@@ -104,9 +116,11 @@ fn register_legend() -> serde_json::Value {
     serde_json::json!({
         "P": "Present",
         "A": "Absent",
+        "HD": "Half day",
         "L": "Leave",
         "O": "Off day",
         "H": "Holiday",
+        "EW": "Extra work",
         "•": "Open session",
     })
 }
@@ -510,24 +524,48 @@ pub async fn payroll_split(
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
 
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+
     let now = chrono::Utc::now();
     let month = query.month.unwrap_or(now.month() as i32);
     let year = query.year.unwrap_or(now.year());
     let cal_days = crate::payroll_logic::calendar_days_in_month(month, year);
     let month_end = format!("{}-{:02}-{}", year, month, cal_days);
 
+    let mut users_sql = String::from(
+        "SELECT u.id FROM users u
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?1",
+    );
+    let mut users_params: Vec<crate::db::ParamValue> =
+        vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(
+        &mut users_sql,
+        &mut users_params,
+        &scope,
+        "u",
+    );
+    users_sql.push_str(" ORDER BY u.name");
     let user_ids: Vec<i64> = conn
-        .prepare("SELECT id FROM users WHERE deleted_at IS NULL AND organization_id = ?1 ORDER BY name")
-        .map(|s| s.query_map([org_id], |r| r.get_idx::<i64>(0)))
+        .prepare(&users_sql)
+        .map(|s| s.query_map(&users_params, |r| r.get_idx::<i64>(0)))
         .unwrap_or_default();
 
+    let mut meta_sql = String::from(
+        "SELECT u.id, u.name, u.employee_id, u.date_of_birth, u.date_of_joining FROM users u
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?1",
+    );
+    let mut meta_params: Vec<crate::db::ParamValue> =
+        vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(
+        &mut meta_sql,
+        &mut meta_params,
+        &scope,
+        "u",
+    );
     let user_meta: std::collections::HashMap<i64, (String, Option<String>, Option<String>, Option<String>)> = conn
-        .prepare(
-            "SELECT id, name, employee_id, date_of_birth, date_of_joining FROM users
-             WHERE deleted_at IS NULL AND organization_id = ?1",
-        )
+        .prepare(&meta_sql)
         .map(|s| {
-            s.query_map([org_id], |row| {
+            s.query_map(&meta_params, |row| {
                 Ok((
                     row.get_idx::<i64>(0)?,
                     row.get_idx::<String>(1)?,
@@ -887,7 +925,7 @@ pub async fn daily_attendance_register(
          FROM users u
          LEFT JOIN departments d ON d.id = u.department_id AND d.organization_id = u.organization_id
          LEFT JOIN attendance a ON a.user_id = u.id AND a.date = ?1 AND a.deleted_at IS NULL
-         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?2
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?2
            AND TRIM(COALESCE(u.name, '')) != ''",
     );
     let mut params: Vec<crate::db::ParamValue> = vec![
@@ -913,10 +951,10 @@ pub async fn daily_attendance_register(
         }
     }
 
-    if let Some(desg_id) = query.designation_id {
+    if let Some(dept_id) = query.department_id {
         let idx = params.len() + 1;
-        sql.push_str(&format!(" AND u.designation_id = ?{idx}"));
-        params.push(crate::db::into_param_value(desg_id));
+        sql.push_str(&format!(" AND u.department_id = ?{idx}"));
+        params.push(crate::db::into_param_value(dept_id));
     }
 
     let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
@@ -976,13 +1014,18 @@ pub async fn daily_attendance_register(
             let is_working = day
                 .map(|d| user_is_scheduled_working_day(&conn, user_id, &date_for_rows, d))
                 .unwrap_or(true);
+            let is_future = day
+                .map(|d| d > chrono::Local::now().date_naive())
+                .unwrap_or(false);
             let attendance_status = day_attendance_status(
                 session_count,
                 open_sessions,
                 on_leave,
                 is_holiday,
                 is_working,
+                is_future,
             );
+            let shift = resolve_shift_for_user_readonly(&conn, user_id, &date_for_rows);
             Ok(serde_json::json!({
                 "user_id": user_id,
                 "name": row.get_idx::<String>(1)?,
@@ -1000,6 +1043,7 @@ pub async fn daily_attendance_register(
                 "is_early_exit": row.get_idx::<i64>(10).unwrap_or(0) != 0,
                 "has_open_session": open_sessions > 0,
                 "attendance_status": attendance_status,
+                "shift": shift.to_json(),
                 "sessions": [],
                 "sources": [],
                 "source_summary": { "biometric": 0, "app": 0, "manual": 0 },
@@ -1087,6 +1131,72 @@ pub async fn daily_attendance_register(
                     "source_summary".to_string(),
                     serde_json::json!({ "biometric": bio, "app": app, "manual": manual }),
                 );
+
+                // Prefer explicit attendance-record statuses (half day / absent) over the
+                // derived present/open flags that only look at session counts.
+                // A real punch (clock_in) always wins over an absent marker so location /
+                // biometric check-ins show on the Attendance grid.
+                let has_punch = sessions.iter().any(|s| {
+                    s.get("clock_in")
+                        .and_then(|v| v.as_str())
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false)
+                });
+                let has_half_day = sessions.iter().any(|s| {
+                    s.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|st| st.eq_ignore_ascii_case("half_day"))
+                        .unwrap_or(false)
+                });
+                let has_absent = sessions.iter().any(|s| {
+                    s.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|st| st.eq_ignore_ascii_case("absent"))
+                        .unwrap_or(false)
+                });
+                let has_extra = sessions.iter().any(|s| {
+                    s.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|st| st.eq_ignore_ascii_case("extra_work"))
+                        .unwrap_or(false)
+                });
+                let derived = obj
+                    .get("attendance_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if has_half_day && has_punch {
+                    obj.insert(
+                        "attendance_status".to_string(),
+                        serde_json::Value::String("half_day".to_string()),
+                    );
+                } else if matches!(
+                    derived,
+                    "on_leave" | "holiday" | "scheduled_off"
+                ) && !has_punch
+                {
+                    // Keep leave / holiday / week-off — absent markers must not override.
+                } else if has_absent && !has_punch {
+                    obj.insert(
+                        "attendance_status".to_string(),
+                        serde_json::Value::String("absent".to_string()),
+                    );
+                } else if has_punch {
+                    let open = obj
+                        .get("has_open_session")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let status = if open {
+                        "open"
+                    } else if has_extra || derived == "extra_work" {
+                        "extra_work"
+                    } else {
+                        "present"
+                    };
+                    obj.insert(
+                        "attendance_status".to_string(),
+                        serde_json::Value::String(status.to_string()),
+                    );
+                }
             }
             row
         })
@@ -1139,6 +1249,14 @@ pub async fn employee_attendance_log(
     let view_org = can_view_org_attendance(&conn, &claims, org_id);
     if !view_org && query.user_id != claims.sub {
         return HttpResponse::Forbidden().json(ApiError::new("Cannot view another employee's attendance log"));
+    }
+    if view_org && query.user_id != claims.sub {
+        let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+        if let Err(resp) =
+            crate::branch_scope::require_user_in_scope(&conn, query.user_id, org_id, &scope)
+        {
+            return resp;
+        }
     }
 
     let user_row = conn.query_row(
@@ -1275,7 +1393,7 @@ pub async fn employee_attendance_log(
     })))
 }
 
-/// GET /api/admin/reports/attendance-register?start_date=&end_date=&department_id=&search=
+/// GET /api/admin/reports/attendance-register?start_date=&end_date=&center_id=&department_id=&search=
 /// Book-style matrix: employees × days with register codes (P/A/L/O/H/•).
 pub async fn attendance_register(
     pool: web::Data<DbPool>,
@@ -1334,20 +1452,46 @@ pub async fn attendance_register(
     }
 
     let dates = date_range_list(start_date, end_date);
-    let sync_end = (end_date + Duration::days(1)).format("%Y-%m-%d").to_string();
-    let biometric_synced =
-        crate::handlers::biometric::sync_org_biometric_punches_between(&conn, org_id, &start_s, &sync_end);
+    // Skip biometric sync here — background worker + daily views handle it.
+    // Syncing a full month on every report open was the main multi-second delay.
+
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
 
     // Active employees
     let mut emp_sql = String::from(
         "SELECT u.id, u.name, u.employee_id, d.name AS department_name
          FROM users u
          LEFT JOIN departments d ON d.id = u.department_id AND d.organization_id = u.organization_id
-         WHERE u.deleted_at IS NULL AND u.is_super_admin = 0 AND u.organization_id = ?1
+         WHERE u.deleted_at IS NULL AND u.organization_id = ?1
            AND TRIM(COALESCE(u.name, '')) != ''",
     );
     let mut emp_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
     let mut next_idx = 2i32;
+
+    if let Some(center_id) = query.center_id {
+        if !crate::tenant::center_in_organization(&conn, center_id, org_id) {
+            return HttpResponse::BadRequest().json(ApiError::new("Branch not found"));
+        }
+        if let Err(resp) = crate::branch_scope::ensure_center_allowed(&scope, Some(center_id)) {
+            return resp;
+        }
+        let wl_idx = next_idx;
+        let dept_idx = wl_idx + 1;
+        let org_idx = wl_idx + 2;
+        emp_sql.push_str(&format!(
+            " AND (
+                TRIM(COALESCE(u.work_location, '')) = ?{wl_idx}
+                OR u.department_id IN (
+                  SELECT d2.id FROM departments d2
+                  WHERE d2.center_id = ?{dept_idx} AND d2.organization_id = ?{org_idx}
+                )
+              )"
+        ));
+        emp_params.push(crate::db::into_param_value(center_id.to_string()));
+        emp_params.push(crate::db::into_param_value(center_id));
+        emp_params.push(crate::db::into_param_value(org_id));
+        next_idx = org_idx + 1;
+    }
 
     if let Some(dept_id) = query.department_id {
         emp_sql.push_str(&format!(" AND u.department_id = ?{next_idx}"));
@@ -1372,7 +1516,6 @@ pub async fn attendance_register(
         }
     }
 
-    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
     crate::branch_scope::append_users_branch_filter(&mut emp_sql, &mut emp_params, &scope, "u");
 
     emp_sql.push_str(" ORDER BY u.name");
@@ -1390,11 +1533,14 @@ pub async fn attendance_register(
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
 
-    // Attendance aggregates per user per day
+    // Attendance aggregates per user per day (include half_day / absent status flags)
     let att_stmt = match conn.prepare(
         "SELECT a.user_id, a.date,
                 COUNT(a.id) AS session_count,
-                SUM(CASE WHEN a.clock_out IS NULL AND a.clock_in IS NOT NULL THEN 1 ELSE 0 END) AS open_sessions
+                SUM(CASE WHEN a.clock_out IS NULL AND a.clock_in IS NOT NULL THEN 1 ELSE 0 END) AS open_sessions,
+                MAX(CASE WHEN LOWER(TRIM(COALESCE(a.status, ''))) = 'half_day' THEN 1 ELSE 0 END) AS has_half_day,
+                MAX(CASE WHEN LOWER(TRIM(COALESCE(a.status, ''))) = 'absent' THEN 1 ELSE 0 END) AS has_absent,
+                SUM(CASE WHEN a.clock_in IS NOT NULL THEN 1 ELSE 0 END) AS punch_sessions
          FROM attendance a
          INNER JOIN users u ON u.id = a.user_id AND u.organization_id = ?1
          WHERE a.deleted_at IS NULL AND a.date >= ?2 AND a.date <= ?3
@@ -1404,18 +1550,21 @@ pub async fn attendance_register(
         Err(e) => return HttpResponse::InternalServerError().json(ApiError::new(&format!("{e}"))),
     };
 
-    let mut attendance_map: HashMap<(i64, String), (i64, i64)> = HashMap::new();
-    let att_rows: Vec<(i64, String, i64, i64)> = att_stmt
+    let mut attendance_map: HashMap<(i64, String), (i64, i64, bool, bool, i64)> = HashMap::new();
+    let att_rows: Vec<(i64, String, i64, i64, i64, i64, i64)> = att_stmt
         .query_map(crate::params![org_id, start_s, end_s], |row| {
             Ok((
                 row.get_idx::<i64>(0)?,
                 row.get_idx::<String>(1)?,
                 row.get_idx::<i64>(2).unwrap_or(0),
                 row.get_idx::<i64>(3).unwrap_or(0),
+                row.get_idx::<i64>(4).unwrap_or(0),
+                row.get_idx::<i64>(5).unwrap_or(0),
+                row.get_idx::<i64>(6).unwrap_or(0),
             ))
         });
-    for (uid, date, sc, os) in att_rows {
-        attendance_map.insert((uid, date), (sc, os));
+    for (uid, date, sc, os, half, abs, punches) in att_rows {
+        attendance_map.insert((uid, date), (sc, os, half != 0, abs != 0, punches));
     }
 
     // Approved leave overlapping range → (user_id, date) set
@@ -1446,7 +1595,14 @@ pub async fn attendance_register(
         let to = le_d.min(end_date);
         let mut d = from;
         while d <= to {
-            leave_set.insert((uid, d.format("%Y-%m-%d").to_string()));
+            // Paint L only on scheduled working days that are not holidays
+            // (week-offs stay O; holidays stay H).
+            let ds = d.format("%Y-%m-%d").to_string();
+            if crate::shift_logic::user_is_scheduled_working_day(&conn, uid, &ds, d)
+                && !crate::attendance_logic::org_date_is_holiday(&conn, org_id, &ds)
+            {
+                leave_set.insert((uid, ds));
+            }
             d += Duration::days(1);
         }
     }
@@ -1472,13 +1628,19 @@ pub async fn attendance_register(
             serde_json::json!({
                 "present": 0,
                 "absent": 0,
+                "half_day": 0,
                 "leave": 0,
                 "off": 0,
                 "holiday": 0,
+                "extra_work": 0,
                 "open": 0,
             }),
         );
     }
+
+    let today = Local::now().date_naive();
+    let user_ids: Vec<i64> = employees.iter().map(|(id, _, _, _)| *id).collect();
+    let schedule = WorkingDayLookup::load(&conn, &user_ids, &start_s, &end_s);
 
     let employee_rows: Vec<serde_json::Value> = employees
         .into_iter()
@@ -1488,23 +1650,45 @@ pub async fn attendance_register(
 
             for date in &dates {
                 let naive = parse_ymd(date).unwrap_or(start_date);
-                let (session_count, open_sessions) = attendance_map
-                    .get(&(user_id, date.clone()))
-                    .copied()
-                    .unwrap_or((0, 0));
+                let (_session_count, open_sessions, has_half_day, has_absent, punch_sessions) =
+                    attendance_map
+                        .get(&(user_id, date.clone()))
+                        .copied()
+                        .unwrap_or((0, 0, false, false, 0));
                 let on_leave = leave_set.contains(&(user_id, date.clone()));
                 let is_holiday = holiday_dates.contains(date);
-                let is_working =
-                    user_is_scheduled_working_day(&conn, user_id, date, naive);
-                let status = day_attendance_status(
-                    session_count,
-                    open_sessions,
-                    on_leave,
-                    is_holiday,
-                    is_working,
-                );
+                let is_working = schedule.is_working_day(user_id, date, naive);
+                let is_future = naive > today;
+                // Real punches drive present/EW/open; absent markers never beat leave/holiday/off.
+                let status = if punch_sessions > 0 {
+                    if has_half_day {
+                        "half_day"
+                    } else {
+                        day_attendance_status(
+                            punch_sessions,
+                            open_sessions,
+                            on_leave,
+                            is_holiday,
+                            is_working,
+                            is_future,
+                        )
+                    }
+                } else if on_leave || is_holiday || !is_working {
+                    day_attendance_status(
+                        0,
+                        0,
+                        on_leave,
+                        is_holiday,
+                        is_working,
+                        is_future,
+                    )
+                } else if has_absent {
+                    "absent"
+                } else {
+                    day_attendance_status(0, 0, on_leave, is_holiday, is_working, is_future)
+                };
                 let code = status_to_register_code(status);
-                if status == "present" {
+                if status == "present" || status == "half_day" {
                     present_days += 1;
                 }
 
@@ -1513,9 +1697,11 @@ pub async fn attendance_register(
                         let key = match status {
                             "present" => "present",
                             "absent" => "absent",
+                            "half_day" => "half_day",
                             "on_leave" => "leave",
                             "scheduled_off" => "off",
                             "holiday" => "holiday",
+                            "extra_work" => "extra_work",
                             "open" => "open",
                             _ => "",
                         };
@@ -1552,6 +1738,6 @@ pub async fn attendance_register(
         "employees": employee_rows,
         "daily_totals": daily_totals_json,
         "total_employees": employee_rows.len(),
-        "biometric_synced": biometric_synced,
+        "biometric_synced": 0,
     })))
 }

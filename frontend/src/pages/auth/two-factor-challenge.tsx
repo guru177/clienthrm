@@ -1,6 +1,6 @@
 import { REGEXP_ONLY_DIGITS } from 'input-otp';
 import { useMemo, useState, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,7 @@ export default function TwoFactorChallenge() {
     const location = useLocation();
     const { completeTwoFactorLogin } = useAuth();
     const state = (location.state ?? {}) as ChallengeState;
+    const sessionMissing = !state.preAuthToken;
 
     const [showRecoveryInput, setShowRecoveryInput] = useState(false);
     const [code, setCode] = useState('');
@@ -96,48 +97,66 @@ export default function TwoFactorChallenge() {
             title={authConfigContent.title}
             description={authConfigContent.description}
         >
-            <form onSubmit={handleSubmit} className="space-y-4">
-                {showRecoveryInput ? (
-                    <>
-                        <Input
-                            name="recovery_code"
-                            type="text"
-                            placeholder="Enter recovery code"
-                            autoFocus={showRecoveryInput}
-                            required
-                            value={recoveryCode}
-                            onChange={(e) => setRecoveryCode(e.target.value)}
-                        />
-                    </>
-                ) : (
-                    <InputOTP
-                        maxLength={OTP_MAX_LENGTH}
-                        value={code}
-                        onChange={setCode}
-                        pattern={REGEXP_ONLY_DIGITS}
+            {sessionMissing ? (
+                <div className="space-y-4 text-center">
+                    <p className="text-sm text-muted-foreground">
+                        Your sign-in session expired or was opened incorrectly. Please sign in again
+                        to continue with two-factor authentication.
+                    </p>
+                    <Button asChild className="w-full">
+                        <Link to="/login">Back to login</Link>
+                    </Button>
+                </div>
+            ) : (
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    {showRecoveryInput ? (
+                        <>
+                            <Input
+                                name="recovery_code"
+                                type="text"
+                                placeholder="Enter recovery code"
+                                autoFocus={showRecoveryInput}
+                                required
+                                value={recoveryCode}
+                                onChange={(e) => setRecoveryCode(e.target.value)}
+                            />
+                        </>
+                    ) : (
+                        <InputOTP
+                            maxLength={OTP_MAX_LENGTH}
+                            value={code}
+                            onChange={setCode}
+                            pattern={REGEXP_ONLY_DIGITS}
+                        >
+                            <InputOTPGroup>
+                                {Array.from({ length: OTP_MAX_LENGTH }, (_, index) => (
+                                    <InputOTPSlot key={index} index={index} />
+                                ))}
+                            </InputOTPGroup>
+                        </InputOTP>
+                    )}
+
+                    <InputError message={error} />
+
+                    <Button type="submit" className="w-full" disabled={processing}>
+                        {processing ? 'Verifying…' : 'Continue'}
+                    </Button>
+
+                    <button
+                        type="button"
+                        className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
+                        onClick={toggleRecoveryMode}
                     >
-                        <InputOTPGroup>
-                            {Array.from({ length: OTP_MAX_LENGTH }, (_, index) => (
-                                <InputOTPSlot key={index} index={index} />
-                            ))}
-                        </InputOTPGroup>
-                    </InputOTP>
-                )}
+                        {authConfigContent.toggleText}
+                    </button>
 
-                <InputError message={error} />
-
-                <Button type="submit" className="w-full" disabled={processing}>
-                    {processing ? 'Verifying…' : 'Continue'}
-                </Button>
-
-                <button
-                    type="button"
-                    className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
-                    onClick={toggleRecoveryMode}
-                >
-                    {authConfigContent.toggleText}
-                </button>
-            </form>
+                    <p className="text-center text-sm text-muted-foreground">
+                        <Link to="/login" className="font-medium text-primary hover:underline">
+                            Back to login
+                        </Link>
+                    </p>
+                </form>
+            )}
         </AuthLayout>
     );
 }

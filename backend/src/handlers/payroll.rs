@@ -493,7 +493,7 @@ pub async fn stats(
         .query_row(&emp_sql, &emp_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
     let approved_leave_days =
-        payroll_logic::approved_leave_business_days_in_month(&conn, org_id, month, year);
+        payroll_logic::approved_leave_business_days_in_month(&conn, org_id, month, year, &scope);
 
     let mut present_sql = String::from(
         "SELECT COUNT(DISTINCT a.user_id || '-' || a.date) FROM attendance a
@@ -818,6 +818,11 @@ pub async fn preview(
 
     for user_id in &body.employee_ids {
         if let Err(_) = crate::branch_scope::require_user_in_scope(&conn, *user_id, org_id, &scope) {
+            previews.push(serde_json::json!({
+                "user_id": user_id,
+                "status": "out_of_branch_scope",
+                "has_salary_structure": false,
+            }));
             continue;
         }
         let Some(emp) = build_employee_payroll(

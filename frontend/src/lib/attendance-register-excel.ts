@@ -33,9 +33,11 @@ type CellValue = string | number | { v: string | number; t?: string; s?: Record<
 const CODE_COLORS: Record<string, { bg: string; fg: string }> = {
     P: { bg: 'D1FAE5', fg: '065F46' },
     A: { bg: 'FEE2E2', fg: '991B1B' },
+    HD: { bg: 'FEF3C7', fg: '92400E' },
     L: { bg: 'DBEAFE', fg: '1E40AF' },
     O: { bg: 'F3F4F6', fg: '6B7280' },
-    H: { bg: 'FEF3C7', fg: '92400E' },
+    H: { bg: 'EDE9FE', fg: '5B21B6' },
+    EW: { bg: 'CFFAFE', fg: '155E75' },
     '•': { bg: 'FFEDD5', fg: '9A3412' },
 };
 

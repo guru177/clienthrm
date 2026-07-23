@@ -62,6 +62,8 @@ export type ClockInVerificationPayload = {
     face_verified: boolean;
     face_match_score: number | null;
     location: LocationPayload;
+    /** Why face check was skipped (no photo, unreadable photo, offline, etc.). */
+    face_skip_reason?: string | null;
 };
 
 type ClockInFaceDialogProps = {
@@ -95,10 +97,24 @@ export default function ClockInFaceDialog({
     const [error, setError] = useState<string | null>(null);
     const [permissionsGranted, setPermissionsGranted] = useState(false);
     const [debugInfo, setDebugInfo] = useState<{ frames: number[]; avg: number; passed: boolean } | null>(null);
+    /** Profile photo URL exists but no usable face embedding could be built from it. */
+    const [profileFaceUnavailable, setProfileFaceUnavailable] = useState(false);
     const activeModelPathRef = useRef<string | null>(null);
 
-    const skipFaceVerification = !userPhotoUrl;
-    const isReady = locationData && (skipFaceVerification || (modelsReady && cameraReady));
+    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    // Skip face when offline, no photo, or photo has no detectable face.
+    const skipFaceVerification = !userPhotoUrl || isOffline || profileFaceUnavailable;
+    const faceSkipReason = isOffline
+        ? 'offline'
+        : !userPhotoUrl
+          ? 'no_profile_photo'
+          : profileFaceUnavailable
+            ? 'no_face_in_profile_photo'
+            : null;
+    const isReady = isOffline
+        ? true
+        : Boolean(locationData) &&
+          (skipFaceVerification || (modelsReady && cameraReady));
     const isInstalledApp =
         typeof window !== 'undefined' &&
         (window.matchMedia('(display-mode: standalone)').matches ||
@@ -121,10 +137,12 @@ export default function ClockInFaceDialog({
                 setLocationStatus('idle');
             }
             setPermissionsGranted(false);
+            setProfileFaceUnavailable(false);
             return;
         }
 
         setError(null);
+        setProfileFaceUnavailable(false);
         if (modelsLoadedRef.current) {
             setModelsReady(true);
         }
@@ -138,12 +156,14 @@ export default function ClockInFaceDialog({
 
     // Once required permissions are granted, proceed with loading
     useEffect(() => {
-        if (skipFaceVerification && locationStatus === 'granted') {
+        if (isOffline) {
+            setPermissionsGranted(true);
+        } else if (skipFaceVerification && locationStatus === 'granted') {
             setPermissionsGranted(true);
         } else if (cameraStatus === 'granted' && locationStatus === 'granted') {
             setPermissionsGranted(true);
         }
-    }, [cameraStatus, locationStatus, skipFaceVerification]);
+    }, [cameraStatus, locationStatus, skipFaceVerification, isOffline]);
 
     // Video element only mounts after permissionsGranted — attach the already-opened stream.
     useEffect(() => {
@@ -212,6 +232,7 @@ export default function ClockInFaceDialog({
             face_verified: false,
             face_match_score: null,
             location: locationData,
+            face_skip_reason: faceSkipReason,
         });
     };
 
@@ -379,7 +400,13 @@ export default function ClockInFaceDialog({
                 .withFaceDescriptor();
 
             if (!detection) {
-                setError('No face detected in your profile photo. Please upload a clear front-facing photo.');
+                // Don't hard-block clock-in — fall back to location-only punch.
+                setProfileFaceUnavailable(true);
+                stopCamera();
+                setError(
+                    'No face detected in your profile photo. You can still clock in with location, or upload a clear front-facing photo later.',
+                );
+                setModelsReady(false);
                 return;
             }
 
@@ -643,9 +670,13 @@ export default function ClockInFaceDialog({
                         {skipFaceVerification ? 'Confirm clock in' : 'Verify your face'}
                     </DialogTitle>
                     <DialogDescription className="text-xs sm:text-sm">
-                        {skipFaceVerification
-                            ? 'Location permission is required to clock in. Face verification is optional when no profile photo is set.'
-                            : permissionsGranted
+                        {isOffline
+                            ? 'You are offline. Clock-in will be saved on this device and synced when you are back online. Face verification is skipped.'
+                            : skipFaceVerification
+                              ? profileFaceUnavailable
+                                  ? 'Location permission is required. Face verification was skipped because no face was found in your profile photo.'
+                                  : 'Location permission is required to clock in. Face verification is optional when no profile photo is set.'
+                              : permissionsGranted
                                 ? 'Position your face in the camera and click verify.'
                                 : 'Camera and location permissions are required to clock in. Please grant access to continue.'}
                     </DialogDescription>
@@ -661,6 +692,7 @@ export default function ClockInFaceDialog({
                                     Permissions Required
                                 </div>
 
+                                {!skipFaceVerification && (
                                 <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-background px-3 py-2.5">
                                     <div className="flex min-w-0 items-center gap-2">
                                         <PermissionStatusIcon status={cameraStatus} />
@@ -694,6 +726,7 @@ export default function ClockInFaceDialog({
                                         </Button>
                                     )}
                                 </div>
+                                )}
 
                                 <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-background px-3 py-2.5">
                                     <div className="flex min-w-0 items-center gap-2">
@@ -730,7 +763,8 @@ export default function ClockInFaceDialog({
                                 </div>
                             </div>
 
-                            {(cameraStatus !== 'granted' || locationStatus !== 'granted') && (
+                            {((!skipFaceVerification && cameraStatus !== 'granted') ||
+                                locationStatus !== 'granted') && (
                                 <Button
                                     type="button"
                                     className="w-full"
@@ -816,7 +850,7 @@ export default function ClockInFaceDialog({
                                 )}
                             </div>
 
-                            {debugInfo && (
+                            {import.meta.env.DEV && debugInfo && (
                                 <div
                                     className={`space-y-1 rounded-md border p-2 font-mono text-xs ${
                                         debugInfo.passed
@@ -881,7 +915,14 @@ export default function ClockInFaceDialog({
                     )}
 
                     {error && (
-                        <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:flex-row sm:items-center sm:justify-between">
+                        <div
+                            className={cn(
+                                'flex flex-col gap-2 rounded-md border px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between',
+                                profileFaceUnavailable
+                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200'
+                                    : 'border-destructive/40 bg-destructive/10 text-destructive',
+                            )}
+                        >
                             <span className="min-w-0 break-words">{error}</span>
                             {permissionsGranted && !locationData && (
                                 <Button

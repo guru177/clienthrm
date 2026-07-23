@@ -178,6 +178,22 @@ pub async fn variable_pay_destroy(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let owner_id: Option<i64> = conn
+        .query_row(
+            "SELECT user_id FROM payroll_variable_items WHERE id = ?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .ok();
+    let Some(owner_id) = owner_id else {
+        return HttpResponse::NotFound().json(ApiError::new("Variable pay item not found"));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, owner_id, org_id, &scope)
+    {
+        return resp;
+    }
     let _ = conn.execute(
         "DELETE FROM payroll_variable_items WHERE id = ?1 AND organization_id = ?2",
         crate::params![id, org_id],
@@ -314,6 +330,22 @@ pub async fn reimbursement_review(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let claim_user_id: Option<i64> = conn
+        .query_row(
+            "SELECT user_id FROM reimbursement_claims WHERE id = ?1 AND organization_id = ?2",
+            crate::params![id, org_id],
+            |r| r.get_idx::<i64>(0),
+        )
+        .ok();
+    let Some(claim_user_id) = claim_user_id else {
+        return HttpResponse::NotFound().json(ApiError::new("Claim not found"));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, claim_user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let now = now_str();
     let updated = conn.execute(
         "UPDATE reimbursement_claims SET status=?1, reviewed_by=?2, reviewed_at=?3, review_notes=?4,
@@ -462,6 +494,17 @@ pub async fn payroll_run_action(
         "release" => ("released", "released"),
         _ => return HttpResponse::BadRequest().json(ApiError::new("action must be review, approve, or release")),
     };
+    if body.action.as_str() == "approve" {
+        let is_sa = crate::middleware::rbac::effective_super_admin(&conn, &claims, org_id);
+        let perms = crate::middleware::rbac::load_user_permissions(&conn, claims.sub, is_sa);
+        let can_approve = crate::middleware::rbac::has_permission(&perms, "approve-payroll")
+            || crate::middleware::rbac::has_permission(&perms, "manage-payroll");
+        if !can_approve {
+            return HttpResponse::Forbidden().json(ApiError::new(
+                "approve-payroll or manage-payroll permission required",
+            ));
+        }
+    }
     let sql = format!(
         "UPDATE payroll_runs SET status = ?1, {col}_by = ?2, {col}_at = ?3, updated_at = ?3 WHERE id = ?4 AND organization_id = ?5"
     );
@@ -489,41 +532,62 @@ pub async fn payroll_checklist(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+
+    let mut leave_sql = String::from(
+        "SELECT COUNT(*) FROM leave_requests lr JOIN users u ON u.id = lr.user_id
+         WHERE u.organization_id = ?1 AND lr.status = 'pending' AND lr.deleted_at IS NULL",
+    );
+    let mut leave_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(&mut leave_sql, &mut leave_params, &scope, "u");
     let pending_leave: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM leave_requests lr JOIN users u ON u.id = lr.user_id
-             WHERE u.organization_id = ?1 AND lr.status = 'pending' AND lr.deleted_at IS NULL",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&leave_sql, &leave_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
+
+    let mut no_salary_sql = String::from(
+        "SELECT COUNT(*) FROM users u WHERE u.organization_id = ?1 AND u.deleted_at IS NULL AND u.is_super_admin = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM employee_salary_profiles esp WHERE esp.user_id = u.id
+         ) AND NOT EXISTS (
+           SELECT 1 FROM salary_structure_items ssi WHERE ssi.user_id = u.id
+         )",
+    );
+    let mut no_salary_params: Vec<crate::db::ParamValue> =
+        vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(
+        &mut no_salary_sql,
+        &mut no_salary_params,
+        &scope,
+        "u",
+    );
     let no_salary: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM users u WHERE u.organization_id = ?1 AND u.deleted_at IS NULL AND u.is_super_admin = 0
-             AND NOT EXISTS (
-               SELECT 1 FROM employee_salary_profiles esp WHERE esp.user_id = u.id
-             ) AND NOT EXISTS (
-               SELECT 1 FROM salary_structure_items ssi WHERE ssi.user_id = u.id
-             )",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&no_salary_sql, &no_salary_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
+
+    let mut reimb_sql = String::from(
+        "SELECT COUNT(*) FROM reimbursement_claims r JOIN users u ON u.id = r.user_id
+         WHERE r.organization_id = ?1 AND r.status = 'pending'",
+    );
+    let mut reimb_params: Vec<crate::db::ParamValue> = vec![crate::db::into_param_value(org_id)];
+    crate::branch_scope::append_users_branch_filter(&mut reimb_sql, &mut reimb_params, &scope, "u");
     let pending_reimb: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM reimbursement_claims WHERE organization_id = ?1 AND status = 'pending'",
-            [org_id],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&reimb_sql, &reimb_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
+
+    let mut gen_sql = String::from(
+        "SELECT COUNT(*) FROM payslips p JOIN users u ON u.id = p.user_id
+         WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
+    );
+    let mut gen_params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut gen_sql, &mut gen_params, &scope, "u");
     let generated: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM payslips p JOIN users u ON u.id = p.user_id
-             WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
-            crate::params![org_id, month, year],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&gen_sql, &gen_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
+
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({
         "pending_leave_requests": pending_leave,
         "employees_without_salary": no_salary,
@@ -558,6 +622,12 @@ pub async fn set_payroll_hold(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let updated = conn.execute(
         "UPDATE users SET payroll_hold=?1, payroll_hold_reason=?2, payroll_hold_until=?3, updated_at=?4
          WHERE id=?5 AND organization_id=?6",
@@ -605,6 +675,12 @@ pub async fn tax_declaration_save(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let decl = serde_json::json!({
         "section_80c": body.section_80c.unwrap_or(0.0),
         "section_80d": body.section_80d.unwrap_or(0.0),
@@ -647,6 +723,12 @@ pub async fn tax_declaration_get(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, user_id, org_id, &scope)
+    {
+        return resp;
+    }
     let row = conn.query_row(
         "SELECT regime, declarations_json, hra_rent_paid, hra_metro FROM employee_tax_declarations
          WHERE user_id = ?1 AND financial_year = ?2 AND organization_id = ?3",
@@ -837,16 +919,24 @@ pub async fn bank_payment_file(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
-    let stmt = conn.prepare(
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
         "SELECT u.name, u.bank_account, u.bank_ifsc, u.bank_account_holder, p.net_salary, p.id
          FROM payslips p JOIN users u ON u.id = p.user_id
          WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'
            AND COALESCE(p.payment_status, 'pending') = 'pending'",
-    ).ok();
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
+    let stmt = conn.prepare(&sql).ok();
     let mut csv = String::from("Beneficiary Name,Account Number,IFSC,Amount,Narration\n");
     let mut ids: Vec<i64> = vec![];
     if let Some(s) = stmt {
-        for row in s.query_map(crate::params![org_id, month, year], |row| {
+        for row in s.query_map(&params, |row| {
             Ok((
                 row.get_idx::<String>(0)?,
                 row.get_idx::<Option<String>>(1)?,
@@ -897,8 +987,24 @@ pub async fn mark_payslips_paid(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
     let mut updated = 0i64;
     for id in &body.payslip_ids {
+        let owner_id: Option<i64> = conn
+            .query_row(
+                "SELECT p.user_id FROM payslips p
+                 JOIN users u ON u.id = p.user_id
+                 WHERE p.id = ?1 AND u.organization_id = ?2 AND p.status = 'generated'",
+                crate::params![id, org_id],
+                |r| r.get_idx::<i64>(0),
+            )
+            .ok();
+        let Some(owner_id) = owner_id else {
+            continue;
+        };
+        if !crate::branch_scope::user_in_branch_scope(&conn, owner_id, org_id, &scope) {
+            continue;
+        }
         let n = conn.execute(
             "UPDATE payslips SET payment_status = 'paid', updated_at = ?1
              WHERE id = ?2 AND status = 'generated'
@@ -926,16 +1032,29 @@ pub async fn accounting_journal_export(
         Ok(c) => c,
         Err(_) => return HttpResponse::InternalServerError().json(ApiError::new("DB error")),
     };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut sql = String::from(
+        "SELECT COALESCE(SUM(p.gross_salary),0), COALESCE(SUM(p.net_salary),0),
+                COALESCE(SUM(p.pf_deduction + p.esi_deduction + p.prof_tax),0),
+                COALESCE(SUM(p.total_deductions),0)
+         FROM payslips p JOIN users u ON u.id = p.user_id
+         WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
+    );
+    let mut params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut sql, &mut params, &scope, "u");
     let totals: (f64, f64, f64, f64) = conn
-        .query_row(
-            "SELECT COALESCE(SUM(p.gross_salary),0), COALESCE(SUM(p.net_salary),0),
-                    COALESCE(SUM(p.pf_deduction + p.esi_deduction + p.prof_tax),0),
-                    COALESCE(SUM(p.total_deductions),0)
-             FROM payslips p JOIN users u ON u.id = p.user_id
-             WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
-            crate::params![org_id, month, year],
-            |r| Ok((r.get_idx::<f64>(0)?, r.get_idx::<f64>(1)?, r.get_idx::<f64>(2)?, r.get_idx::<f64>(3)?)),
-        )
+        .query_row(&sql, &params, |r| {
+            Ok((
+                r.get_idx::<f64>(0)?,
+                r.get_idx::<f64>(1)?,
+                r.get_idx::<f64>(2)?,
+                r.get_idx::<f64>(3)?,
+            ))
+        })
         .unwrap_or((0.0, 0.0, 0.0, 0.0));
     let (gross, net, statutory, _ded) = totals;
     let csv = format!(
@@ -974,13 +1093,19 @@ pub async fn payroll_reminder_status(pool: web::Data<DbPool>, req: HttpRequest) 
             },
         )
         .unwrap_or(25);
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    let mut gen_sql = String::from(
+        "SELECT COUNT(*) FROM payslips p JOIN users u ON u.id = p.user_id
+         WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
+    );
+    let mut gen_params: Vec<crate::db::ParamValue> = vec![
+        crate::db::into_param_value(org_id),
+        crate::db::into_param_value(month),
+        crate::db::into_param_value(year),
+    ];
+    crate::branch_scope::append_users_branch_filter(&mut gen_sql, &mut gen_params, &scope, "u");
     let generated: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM payslips p JOIN users u ON u.id = p.user_id
-             WHERE u.organization_id = ?1 AND p.month = ?2 AND p.year = ?3 AND p.status = 'generated'",
-            crate::params![org_id, month, year],
-            |r| r.get_idx::<i64>(0),
-        )
+        .query_row(&gen_sql, &gen_params, |r| r.get_idx::<i64>(0))
         .unwrap_or(0);
     let due = today.day() as i64 >= reminder_day && generated == 0;
     HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({

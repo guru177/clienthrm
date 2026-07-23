@@ -13,6 +13,7 @@ pub mod tenant_billing;
 pub mod webhooks;
 pub mod subscription_plans;
 pub mod users;
+pub mod org_chart;
 pub mod departments;
 pub mod designations;
 pub mod roles;
@@ -29,8 +30,6 @@ pub mod workflows;
 pub mod analytics;
 pub mod reports;
 pub mod settings;
-pub mod careers;
-pub mod job_applications;
 pub mod payroll;
 pub mod payroll_advanced;
 

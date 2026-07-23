@@ -173,6 +173,19 @@ pub async fn update(
     }
 
     let id = path.into_inner();
+    let owner_id: i64 = match conn.query_row(
+        "SELECT user_id FROM grocery_benefits WHERE id = ?1 AND organization_id = ?2",
+        crate::params![id, org_id],
+        |row| row.get_idx::<i64>(0),
+    ) {
+        Ok(uid) => uid,
+        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Grocery benefit not found")),
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, owner_id, org_id, &scope) {
+        return resp;
+    }
+
     let now = chrono::Utc::now().naive_utc();
 
     let mut set_parts: Vec<String> = vec!["updated_at = ?".to_string()];
@@ -228,9 +241,23 @@ pub async fn destroy(
         return HttpResponse::Forbidden().json(ApiError::new("Missing permission: manage-grocery-benefits"));
     }
 
+    let id = path.into_inner();
+    let owner_id: i64 = match conn.query_row(
+        "SELECT user_id FROM grocery_benefits WHERE id = ?1 AND organization_id = ?2",
+        crate::params![id, org_id],
+        |row| row.get_idx::<i64>(0),
+    ) {
+        Ok(uid) => uid,
+        Err(_) => return HttpResponse::NotFound().json(ApiError::new("Grocery benefit not found")),
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) = crate::branch_scope::require_user_in_scope(&conn, owner_id, org_id, &scope) {
+        return resp;
+    }
+
     match conn.execute(
         "DELETE FROM grocery_benefits WHERE id = ?1 AND organization_id = ?2",
-        crate::params![path.into_inner(), org_id],
+        crate::params![id, org_id],
     ) {
         Ok(n) if n > 0 => HttpResponse::Ok().json(ApiResponse::success(serde_json::json!({"message": "Deleted"}))),
         Ok(_) => HttpResponse::NotFound().json(ApiError::new("Grocery benefit not found")),
@@ -576,6 +603,15 @@ pub async fn claims_review(
             |row| Ok((row.get_idx::<i64>(0)?, row.get_idx::<f64>(1)?)),
         )
         .ok();
+    let Some((claim_user_id, _)) = claim_info else {
+        return HttpResponse::NotFound().json(ApiError::new("Pending claim not found"));
+    };
+    let scope = crate::branch_scope::actor_branch_scope_from_claims(&conn, &claims);
+    if let Err(resp) =
+        crate::branch_scope::require_user_in_scope(&conn, claim_user_id, org_id, &scope)
+    {
+        return resp;
+    }
 
     match conn.execute(
         "UPDATE grocery_claims SET status = ?1, reviewed_by = ?2, reviewed_at = ?3, review_notes = ?4, updated_at = ?5 WHERE id = ?6 AND organization_id = ?7 AND status = 'pending'",

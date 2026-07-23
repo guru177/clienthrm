@@ -3,6 +3,7 @@ import { Search, Building2, User, CreditCard, Shield, ArrowRight } from 'lucide-
 import { useNavigate } from 'react-router-dom';
 import { platformGet, platformPost } from '@/lib/platform-api';
 import { redirectToTenantImpersonation, defaultAdminRoute } from '@/lib/app-urls';
+import { PlatformConfirmDialog } from '@/components/platform-dialog';
 import { cn } from '@/lib/utils';
 
 interface SearchOrg {
@@ -64,6 +65,8 @@ export function CommandPalette() {
     const [loading, setLoading] = useState(false);
     const [activeIdx, setActiveIdx] = useState(0);
     const [error, setError] = useState('');
+    const [impersonateTarget, setImpersonateTarget] = useState<SearchUser | null>(null);
+    const [impersonating, setImpersonating] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -138,23 +141,37 @@ export function CommandPalette() {
             setOpen(false);
             navigate('/platform-team');
         } else if (item.kind === 'user') {
-            const userOrg = item.data;
             setOpen(false);
-            platformPost<ImpersonateResponse>(
-                `/organizations/${userOrg.organization_id}/impersonate`,
+            setImpersonateTarget(item.data);
+        }
+    }
+
+    async function confirmImpersonation() {
+        if (!impersonateTarget) return;
+        setImpersonating(true);
+        setError('');
+        try {
+            const res = await platformPost<ImpersonateResponse>(
+                `/organizations/${impersonateTarget.organization_id}/impersonate`,
                 {},
-            )
-                .then((res) => {
-                    const perms = res.data.permissions ?? res.data.user?.permissions ?? [];
-                    redirectToTenantImpersonation({
-                        token: res.data.token,
-                        refreshToken: res.data.refresh_token,
-                        orgSlug: res.data.org_slug,
-                        orgName: userOrg.organization_name ?? userOrg.organization_slug ?? '',
-                        next: defaultAdminRoute((slug) => perms.includes(slug)),
-                    });
-                })
-                .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed'));
+            );
+            const perms = res.data.permissions ?? res.data.user?.permissions ?? [];
+            redirectToTenantImpersonation({
+                token: res.data.token,
+                refreshToken: res.data.refresh_token,
+                orgSlug: res.data.org_slug,
+                orgName:
+                    impersonateTarget.organization_name ??
+                    impersonateTarget.organization_slug ??
+                    '',
+                next: defaultAdminRoute((slug) => perms.includes(slug)),
+            });
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed');
+            setOpen(true);
+        } finally {
+            setImpersonating(false);
+            setImpersonateTarget(null);
         }
     }
 
@@ -172,11 +189,13 @@ export function CommandPalette() {
         }
     }
 
-    if (!open) {
+    if (!open && !impersonateTarget) {
         return null;
     }
 
     return (
+        <>
+        {open && (
         <div className="fixed inset-0 z-[100] flex items-start justify-center px-4 pt-24">
             <button
                 type="button"
@@ -259,6 +278,23 @@ export function CommandPalette() {
                 </div>
             </div>
         </div>
+        )}
+        <PlatformConfirmDialog
+            open={Boolean(impersonateTarget)}
+            title="Impersonate user"
+            message={
+                impersonateTarget
+                    ? `Open ${impersonateTarget.name} (${impersonateTarget.email}) in ${impersonateTarget.organization_name ?? impersonateTarget.organization_slug ?? 'their organization'}? You will be signed in as this user.`
+                    : ''
+            }
+            confirmLabel="Impersonate"
+            loading={impersonating}
+            onConfirm={() => void confirmImpersonation()}
+            onClose={() => {
+                if (!impersonating) setImpersonateTarget(null);
+            }}
+        />
+        </>
     );
 }
 

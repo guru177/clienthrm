@@ -15,7 +15,9 @@ pub struct CreateHolidayRequest {
     pub name: String,
     pub date: String,
     pub description: Option<String>,
+    /// Ignored — company holidays are always paid. Kept for API compatibility.
     #[serde(default)]
+    #[allow(dead_code)]
     pub is_paid: Option<bool>,
 }
 

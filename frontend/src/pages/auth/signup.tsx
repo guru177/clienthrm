@@ -467,7 +467,7 @@ export default function Signup() {
 
         <AuthLayout fitViewport scrollableCard title={stepTitle} description={stepDescription}>
 
-            <title>Sign up — HRM Portal</title>
+            <title>Sign up — HR Daddy</title>
 
 
 

@@ -32,6 +32,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { useAuth } from '@/contexts/AuthContext';
 import { handleApiError, handleApiResponse } from '@/lib/toast';
 
 interface ShiftTemplate {
@@ -65,8 +66,17 @@ function formatTime(value?: string) {
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
+interface BranchOption {
+    id: number;
+    name: string;
+}
+
 export default function ShiftRosterPage() {
+    const { canAccessAllCenters, branchScope, canAccessCenter } = useAuth();
+    const allCenters = canAccessAllCenters();
     const [templates, setTemplates] = useState<ShiftTemplate[]>([]);
+    const [branches, setBranches] = useState<BranchOption[]>([]);
+    const [branchId, setBranchId] = useState('all');
     const [selectedShiftId, setSelectedShiftId] = useState('0');
     const [asOfDate, setAsOfDate] = useState(new Date().toISOString().slice(0, 10));
     const [employees, setEmployees] = useState<RosterEmployee[]>([]);
@@ -82,11 +92,39 @@ export default function ShiftRosterPage() {
 
     useEffect(() => {
         void loadTemplates();
+        void loadBranches();
     }, []);
 
     useEffect(() => {
+        if (allCenters) return;
+        const ids = branchScope.center_ids;
+        if (ids.length === 0) return;
+        setBranchId((prev) => {
+            if (prev !== 'all' && ids.includes(Number(prev))) return prev;
+            return String(ids[0]);
+        });
+    }, [allCenters, branchScope.center_ids]);
+
+    useEffect(() => {
         void loadRoster();
-    }, [selectedShiftId, asOfDate]);
+    }, [selectedShiftId, asOfDate, branchId]);
+
+    const loadBranches = async () => {
+        try {
+            const res = await axios.get('/admin/settings/centers', { params: { compact: 1 } });
+            const list = res.data?.data ?? res.data ?? [];
+            setBranches(
+                (Array.isArray(list) ? list : [])
+                    .map((c: { id: number; name: string }) => ({
+                        id: Number(c.id),
+                        name: c.name,
+                    }))
+                    .filter((c: BranchOption) => allCenters || canAccessCenter(c.id)),
+            );
+        } catch {
+            setBranches([]);
+        }
+    };
 
     const loadTemplates = async () => {
         try {
@@ -109,6 +147,7 @@ export default function ShiftRosterPage() {
                 params: {
                     shift_id: Number(selectedShiftId),
                     date: asOfDate,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
                 },
             });
             setEmployees(res.data.data?.employees || []);
@@ -170,7 +209,7 @@ export default function ShiftRosterPage() {
                                     Shift Roster
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                    See who is on each shift and change assignments
+                                    Branch-scoped roster — assignments drive Attendance late/early checks
                                 </p>
                             </div>
                         </div>
@@ -187,13 +226,37 @@ export default function ShiftRosterPage() {
 
                 <Card>
                     <CardHeader>
-                        <CardTitle>Filter by Shift</CardTitle>
+                        <CardTitle>Filter by Shift & Branch</CardTitle>
                         <CardDescription>
-                            Pick a shift to list all employees currently assigned to it
+                            Pick a shift and optional branch to list employees currently assigned to it
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
                         <div className="flex flex-wrap gap-3 items-end">
+                            <div className="space-y-2 min-w-[180px]">
+                                <Label>Branch</Label>
+                                <Select
+                                    value={branchId}
+                                    onValueChange={setBranchId}
+                                    disabled={!allCenters && branches.length <= 1}
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue
+                                            placeholder={allCenters ? 'All branches' : 'Your branch'}
+                                        />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {allCenters && (
+                                            <SelectItem value="all">All branches</SelectItem>
+                                        )}
+                                        {branches.map((b) => (
+                                            <SelectItem key={b.id} value={String(b.id)}>
+                                                {b.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
                             <div className="space-y-2 min-w-[220px]">
                                 <Label>Shift</Label>
                                 <Select value={selectedShiftId} onValueChange={setSelectedShiftId}>

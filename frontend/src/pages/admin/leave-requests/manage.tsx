@@ -6,22 +6,80 @@ import { useEffect, useState } from 'react';
 import AdminLeaveRequestTable from '@/components/leave-requests/admin-leave-request-table';
 import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { useAuth } from '@/contexts/AuthContext';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError } from '@/lib/toast';
 
+interface BranchOption {
+    id: number;
+    name: string;
+}
+
 export default function ManageLeaveRequestsPage() {
+    const { canAccessAllCenters, branchScope, canAccessCenter } = useAuth();
+    const allCenters = canAccessAllCenters();
     const [stats, setStats] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [refreshKey, setRefreshKey] = useState(0);
+    const [branches, setBranches] = useState<BranchOption[]>([]);
+    const [branchId, setBranchId] = useState('all');
 
     useEffect(() => {
-        loadStats();
-    }, []);
+        if (allCenters) return;
+        const ids = branchScope.center_ids;
+        if (ids.length === 0) return;
+        setBranchId((prev) => {
+            if (prev !== 'all' && ids.includes(Number(prev))) return prev;
+            return String(ids[0]);
+        });
+    }, [allCenters, branchScope.center_ids]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await axios.get('/admin/settings/centers', {
+                    params: { compact: 1 },
+                });
+                if (cancelled) return;
+                const list = res.data?.data ?? res.data ?? [];
+                setBranches(
+                    (Array.isArray(list) ? list : [])
+                        .map((c: { id: number; name: string }) => ({
+                            id: Number(c.id),
+                            name: c.name,
+                        }))
+                        .filter((c: BranchOption) => allCenters || canAccessCenter(c.id)),
+                );
+            } catch {
+                setBranches([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [allCenters, canAccessCenter]);
+
+    useEffect(() => {
+        void loadStats();
+    }, [branchId]);
 
     const loadStats = async () => {
         setLoading(true);
         try {
-            const response = await axios.get('/admin/leave-requests/manage/stats');
+            const response = await axios.get('/admin/leave-requests/manage/stats', {
+                params: {
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
+                },
+            });
             setStats(response.data.data);
         } catch (error) {
             handleApiError(error);
@@ -31,11 +89,11 @@ export default function ManageLeaveRequestsPage() {
     };
 
     const breadcrumbs = [
-        // { label: 'Leave Requests', href: '/admin/leave-requests' },
+        { label: 'Leave Requests', href: '/admin/leave-requests' },
         { label: 'Manage Leave Requests', href: '/admin/leave-requests/manage' },
     ];
 
-    if (loading) {
+    if (loading && !stats) {
         return (
             <AppLayout breadcrumbs={breadcrumbs}>
                 
@@ -69,17 +127,45 @@ export default function ManageLeaveRequestsPage() {
                                     Manage Leave Requests
                                 </h1>
                                 <p className="text-sm text-[#1e3a5f]/60 dark:text-blue-200/60">
-                                    Review, approve, or reject leave requests
+                                    Review, approve, reject, or cancel leave requests
                                 </p>
                             </div>
                         </div>
-                        <Button
-                            onClick={() => loadStats()}
-                            className="shrink-0 bg-gradient-to-r from-[#071b3a] to-[#0d4a8a] hover:from-[#040f22] hover:to-[#0a3272] text-white shadow-md shadow-blue-500/25 dark:shadow-blue-900/40 rounded-xl gap-2 z-10"
-                        >
-                            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                            Refresh Stats
-                        </Button>
+                        <div className="flex flex-wrap items-end gap-3 z-10">
+                            <div className="space-y-1 min-w-[160px]">
+                                <Label className="text-xs text-[#1e3a5f]/70 dark:text-blue-200/70">
+                                    Branch
+                                </Label>
+                                <Select
+                                    value={branchId}
+                                    onValueChange={setBranchId}
+                                    disabled={!allCenters && branches.length <= 1}
+                                >
+                                    <SelectTrigger className="w-[180px] bg-white/80 dark:bg-black/30">
+                                        <SelectValue
+                                            placeholder={allCenters ? 'All branches' : 'Your branch'}
+                                        />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {allCenters && (
+                                            <SelectItem value="all">All branches</SelectItem>
+                                        )}
+                                        {branches.map((b) => (
+                                            <SelectItem key={b.id} value={String(b.id)}>
+                                                {b.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <Button
+                                onClick={() => loadStats()}
+                                className="shrink-0 bg-gradient-to-r from-[#071b3a] to-[#0d4a8a] hover:from-[#040f22] hover:to-[#0a3272] text-white shadow-md shadow-blue-500/25 dark:shadow-blue-900/40 rounded-xl gap-2"
+                            >
+                                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                                Refresh Stats
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
@@ -113,10 +199,11 @@ export default function ManageLeaveRequestsPage() {
 
                 {/* Requests Table */}
                 <AdminLeaveRequestTable
-                    key={refreshKey}
+                    key={`${refreshKey}-${branchId}`}
+                    branchId={branchId}
                     onRefresh={() => {
                         setRefreshKey((prev) => prev + 1);
-                        loadStats();
+                        void loadStats();
                     }}
                 />
             </div>

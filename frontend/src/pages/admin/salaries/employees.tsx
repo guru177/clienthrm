@@ -54,6 +54,7 @@ import {
 import { SalaryTabsPanel } from '@/components/salary-tabs-panel';
 import AppLayout from '@/layouts/app-layout';
 import { handleApiError } from '@/lib/toast';
+import { useAuth } from '@/contexts/AuthContext';
 
 function SalaryStructureDialog({
     open,
@@ -100,6 +101,11 @@ interface FilterOption {
     name: string;
 }
 
+interface BranchOption {
+    id: number;
+    name: string;
+}
+
 const STATUS_OPTIONS = [
     { value: 'active', label: 'Active Employees' },
     { value: 'inactive', label: 'Inactive Employees' },
@@ -133,10 +139,14 @@ function EmployeeAvatar({ photo, avatar, name }: { photo?: string | null; avatar
 
 export default function EmployeesPage() {
     const navigate = useNavigate();
+    const { canAccessAllCenters, branchScope, canAccessCenter } = useAuth();
+    const allCenters = canAccessAllCenters();
     const [employees, setEmployees] = useState<Employee[]>([]);
     const [loading, setLoading] = useState(false);
     const [search, setSearch] = useState('');
     const [status, setStatus] = useState('active');
+    const [branchId, setBranchId] = useState('all');
+    const [branches, setBranches] = useState<BranchOption[]>([]);
     const [departmentId, setDepartmentId] = useState('all');
     const [designationId, setDesignationId] = useState('all');
     const [departments, setDepartments] = useState<FilterOption[]>([]);
@@ -158,9 +168,49 @@ export default function EmployeesPage() {
 
     const currentStatusLabel = STATUS_OPTIONS.find((s) => s.value === status)?.label ?? 'Employees';
 
+    useEffect(() => {
+        if (allCenters) return;
+        const ids = branchScope.center_ids;
+        if (ids.length === 0) return;
+        setBranchId((prev) => {
+            if (prev !== 'all' && ids.includes(Number(prev))) return prev;
+            return String(ids[0]);
+        });
+    }, [allCenters, branchScope.center_ids]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await axios.get('/admin/settings/centers', {
+                    params: { compact: 1 },
+                });
+                if (cancelled) return;
+                const list = res.data?.data ?? res.data ?? [];
+                setBranches(
+                    (Array.isArray(list) ? list : [])
+                        .map((c: { id: number; name: string }) => ({
+                            id: Number(c.id),
+                            name: c.name,
+                        }))
+                        .filter((c: BranchOption) => allCenters || canAccessCenter(c.id)),
+                );
+            } catch {
+                setBranches([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [allCenters, canAccessCenter]);
+
     const fetchFilterOptions = async () => {
         try {
-            const res = await axios.get('/admin/salaries/employees/filter-options');
+            const res = await axios.get('/admin/salaries/employees/filter-options', {
+                params: {
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
+                },
+            });
             if (res.data.success) {
                 setDepartments(res.data.data.departments);
                 setDesignations(res.data.data.designations);
@@ -177,6 +227,7 @@ export default function EmployeesPage() {
                 params: {
                     search: search || undefined,
                     status: status !== 'all' ? status : undefined,
+                    center_id: branchId !== 'all' ? Number(branchId) : undefined,
                     department_id: departmentId !== 'all' ? departmentId : undefined,
                     designation_id: designationId !== 'all' ? designationId : undefined,
                     page: currentPage,
@@ -200,16 +251,21 @@ export default function EmployeesPage() {
     };
 
     useEffect(() => {
-        fetchFilterOptions();
-    }, []);
+        void fetchFilterOptions();
+    }, [branchId]);
+
+    useEffect(() => {
+        setDepartmentId('all');
+    }, [branchId]);
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [search, status, departmentId, designationId, perPage]);
+    }, [search, status, branchId, departmentId, designationId, perPage]);
 
     useEffect(() => {
-        fetchEmployees();
-    }, [search, status, departmentId, designationId, currentPage, perPage]);
+        if (!allCenters && branchId === 'all') return;
+        void fetchEmployees();
+    }, [search, status, branchId, departmentId, designationId, currentPage, perPage, allCenters]);
 
     const toggleSelect = (id: number) =>
         setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -220,7 +276,8 @@ export default function EmployeesPage() {
     const allSelected = employees.length > 0 && selected.length === employees.length;
     const someSelected = selected.length > 0 && !allSelected;
 
-    const hasFilters = search || departmentId !== 'all' || designationId !== 'all';
+    const hasFilters =
+        search || branchId !== 'all' || departmentId !== 'all' || designationId !== 'all';
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -298,6 +355,28 @@ export default function EmployeesPage() {
                         />
                     </div>
 
+                    <Select
+                        value={branchId}
+                        onValueChange={setBranchId}
+                        disabled={!allCenters && branches.length <= 1}
+                    >
+                        <SelectTrigger className="w-44">
+                            <SelectValue
+                                placeholder={allCenters ? 'All branches' : 'Your branch'}
+                            />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {allCenters && (
+                                <SelectItem value="all">All branches</SelectItem>
+                            )}
+                            {branches.map((b) => (
+                                <SelectItem key={b.id} value={String(b.id)}>
+                                    {b.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+
                     <Select value={departmentId} onValueChange={setDepartmentId}>
                         <SelectTrigger className="w-44">
                             <SelectValue placeholder="Department" />
@@ -330,7 +409,12 @@ export default function EmployeesPage() {
                         <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => { setSearch(''); setDepartmentId('all'); setDesignationId('all'); }}
+                            onClick={() => {
+                                setSearch('');
+                                setBranchId(allCenters ? 'all' : (branches[0] ? String(branches[0].id) : 'all'));
+                                setDepartmentId('all');
+                                setDesignationId('all');
+                            }}
                         >
                             <X className="h-4 w-4" />
                             Clear

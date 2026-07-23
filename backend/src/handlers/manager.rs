@@ -247,6 +247,13 @@ pub async fn approve_leave(
         return HttpResponse::Conflict().json(ApiError::new("Already processed"));
     }
 
+    crate::attendance_logic::sync_attendance_after_leave_approved(
+        &conn,
+        user_id,
+        &start_date,
+        &end_date,
+    );
+
     let ctx = serde_json::json!({
         "leave_id": leave_id,
         "user_id": user_id,

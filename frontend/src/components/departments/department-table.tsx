@@ -73,9 +73,10 @@ interface DepartmentTableProps {
     onEdit: (department: Department) => void;
     onRefresh?: () => void;
     refreshTrigger?: number;
+    onCreateClick?: () => void;
 }
 
-export default function DepartmentTable({ onEdit, onRefresh, refreshTrigger = 0 }: DepartmentTableProps) {
+export default function DepartmentTable({ onEdit, onRefresh, refreshTrigger = 0, onCreateClick }: DepartmentTableProps) {
     const [departments, setDepartments] = useState<Department[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -284,7 +285,17 @@ export default function DepartmentTable({ onEdit, onRefresh, refreshTrigger = 0 
                                                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#071b3a]/10 dark:bg-blue-900/30 border border-[#071b3a]/15">
                                                     <Building2 className="h-7 w-7 text-[#071b3a]/50 dark:text-blue-400/50" />
                                                 </div>
-                                                <p className="text-sm text-muted-foreground/60">No departments found</p>
+                                                <div>
+                                                    <p className="text-sm font-medium text-muted-foreground">No departments found</p>
+                                                    <p className="mt-1 text-xs text-muted-foreground/60">
+                                                        Create a department to organize teams by branch.
+                                                    </p>
+                                                </div>
+                                                {onCreateClick && (
+                                                    <Button onClick={onCreateClick} className="mt-1">
+                                                        Add Department
+                                                    </Button>
+                                                )}
                                             </div>
                                         </TableCell>
                                     </TableRow>

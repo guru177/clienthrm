@@ -11,17 +11,27 @@ function isNavActive(pathname: string, href: string) {
     return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export default function PlatformSidebar() {
+type PlatformSidebarProps = {
+    onNavigate?: () => void;
+    className?: string;
+};
+
+export default function PlatformSidebar({ onNavigate, className }: PlatformSidebarProps) {
     const { admin, logout } = usePlatformAuth();
     const location = useLocation();
 
     return (
-        <aside className="sidebar-gradient flex h-full w-64 shrink-0 flex-col border-r border-sidebar-border text-sidebar-foreground">
+        <aside
+            className={cn(
+                'sidebar-gradient flex h-full w-64 shrink-0 flex-col border-r border-sidebar-border text-sidebar-foreground',
+                className,
+            )}
+        >
             <div className="border-b border-sidebar-border p-4">
                 <PlatformLogo />
             </div>
 
-            <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+            <nav className="flex-1 space-y-1 overflow-y-auto p-3" aria-label="Platform">
                 {platformNavItems.map((item) => {
                     const active = isNavActive(location.pathname, item.href);
                     const Icon = item.icon;
@@ -29,6 +39,7 @@ export default function PlatformSidebar() {
                         <Link
                             key={item.href}
                             to={item.href}
+                            onClick={onNavigate}
                             className={cn(
                                 'flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-all',
                                 active

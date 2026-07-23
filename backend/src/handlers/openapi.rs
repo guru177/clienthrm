@@ -46,8 +46,7 @@ pub async fn openapi_json() -> HttpResponse {
             "/admin/payroll/stats": { "get": { "summary": "Payroll month stats", "security": [{ "bearerAuth": [] }] } },
             "/admin/payroll/generate": { "post": { "summary": "Generate payslips", "security": [{ "bearerAuth": [] }] } },
             "/admin/payslips/{id}/pdf": { "get": { "summary": "Download payslip PDF", "security": [{ "bearerAuth": [] }] } },
-            "/two-factor/qr-code": { "get": { "summary": "2FA setup QR", "security": [{ "bearerAuth": [] }] } },
-            "/public/careers": { "get": { "summary": "Public job listings" } }
+            "/two-factor/qr-code": { "get": { "summary": "2FA setup QR", "security": [{ "bearerAuth": [] }] } }
         },
         "x-webhook-events": [
             "leave.approved",

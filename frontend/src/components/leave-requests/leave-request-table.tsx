@@ -35,9 +35,10 @@ import { fetchLeaveTypeOptions, labelForLeaveType, type LeaveTypeOption } from '
 
 interface LeaveRequestTableProps {
     onRefresh?: () => void;
+    onCreateClick?: () => void;
 }
 
-export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps) {
+export default function LeaveRequestTable({ onRefresh, onCreateClick }: LeaveRequestTableProps) {
     const [requests, setRequests] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState('all');
@@ -156,9 +157,12 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                 <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                             </div>
                         ) : requests.length === 0 ? (
-                            <p className="py-8 text-center text-muted-foreground">
-                                No leave requests found
-                            </p>
+                            <div className="flex flex-col items-center gap-3 py-10 text-center">
+                                <p className="text-muted-foreground">No leave requests found</p>
+                                {onCreateClick && (
+                                    <Button onClick={onCreateClick}>New Leave Request</Button>
+                                )}
+                            </div>
                         ) : (
                             requests.map((request) => (
                                 <div
@@ -197,6 +201,16 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                             Cancel request
                                         </Button>
                                     )}
+                                    {request.status === 'approved' && (
+                                        <Button
+                                            variant="outline"
+                                            className="min-h-11 w-full"
+                                            onClick={() => setDeleteId(request.id)}
+                                        >
+                                            <Trash2 className="mr-2 h-4 w-4 text-red-600" />
+                                            Cancel leave
+                                        </Button>
+                                    )}
                                 </div>
                             ))
                         )}
@@ -226,11 +240,13 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                     </TableRow>
                                 ) : requests.length === 0 ? (
                                     <TableRow>
-                                        <TableCell
-                                            colSpan={7}
-                                            className="text-center py-8 text-muted-foreground"
-                                        >
-                                            No leave requests found
+                                        <TableCell colSpan={7} className="py-10 text-center">
+                                            <div className="flex flex-col items-center gap-3">
+                                                <p className="text-muted-foreground">No leave requests found</p>
+                                                {onCreateClick && (
+                                                    <Button onClick={onCreateClick}>New Leave Request</Button>
+                                                )}
+                                            </div>
                                         </TableCell>
                                     </TableRow>
                                 ) : (
@@ -251,11 +267,13 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
                                                 {new Date(request.created_at).toLocaleDateString()}
                                             </TableCell>
                                             <TableCell>
-                                                {request.status === 'pending' && (
+                                                {(request.status === 'pending' ||
+                                                    request.status === 'approved') && (
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
                                                         onClick={() => setDeleteId(request.id)}
+                                                        title="Cancel leave"
                                                     >
                                                         <Trash2 className="h-4 w-4 text-red-600" />
                                                     </Button>
@@ -323,20 +341,21 @@ export default function LeaveRequestTable({ onRefresh }: LeaveRequestTableProps)
             >
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Delete Leave Request</AlertDialogTitle>
+                        <AlertDialogTitle>Cancel Leave Request</AlertDialogTitle>
                         <AlertDialogDescription>
-                            Are you sure you want to delete this leave request? This action
-                            cannot be undone.
+                            Are you sure you want to cancel this leave request? Approved leave
+                            covered by a generated payslip cannot be cancelled until payroll is
+                            unlocked.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                        <AlertDialogCancel disabled={deleting}>Keep request</AlertDialogCancel>
                         <AlertDialogAction
                             onClick={handleDelete}
                             disabled={deleting}
                             className="bg-red-500 hover:bg-red-600"
                         >
-                            {deleting ? 'Deleting...' : 'Delete'}
+                            {deleting ? 'Cancelling...' : 'Cancel request'}
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
